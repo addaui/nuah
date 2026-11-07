@@ -38,6 +38,10 @@ pub enum PortImpl {
     Policy(Arc<dyn Policy>),
     Clock(Arc<dyn Clock>),
     Ids(Arc<dyn Ids>),
+    Log(Arc<dyn crate::telemetry::LogAdapter>),
+    Trace(Arc<dyn crate::telemetry::TraceAdapter>),
+    Metric(Arc<dyn crate::telemetry::MetricAdapter>),
+    Heartbeat(Arc<dyn crate::telemetry::HeartbeatAdapter>),
 }
 
 #[derive(Default)]

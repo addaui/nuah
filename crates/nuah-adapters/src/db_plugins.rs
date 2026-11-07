@@ -20,7 +20,7 @@ impl Plugin for AdapterSqlite {
     fn manifest(&self) -> Manifest {
         serde_json::from_value(json!({
             "id":"db-sqlite","version":"0.2.0","name":"SQLite database","description":"Keeps data in one SQLite file","fills":"db",
-            "settings_schema":{"type":"object","properties":{"path":{"type":"string","minLength":1},"readers":{"type":"integer","minimum":0,"maximum":128}},"additionalProperties":false}
+            "settings_schema":{"type":"object","properties":{"path":{"type":"string","minLength":1,"x-tier":"bootstrap","x-apply":"restart"},"readers":{"type":"integer","minimum":0,"maximum":128,"x-tier":"bootstrap","x-apply":"restart"}},"additionalProperties":false}
         })).unwrap()
     }
     fn fill(&self, s: &Value) -> Result<Option<PortImpl>> {

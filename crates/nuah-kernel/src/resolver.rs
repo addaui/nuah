@@ -3,7 +3,7 @@
 
 use crate::manifest::*;
 use crate::plugin::{Bindings, Plugin};
-use crate::ports::{cardinality, Cardinality, PORTS};
+use crate::ports::{cardinality, port_required, Cardinality, PORTS};
 use crate::schema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -27,6 +27,10 @@ pub struct Profile {
     pub grants: BTreeMap<String, Vec<String>>,
     /// Permission -> Roles, replacing the Manifest's default.
     pub permissions: BTreeMap<String, Vec<String>>,
+    /// Levels, trace sampling and queue size of the telemetry Ports ([ADR 0032]).
+    ///
+    /// [ADR 0032]: https://docs.addaui.com/nuah/adr/0032-telemetry-is-four-optional-fan-out-ports-the-core-decides-what-to-record-adapters-decide-how-it-looks-and-where-it-goes/
+    pub telemetry: crate::telemetry::TelemetrySettings,
 }
 
 /// Every plugin available to be switched on.
@@ -82,8 +86,10 @@ pub struct Plan {
     pub active: BTreeMap<String, ActivePlugin>,
     /// Enabled but not running, with the reason.
     pub inactive: BTreeMap<String, String>,
-    /// Port -> Adapter plugin id.
+    /// Port -> Adapter plugin id, for the Ports that take one Adapter.
     pub ports: BTreeMap<String, String>,
+    /// Port -> every enabled Adapter, for the Ports that take several.
+    pub many: BTreeMap<String, Vec<String>>,
     pub ops: BTreeMap<String, String>,
     pub hooks: Vec<HookEntry>,
     pub events: BTreeMap<String, String>,
@@ -94,6 +100,7 @@ pub struct Plan {
     pub table: BTreeMap<String, Vec<String>>,
     pub settings: BTreeMap<String, Value>,
     pub grants: BTreeMap<String, Vec<String>>,
+    pub telemetry: crate::telemetry::TelemetrySettings,
     pub hash: String,
 }
 
@@ -106,7 +113,13 @@ pub const ENVELOPE_VERSION: u32 = 1;
 pub fn resolve(dist: &Distribution) -> (Vec<Problem>, Plan) {
     let mut ps: Vec<Problem> = vec![];
     let mut plan = Plan::default();
-    let p = &dist.profile;
+    // References to the environment or a file are replaced by their value; the Profile itself holds no secret.
+    let resolved = crate::setup::resolve_profile_refs(&dist.profile, &mut ps);
+    let p = &resolved;
+    for m in p.telemetry.problems() {
+        ps.push(problem("bad_telemetry", &[], m));
+    }
+    plan.telemetry = p.telemetry.clone();
 
     // 1. the catalog
     let mut catalog: BTreeMap<String, Arc<dyn Plugin>> = BTreeMap::new();
@@ -354,8 +367,17 @@ pub fn resolve(dist: &Distribution) -> (Vec<Problem>, Plan) {
         }
     }
     for port in PORTS {
-        if cardinality(port) == Some(Cardinality::Many) {
-            ps.push(problem("port_many_unsupported", &[], format!("the port {port} takes several adapters, and no routing rule for that exists yet")));
+        if let Some(Cardinality::Many(_)) = cardinality(port) {
+            if let Some(b) = p.bindings.get(port) {
+                ps.push(problem("port_many_bound", &[b], format!("the port {port} feeds every enabled adapter; remove it from the profile's bindings")));
+            }
+            match fillers.get(port) {
+                Some(f) => {
+                    plan.many.insert(port.into(), f.iter().map(|s| s.to_string()).collect());
+                }
+                None if port_required(port) => ps.push(problem("port_unfilled", &[], format!("no enabled adapter fills the port {port}"))),
+                None => {}
+            }
             continue;
         }
         match (p.bindings.get(port), fillers.get(port)) {

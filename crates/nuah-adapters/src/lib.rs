@@ -4,12 +4,14 @@
 pub mod auth;
 pub mod conformance;
 pub mod db_plugins;
+pub mod log;
 pub mod memory;
 pub mod policy;
 pub mod sqlite;
 pub mod std_ports;
 
 pub use auth::{AuthLocal, AuthPassword};
+pub use log::{LogConsole, LogFile};
 pub use db_plugins::{AdapterMemory, AdapterSqlite};
 pub use memory::MemoryDb;
 pub use policy::{PolicyAllowAll, PolicyRoles};

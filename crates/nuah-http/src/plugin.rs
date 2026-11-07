@@ -47,16 +47,16 @@ impl Plugin for Http {
             "namespaces": ["http"],
             "requires": {"capabilities": ["serve"]},
             "settings_schema": {"type": "object", "additionalProperties": false, "properties": {
-                "listen": {"type": "string", "minLength": 3},
-                "hosts": {"type": "array", "items": {"type": "string"}},
-                "secure_cookie": {"type": "boolean"},
-                "faces": {"type": "object", "additionalProperties": {"type": "string"}},
-                "worker_threads": {"type": "integer", "minimum": 0, "maximum": 1024},
-                "sign_in_failures_per_name": {"type": "integer", "minimum": 1},
-                "sign_in_failures_overall": {"type": "integer", "minimum": 1},
-                "throttle_window_secs": {"type": "integer", "minimum": 1},
-                "pulse_streams_per_person": {"type": "integer", "minimum": 1},
-                "pulse_streams_total": {"type": "integer", "minimum": 1}
+                "listen": {"type": "string", "minLength": 3, "x-tier": "bootstrap", "x-apply": "service"},
+                "hosts": {"type": "array", "items": {"type": "string"}, "x-tier": "operator", "x-apply": "service"},
+                "secure_cookie": {"type": "boolean", "x-tier": "operator", "x-apply": "service"},
+                "faces": {"type": "object", "additionalProperties": {"type": "string"}, "x-tier": "operator", "x-apply": "service"},
+                "worker_threads": {"type": "integer", "minimum": 0, "maximum": 1024, "x-tier": "operator", "x-apply": "service"},
+                "sign_in_failures_per_name": {"type": "integer", "minimum": 1, "x-tier": "operator", "x-apply": "service"},
+                "sign_in_failures_overall": {"type": "integer", "minimum": 1, "x-tier": "operator", "x-apply": "service"},
+                "throttle_window_secs": {"type": "integer", "minimum": 1, "x-tier": "operator", "x-apply": "service"},
+                "pulse_streams_per_person": {"type": "integer", "minimum": 1, "x-tier": "operator", "x-apply": "service"},
+                "pulse_streams_total": {"type": "integer", "minimum": 1, "x-tier": "operator", "x-apply": "service"}
             }}
         })).unwrap()
     }
@@ -65,6 +65,7 @@ impl Plugin for Http {
         let cfg = Config::from_settings(&ctx.settings).map_err(Error::internal)?;
         let routes = self.routes.clone();
         let core = ctx.core;
+        let log = core.clone();
         let (ready_tx, ready_rx) = std::sync::mpsc::channel::<std::result::Result<std::net::SocketAddr, String>>();
         let (stop_tx, mut stop_rx) = tokio::sync::watch::channel(false);
         let thread = std::thread::Builder::new()
@@ -85,14 +86,14 @@ impl Plugin for Http {
                         Err(e) => return drop(ready_tx.send(Err(format!("cannot listen on {}: {e}", cfg.listen)))),
                     };
                     let _ = ready_tx.send(Ok(listener.local_addr().expect("bound address")));
-                    let app = router_with(core, cfg, &routes, stop_rx.clone());
+                    let app = router_with(core.clone(), cfg, &routes, stop_rx.clone());
                     let mut graceful = stop_rx.clone();
                     let serving = axum::serve(listener, app).with_graceful_shutdown(async move {
                         let _ = graceful.wait_for(|down| *down).await;
                     });
                     // Streams close on the signal; anything still open after a few seconds is cut.
                     tokio::select! {
-                        r = serving => { if let Err(e) = r { eprintln!("[nuah-http] server stopped: {e}"); } }
+                        r = serving => { if let Err(e) = r { core.log(Level::Error, "http", "http.stopped", json!({"error": e.to_string()})); } }
                         _ = async { let _ = stop_rx.wait_for(|down| *down).await; tokio::time::sleep(Duration::from_secs(5)).await } => {}
                     }
                 });
@@ -100,7 +101,7 @@ impl Plugin for Http {
             .map_err(|e| Error::internal(format!("cannot start the http thread: {e}")))?;
         match ready_rx.recv() {
             Ok(Ok(addr)) => {
-                eprintln!("[nuah-http] listening on http://{addr}");
+                log.log(Level::Info, "http", "http.listening", json!({"addr": addr.to_string()}));
                 Ok(Some(Box::new(Running { stop: stop_tx, thread })))
             }
             Ok(Err(msg)) => {

@@ -15,6 +15,7 @@ pub mod pulse;
 pub mod resolver;
 pub mod schema;
 pub mod setup;
+pub mod telemetry;
 
 pub use crate::core::{Core, Services};
 pub use crate::db::*;
@@ -25,3 +26,4 @@ pub use crate::pulse::{PulseBatch, PulseEvent};
 pub use crate::plugin::*;
 pub use crate::ports::*;
 pub use crate::resolver::*;
+pub use crate::telemetry::{Check, ErrorInfo, Health, HeartbeatAdapter, Kind, Level, LogAdapter, MetricAdapter, Metrics, Record, Series, Snapshot, Span, TelemetrySettings, TraceAdapter};

@@ -71,10 +71,44 @@ impl Core {
     }
 
     /// Run an Operation as an Identity the caller already trusts (in-process Faces, tests, Listeners).
+    /// Every call is counted, timed, logged and (when a trace Adapter is on) traced; none of that can fail it.
     pub fn call_as(&self, who: &Identity, op: &str, input: Value, key: Option<&str>) -> Result<CallResponse> {
+        let started = std::time::Instant::now();
+        let start_ms = self.inner.clock.now();
+        let mut request = String::new();
+        let mut res = self.call_as_inner(who, op, input, key, &mut request);
+        // An internal error carries the request id as its reference, so what the caller is told to quote finds the log line.
+        if let Err(e) = &mut res {
+            if e.category == Category::Internal && e.params.is_null() && !request.is_empty() {
+                e.params = json!({"ref": request});
+            }
+        }
+        let ms = started.elapsed().as_secs_f64() * 1000.0;
+        let outcome = match &res {
+            Ok(_) => "ok".to_string(),
+            Err(e) => serde_json::to_value(e.category).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_else(|| "error".into()),
+        };
+        let m = &self.inner.telemetry.metrics;
+        m.inc("nuah_operations_total", &[("operation", op), ("outcome", &outcome)], 1.0);
+        m.observe("nuah_operation_duration_ms", &[("operation", op)], ms);
+        let req = if request.is_empty() { None } else { Some(request.as_str()) };
+        match &res {
+            Ok(_) => self.log(crate::telemetry::Level::Debug, "nuah.kernel", "operation.ok", json!({"operation": op, "ms": ms, "request": req})),
+            Err(e) if e.category == Category::Internal => self.log_error(crate::telemetry::Level::Error, "nuah.kernel", "operation.failed", json!({"operation": op, "ms": ms}), e, req),
+            Err(e) => self.log_error(crate::telemetry::Level::Debug, "nuah.kernel", "operation.refused", json!({"operation": op, "ms": ms}), e, req),
+        }
+        if self.inner.telemetry.wants_spans() && req.is_some_and(|r| self.inner.telemetry.sampled(r)) {
+            let r = request.clone();
+            self.inner.telemetry.span(crate::telemetry::Span { trace: r.clone(), id: r, name: op.into(), target: "nuah.kernel".into(), start: start_ms, duration_ms: ms, ok: res.is_ok(), attributes: json!({"outcome": outcome}) });
+        }
+        res
+    }
+
+    fn call_as_inner(&self, who: &Identity, op: &str, input: Value, key: Option<&str>, request_out: &mut String) -> Result<CallResponse> {
         let inner = &*self.inner;
         let decl = inner.op_decl(op).ok_or_else(|| Error::not_found(&format!("operation {op}")))?;
         let request = inner.ids.new_id();
+        *request_out = request.clone();
         let input = if input.is_null() { json!({}) } else { input };
         match decl.kind {
             OpKind::Query => {

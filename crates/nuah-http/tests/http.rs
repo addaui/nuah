@@ -86,3 +86,10 @@ fn the_guard_refuses_unknown_hosts_and_calls_without_the_face_header() {
     assert_eq!(res.status().as_u16(), 400, "{:?}", res.body_mut().read_to_string());
     services.stop();
 }
+
+#[test]
+fn http_settings_say_where_they_live_and_how_a_change_applies() {
+    let m = Http::new().manifest();
+    let problems = setup::settings_annotation_problems(&m.settings_schema);
+    assert!(problems.is_empty(), "{problems:?}");
+}

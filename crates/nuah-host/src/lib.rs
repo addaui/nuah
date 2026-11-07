@@ -13,7 +13,7 @@ pub mod setup;
 
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use nuah_adapters::AuthPassword;
-use nuah_kernel::{Catalog, Core, Distribution, Profile};
+use nuah_kernel::{Catalog, Core, Distribution, Level, Plugin, Profile};
 use serde_json::{json, Value};
 use std::io::Read;
 use std::path::PathBuf;
@@ -78,6 +78,12 @@ enum Cmd {
         /// Another static Face, `/faces/NAME=DIRECTORY`.
         #[arg(long = "face")]
         faces: Vec<String>,
+        /// Records chattier than this are not written (error, warn, info, debug, trace). Overrides the Profile.
+        #[arg(long, env = "NUAH_LOG_LEVEL")]
+        log_level: Option<String>,
+        /// Also append log records, as JSON lines, to this file (rotated).
+        #[arg(long, env = "NUAH_LOG_FILE")]
+        log_file: Option<String>,
         /// A switch the product understands (Madar: `previews`).
         #[arg(long = "with", env = "NUAH_WITH", value_delimiter = ',')]
         with: Vec<String>,
@@ -115,7 +121,7 @@ pub fn run(product: impl Product) -> ! {
             std::process::exit(if ok { 0 } else { 1 });
         }
         Cmd::Setup { profile, listen, face } => runtime().block_on(setup_mode(&product, profile, listen, face)),
-        Cmd::Serve { profile, db, accounts, listen, allow_host, secure_cookie, web, console, faces, with } => {
+        Cmd::Serve { profile, db, accounts, listen, allow_host, secure_cookie, web, console, faces, log_level, log_file, with } => {
             let mut profile = match (profile, db, accounts) {
                 (Some(path), _, _) => {
                     let text = std::fs::read_to_string(&path).unwrap_or_else(|e| die(&format!("cannot read {}: {e}", path.display())));
@@ -141,7 +147,9 @@ pub fn run(product: impl Product) -> ! {
             if profile.enabled.iter().any(|p| p == "auth-local") && !listen_at.parse::<std::net::SocketAddr>().is_ok_and(|a| a.ip().is_loopback()) {
                 die("the profile uses auth-local (everyone is admin); listen on 127.0.0.1 or use auth-password");
             }
-            let dist = Distribution { name: product.name().to_string(), catalog: product.catalog(&with), profile };
+            let mut catalog = product.catalog(&with);
+            with_logging(&mut catalog, &mut profile, log_level, log_file);
+            let dist = Distribution { name: product.name().to_string(), catalog, profile };
             let core = Core::start(&dist).unwrap_or_else(|problems| {
                 for p in &problems {
                     eprintln!("{}: {}", p.code, p.message);
@@ -149,13 +157,47 @@ pub fn run(product: impl Product) -> ! {
                 die("the profile does not resolve")
             });
             let services = core.start_services().unwrap_or_else(|e| die(&e.message));
-            eprintln!("{} running (contract {}); services: {}", product.name(), core.contract_hash(), services.running().join(", "));
+            core.log(Level::Info, "nuah.host", "host.running", json!({"product": product.name(), "contract": core.contract_hash(), "services": services.running()}));
+            let for_panics = core.clone();
+            let previous = std::panic::take_hook();
+            std::panic::set_hook(Box::new(move |info| {
+                for_panics.log(Level::Error, "nuah.host", "host.panic", json!({"where": info.location().map(|l| l.to_string()), "message": info.to_string()}));
+                for_panics.flush_telemetry(std::time::Duration::from_millis(500));
+                previous(info);
+            }));
             runtime().block_on(wait_for_stop());
-            eprintln!("stopping…");
+            core.log(Level::Info, "nuah.host", "host.stopping", json!({}));
             services.stop();
         }
     }
     std::process::exit(0)
+}
+
+/// Make sure records go somewhere readable: the console adapter when the Profile enables no log adapter,
+/// and a file as well when asked. The Profile's own choice is never overridden.
+pub fn with_logging(catalog: &mut Catalog, profile: &mut Profile, level: Option<String>, file: Option<String>) {
+    let fills_log = |catalog: &Catalog, id: &str| catalog.0.iter().any(|p| p.manifest().id == id && p.manifest().fills.as_deref() == Some("log"));
+    let any_log = profile.enabled.iter().any(|id| fills_log(catalog, id));
+    let add = |catalog: &mut Catalog, plugin: std::sync::Arc<dyn Plugin>| {
+        let id = plugin.manifest().id;
+        if !catalog.0.iter().any(|p| p.manifest().id == id) {
+            catalog.0.push(plugin);
+        }
+    };
+    if !any_log {
+        add(catalog, std::sync::Arc::new(nuah_adapters::LogConsole));
+        profile.enabled.push("log-console".into());
+    }
+    if let Some(path) = file {
+        add(catalog, std::sync::Arc::new(nuah_adapters::LogFile));
+        if !profile.enabled.iter().any(|p| p == "log-file") {
+            profile.enabled.push("log-file".into());
+        }
+        profile.settings.entry("log-file".into()).or_insert_with(|| json!({"path": path}));
+    }
+    if level.is_some() {
+        profile.telemetry.level = level;
+    }
 }
 
 /// What the command line says about the `http` plugin; each piece overrides the Profile only when given.

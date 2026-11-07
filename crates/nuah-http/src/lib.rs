@@ -239,8 +239,15 @@ impl IntoResponse for ApiError {
         let status = StatusCode::from_u16(err.category.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
         // Internals (SQL messages, panics) stay in the server log; the caller gets a reference to quote.
         if err.category == Category::Internal {
-            let reference = format!("{:08x}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0));
-            eprintln!("[nuah-http] error ref {reference}: {}", err.message);
+            // The Core already logged this error under its request id; only a failure of the server itself is logged here.
+            let reference = match err.params.get("ref").and_then(|r| r.as_str()) {
+                Some(r) => r.to_string(),
+                None => {
+                    let r = format!("{:08x}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0));
+                    eprintln!("[nuah-http] error ref {r}: {}", err.message);
+                    r
+                }
+            };
             err = Error::internal(format!("Something went wrong on the server (ref {reference})"));
         }
         (status, [(header::CACHE_CONTROL, "no-store")], Json(json!({"ok": false, "error": err}))).into_response()

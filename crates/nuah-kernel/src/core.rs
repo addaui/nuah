@@ -5,6 +5,8 @@ use crate::error::{Error, Result};
 use crate::manifest::*;
 use crate::plugin::*;
 use crate::ports::*;
+use crate::telemetry::{Check, ErrorInfo, Health, Level, Metrics, Snapshot};
+use crate::telemetry::{HeartbeatAdapter, LogAdapter, MetricAdapter, TraceAdapter};
 use crate::resolver::*;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -21,6 +23,7 @@ pub(crate) struct Inner {
     pub(crate) settings: BTreeMap<String, Value>,
     pub(crate) wake: watch::Sender<u64>,
     pub(crate) profile_name: String,
+    pub(crate) telemetry: crate::telemetry::Telemetry,
 }
 
 /// A running Core. Cheap to clone.
@@ -53,9 +56,27 @@ impl Core {
                 Err(e) => problems.push(Problem { code: "adapter_failed".into(), plugins: vec![adapter.clone()], message: format!("{adapter} could not start: {}", e.message) }),
             }
         }
+        // The Ports that take every enabled Adapter (telemetry), in plugin id order.
+        let (mut logs, mut traces, mut metric, mut beats): (Vec<Arc<dyn LogAdapter>>, Vec<Arc<dyn TraceAdapter>>, Vec<Arc<dyn MetricAdapter>>, Vec<Arc<dyn HeartbeatAdapter>>) = (vec![], vec![], vec![], vec![]);
+        for (port, adapters) in &plan.many {
+            for adapter in adapters {
+                let ap = &plan.active[adapter];
+                let settings = plan.settings.get(adapter).cloned().unwrap_or_else(|| json!({}));
+                match ap.plugin.fill(&settings) {
+                    Ok(Some(PortImpl::Log(a))) if port == "log" => logs.push(a),
+                    Ok(Some(PortImpl::Trace(a))) if port == "trace" => traces.push(a),
+                    Ok(Some(PortImpl::Metric(a))) if port == "metric" => metric.push(a),
+                    Ok(Some(PortImpl::Heartbeat(a))) if port == "heartbeat" => beats.push(a),
+                    Ok(Some(_)) => problems.push(Problem { code: "wrong_port_type".into(), plugins: vec![adapter.clone()], message: format!("{adapter} returned the wrong kind of port for {port}") }),
+                    Ok(None) => problems.push(Problem { code: "adapter_filled_nothing".into(), plugins: vec![adapter.clone()], message: format!("{adapter} fills no {port}") }),
+                    Err(e) => problems.push(Problem { code: "adapter_failed".into(), plugins: vec![adapter.clone()], message: format!("{adapter} could not start: {}", e.message) }),
+                }
+            }
+        }
         if !problems.is_empty() {
             return Err(problems);
         }
+        let telemetry = crate::telemetry::Telemetry::new(&plan.telemetry, logs, traces, metric, beats);
         macro_rules! take {
             ($port:literal, $variant:ident) => {
                 match ports.remove($port) {
@@ -73,7 +94,7 @@ impl Core {
         let ids = take!("ids", Ids);
         let (wake, _) = watch::channel(0u64);
         let settings = plan.settings.clone();
-        let inner = Arc::new(Inner { db, auth, policy, clock, ids, plan, settings, wake, profile_name: dist.profile.name.clone() });
+        let inner = Arc::new(Inner { db, auth, policy, clock, ids, plan, settings, wake, profile_name: dist.profile.name.clone(), telemetry });
         if let Err(e) = inner.prepare_storage() {
             return Err(vec![Problem { code: "storage".into(), plugins: vec![], message: e.message }]);
         }
@@ -89,7 +110,61 @@ impl Core {
             l
         };
         let _ = inner.wake.send(latest);
-        Ok(Core { inner })
+        let core = Core { inner };
+        core.log(Level::Info, "nuah.kernel", "core.started", json!({"profile": core.profile_name(), "contract": core.contract_hash(), "plugins": core.plugin_ids().len()}));
+        Ok(core)
+    }
+
+    /// Write a log record. The level is checked first, so a record nobody wants costs one comparison.
+    pub fn log(&self, level: Level, target: &str, key: &str, fields: Value) {
+        if self.inner.telemetry.enabled(level, target) {
+            self.inner.telemetry.log(crate::telemetry::record(self.inner.clock.now(), level, target, key, fields, None, None));
+        }
+    }
+    /// Write a log record about an error; the reference is what the caller was shown.
+    pub fn log_error(&self, level: Level, target: &str, key: &str, fields: Value, error: &Error, reference: Option<&str>) {
+        if self.inner.telemetry.enabled(level, target) {
+            self.inner.telemetry.log(crate::telemetry::record(self.inner.clock.now(), level, target, key, fields, Some(ErrorInfo::of(error, reference)), reference));
+        }
+    }
+    pub fn log_enabled(&self, level: Level, target: &str) -> bool {
+        self.inner.telemetry.enabled(level, target)
+    }
+    /// Change a level while running: for one target (a plugin id), or for all when `target` is `None`.
+    pub fn set_log_level(&self, target: Option<&str>, level: Level) {
+        self.inner.telemetry.set_level(target, level);
+    }
+    /// The Core's counters, gauges and histograms; plugins add their own through [`Core::metrics`].
+    pub fn metrics(&self) -> &Metrics {
+        &self.inner.telemetry.metrics
+    }
+    pub fn metrics_snapshot(&self) -> Snapshot {
+        self.inner.telemetry.metrics.snapshot(self.inner.clock.now())
+    }
+    /// How the Core is doing: ready, and whether it can read its database.
+    pub fn health(&self) -> Health {
+        let mut db_ok = true;
+        let mut detail = "reads".to_string();
+        if let Err(e) = self.inner.db.read(&mut |r| r.latest_change().map(|_| ())) {
+            db_ok = false;
+            detail = e.message;
+        }
+        Health {
+            status: if db_ok { "ok".into() } else { "degraded".into() },
+            ready: db_ok,
+            uptime_secs: self.inner.telemetry.started.elapsed().as_secs(),
+            profile: self.profile_name().into(),
+            contract: self.contract_hash().into(),
+            checks: vec![Check { name: "db".into(), ok: db_ok, detail }],
+        }
+    }
+    /// How many signals each telemetry Adapter has lost because its queue was full.
+    pub fn telemetry_dropped(&self) -> Vec<(String, u64)> {
+        self.inner.telemetry.dropped_total()
+    }
+    /// Give the telemetry Adapters up to `deadline` to write out what they hold.
+    pub fn flush_telemetry(&self, deadline: std::time::Duration) {
+        self.inner.telemetry.flush(deadline);
     }
 
     /// A signal that moves whenever something is committed; a Face waits on it instead of polling.
@@ -112,6 +187,7 @@ impl Core {
 
 /// The Core's running services, started by [`Core::start_services`]. Dropping it stops them, last started first.
 pub struct Services {
+    core: Core,
     started: Vec<(String, Box<dyn Service>)>,
     stop: Arc<std::sync::atomic::AtomicBool>,
     housekeeping: Option<std::thread::JoinHandle<()>>,
@@ -134,6 +210,8 @@ impl Services {
         if let Some(h) = self.housekeeping.take() {
             let _ = h.join();
         }
+        self.core.log(Level::Info, "nuah.kernel", "core.stopped", json!({}));
+        self.core.flush_telemetry(std::time::Duration::from_secs(2));
     }
 }
 
@@ -152,8 +230,9 @@ fn housekeeping(core: Core, stop: Arc<std::sync::atomic::AtomicBool>) {
     while !stop.load(SeqCst) {
         rounds += 1;
         if let Err(e) = core.drain_listeners() {
-            eprintln!("[nuah] listener failed: {}", e.message);
+            core.log_error(Level::Error, "nuah.kernel", "listener.failed", json!({}), &e, None);
         }
+        core.inner.telemetry.tick(core.inner.clock.now(), || core.health());
         if rounds % 600 == 0 {
             let _ = core.prune_log(crate::pipeline::CHANGE_RETENTION);
         }
@@ -179,7 +258,7 @@ impl Core {
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (c, s) = (self.clone(), stop.clone());
         let housekeeping = std::thread::Builder::new().name("nuah-housekeeping".into()).spawn(move || housekeeping(c, s)).map_err(|e| Error::internal(format!("cannot start housekeeping: {e}")))?;
-        let mut services = Services { started: vec![], stop, housekeeping: Some(housekeeping) };
+        let mut services = Services { core: self.clone(), started: vec![], stop, housekeeping: Some(housekeeping) };
         for (id, a) in &self.inner.plan.active {
             if !a.manifest.requires.capabilities.iter().any(|c| c == "serve") {
                 continue;
