@@ -377,3 +377,30 @@ fn the_log_file_is_private() {
     assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+struct Chatty;
+impl Plugin for Chatty {
+    fn manifest(&self) -> Manifest {
+        serde_json::from_value(json!({"id": "chatty", "version": "1.0.0", "namespaces": ["chatty"],
+            "operations": {"chatty.say": {"kind": "query", "input": {"type": "object"}}}})).unwrap()
+    }
+    fn bind(&self, b: &mut Bindings) {
+        b.op("chatty.say", |tx, _| {
+            tx.log(Level::Info, "chatty.said", json!({"n": 1}));
+            tx.metrics().inc("chatty_said_total", &[], 1.0);
+            Ok(json!({}))
+        });
+    }
+}
+
+#[test]
+fn a_plugin_logs_and_counts_under_its_own_name() {
+    let r = rig(&[("log-a", Duration::ZERO)], |_| {}, vec![Arc::new(Chatty)], &["chatty"]);
+    r.core.call_as(&person("ann", &["member"]), "chatty.say", json!({}), None).unwrap();
+    r.core.flush_telemetry(Duration::from_secs(2));
+    let got = r.logs[0].lock();
+    let rec = got.iter().find(|x| x.key == "chatty.said").expect("the plugin's record arrives");
+    assert_eq!(rec.target, "chatty", "the target is the plugin id");
+    assert!(rec.request.is_some(), "and it carries the request id");
+    assert!(r.core.metrics_snapshot().series.iter().any(|s| s.name == "chatty_said_total" && s.value == 1.0));
+}

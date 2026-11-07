@@ -178,6 +178,17 @@ impl<'a> Tx<'a> {
     pub fn new_id(&self) -> String {
         self.inner.ids.new_id()
     }
+    /// Write a log record under this plugin's id, with the request id. The level is checked first.
+    pub fn log(&self, level: crate::telemetry::Level, key: &str, fields: Value) {
+        let t = &self.inner.telemetry;
+        if t.enabled(level, &self.plugin) {
+            t.log(crate::telemetry::record(self.inner.clock.now(), level, &self.plugin, key, fields, None, Some(self.request)));
+        }
+    }
+    /// The Core's counters, gauges and histograms. Name a metric after the plugin (`tasks_created_total`).
+    pub fn metrics(&self) -> &crate::telemetry::Metrics {
+        &self.inner.telemetry.metrics
+    }
     /// The Settings the operator gave this plugin in the Profile (null when none).
     pub fn settings(&self) -> Value {
         self.inner.settings.get(&self.plugin).cloned().unwrap_or(Value::Null)

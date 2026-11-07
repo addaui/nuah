@@ -30,6 +30,8 @@ pub trait Product {
     fn server_profile(&self, db: &str, accounts: Value) -> Profile;
     /// What the setup wizard starts from when there is no Profile file yet.
     fn starting_point(&self) -> Profile;
+    /// Adjust the Profile once it is read (a `--with NAME` switch that turns a plugin on, for one). Does nothing by default.
+    fn configure(&self, _profile: &mut Profile, _with: &[String]) {}
 }
 
 #[derive(Parser)]
@@ -142,6 +144,7 @@ pub fn run(product: impl Product) -> ! {
                 let (prefix, dir) = f.split_once('=').unwrap_or_else(|| die(&format!("--face {f}: write /faces/NAME=DIRECTORY")));
                 face_list.push((prefix.to_string(), dir.to_string()));
             }
+            product.configure(&mut profile, &with);
             with_http(&mut profile, HttpFlags { listen, hosts: allow_host, secure_cookie, faces: face_list });
             let listen_at = profile.settings["http"]["listen"].as_str().unwrap_or("127.0.0.1:3000").to_string();
             if profile.enabled.iter().any(|p| p == "auth-local") && !listen_at.parse::<std::net::SocketAddr>().is_ok_and(|a| a.ip().is_loopback()) {

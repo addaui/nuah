@@ -93,3 +93,16 @@ fn http_settings_say_where_they_live_and_how_a_change_applies() {
     let problems = setup::settings_annotation_problems(&m.settings_schema);
     assert!(problems.is_empty(), "{problems:?}");
 }
+
+#[test]
+fn readiness_says_whether_the_core_can_read_its_data() {
+    let port = free_port();
+    let base = format!("http://127.0.0.1:{port}");
+    let (_core, services) = start(port);
+    let mut r = agent().get(&format!("{base}/readyz")).call().unwrap();
+    assert_eq!(r.status().as_u16(), 200);
+    let v: Value = r.body_mut().read_json().unwrap();
+    assert_eq!((v["status"].as_str(), v["ready"].as_bool()), (Some("ok"), Some(true)));
+    assert!(v["checks"].as_array().unwrap().iter().any(|c| c["name"] == "db" && c["ok"] == true));
+    services.stop();
+}

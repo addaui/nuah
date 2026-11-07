@@ -472,6 +472,15 @@ async fn health() -> Json<Value> {
     Json(json!({"ok": true}))
 }
 
+/// Readiness: whether the Core can read its data. 200 when it can, 503 when it cannot.
+async fn ready(State(core): State<Core>) -> Response {
+    let h = tokio::task::spawn_blocking(move || core.health()).await;
+    match h {
+        Ok(h) => (if h.ready { StatusCode::OK } else { StatusCode::SERVICE_UNAVAILABLE }, [(header::CACHE_CONTROL, "no-store")], Json(nuah_kernel::telemetry::health_json(&h))).into_response(),
+        Err(_) => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+    }
+}
+
 fn host_only(h: &str) -> String {
     match h.rsplit_once(':') {
         Some((host, port)) if !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) => host.to_lowercase(),
@@ -531,6 +540,7 @@ pub fn router_with(core: Core, cfg: Config, extra: &[RouteFn], shutdown: tokio::
     let cfg = Arc::new(cfg);
     let mut r = Router::new()
         .route("/healthz", get(health))
+        .route("/readyz", get(ready).with_state(core.clone()))
         .route("/link/describe", get(describe))
         .route("/link/call/{op}", post(call).layer(axum::extract::DefaultBodyLimit::max(7 * 1024 * 1024)))
         .route("/link/openapi.json", get(openapi_doc))
