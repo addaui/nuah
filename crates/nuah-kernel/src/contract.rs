@@ -69,7 +69,7 @@ pub fn openapi(describe: &Value) -> Value {
     );
     json!({
         "openapi": "3.1.0",
-        "info": {"title": format!("Nu'ah link: profile {}", describe["profile"].as_str().unwrap_or("")),
+        "info": {"title": format!("Nuah link: profile {}", describe["profile"].as_str().unwrap_or("")),
                  "version": describe["contract"].as_str().unwrap_or("0")},
         "servers": [{"url": "/"}],
         "security": [{"bearer": []}, {"cookie": []}],

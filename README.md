@@ -1,9 +1,9 @@
-# Nu'ah (نواه)
+# Nuah (نواه)
 
 A plugin-first core: a small kernel runs plugins, and products are made by choosing and configuring them.
-**Nu'ah is a product of its own and depends on no product.** Products (such as
+**Nuah is a product of its own and depends on no product.** Products (such as
 [Madar](https://github.com/addaui/madar), a task manager) depend on it, pinned by tag, and add their own
-plugins and faces. A product never edits Nu'ah; when something generic is missing it becomes a plugin or a
+plugins and faces. A product never edits Nuah; when something generic is missing it becomes a plugin or a
 pull request here.
 
 Documentation (PRD, ADRs, specs, plans, tasks, glossary) lives in docmd, not in this repo:

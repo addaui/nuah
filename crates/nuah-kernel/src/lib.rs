@@ -1,4 +1,4 @@
-//! Nu'ah kernel v2: plugin-agnostic machinery. It knows nothing about any app.
+//! Nuah kernel v2: plugin-agnostic machinery. It knows nothing about any app.
 //!
 //! Documentation lives at <https://docs.addaui.com/nuah/>; start with the Architecture overview.
 
