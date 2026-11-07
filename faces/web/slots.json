@@ -1,7 +1,0 @@
-{
-  "face": "web",
-  "slots": {
-    "project.actions": { "context": ["project"], "results": ["none", "download"] },
-    "task.actions": { "context": ["project", "task"], "results": ["none", "download"] }
-  }
-}

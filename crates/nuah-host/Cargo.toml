@@ -8,7 +8,7 @@ description = "The program that runs a product built on Nu'ah: reads a Profile, 
 
 [dependencies]
 axum = "0.8.9"
-clap = { version = "4.6.7", features = ["derive"] }
+clap = { version = "4.6.7", features = ["derive", "env"] }
 nuah-kernel = { path = "../nuah-kernel" }
 nuah-adapters = { path = "../nuah-adapters" }
 nuah-http = { path = "../nuah-http" }

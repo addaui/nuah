@@ -1,0 +1,88 @@
+//! The `http` plugin on its own, with a one-operation plugin and no product around it (ADR 0031).
+
+use nuah_adapters::*;
+use nuah_http::Http;
+use nuah_kernel::*;
+use serde_json::{json, Value};
+use std::time::Duration;
+
+struct Echo;
+impl Plugin for Echo {
+    fn manifest(&self) -> Manifest {
+        serde_json::from_value(json!({"id":"echo","version":"1","namespaces":["echo"],
+            "operations":{"echo.say":{"kind":"query","input":{"type":"object","properties":{"text":{"type":"string"}}}}}})).unwrap()
+    }
+    fn bind(&self, b: &mut Bindings) {
+        b.op("echo.say", |tx, i| Ok(json!({"text": i["text"], "who": tx.who().subject})));
+    }
+}
+
+fn free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+}
+
+fn start(port: u16) -> (Core, Services) {
+    let hash = AuthPassword::hash_password("pw");
+    let mut p = Profile { name: "t".into(), ..Default::default() };
+    p.enabled = ["db-memory", "auth-password", "policy-roles", "clock-system", "ids-random", "echo", "http"].iter().map(|s| s.to_string()).collect();
+    p.settings.insert("auth-password".into(), json!({"accounts": [{"name": "alice", "password_hash": hash, "roles": ["member"]}]}));
+    p.settings.insert("http".into(), json!({"listen": format!("127.0.0.1:{port}")}));
+    p.grants.insert("http".into(), vec!["serve".into()]);
+    let mut catalog = vec![];
+    let list: Vec<std::sync::Arc<dyn Plugin>> = vec![
+        std::sync::Arc::new(AdapterMemory), std::sync::Arc::new(AuthPassword), std::sync::Arc::new(PolicyRoles), std::sync::Arc::new(StdClock), std::sync::Arc::new(StdIds),
+        std::sync::Arc::new(Echo), std::sync::Arc::new(Http::new()),
+    ];
+    catalog.extend(list);
+    let core = Core::start(&Distribution { name: "t".into(), catalog: Catalog(catalog), profile: p }).unwrap_or_else(|e| panic!("{e:?}"));
+    let services = core.start_services().unwrap();
+    (core, services)
+}
+
+fn agent() -> ureq::Agent {
+    ureq::Agent::config_builder().http_status_as_error(false).timeout_global(Some(Duration::from_secs(5))).build().into()
+}
+
+fn post(base: &str, op: &str, body: Value, bearer: Option<&str>, host: Option<&str>) -> (u16, Value) {
+    let mut r = agent().post(&format!("{base}/link/call/{op}")).header("Content-Type", "application/json").header("X-Nuah-Face", "test");
+    if let Some(t) = bearer {
+        r = r.header("Authorization", &format!("Bearer {t}"));
+    }
+    if let Some(h) = host {
+        r = r.header("Host", h);
+    }
+    let mut res = r.send(body.to_string()).unwrap();
+    (res.status().as_u16(), res.body_mut().read_json().unwrap_or(Value::Null))
+}
+
+#[test]
+fn a_product_less_core_is_served_over_http_and_stops() {
+    let port = free_port();
+    let base = format!("http://127.0.0.1:{port}");
+    let (_core, services) = start(port);
+    assert_eq!(agent().get(&format!("{base}/healthz")).call().unwrap().status().as_u16(), 200);
+    // before sign-in `describe` only says how to sign in
+    let d: Value = agent().get(&format!("{base}/link/describe")).call().unwrap().body_mut().read_json().unwrap();
+    assert!(d["operations"].get("echo.say").is_none(), "{d}");
+    // an operation needs a session
+    assert_eq!(post(&base, "echo.say", json!({"text": "hi"}), None, None).0, 401);
+    let (s, signed) = post(&base, "auth.sign_in", json!({"name": "alice", "password": "pw"}), None, None);
+    assert_eq!(s, 200, "{signed}");
+    let token = signed["output"]["token"].as_str().unwrap().to_string();
+    let (s, said) = post(&base, "echo.say", json!({"text": "hi"}), Some(&token), None);
+    assert_eq!((s, said["output"]["text"].as_str()), (200, Some("hi")), "{said}");
+    services.stop();
+    assert!(agent().get(&format!("{base}/healthz")).call().is_err());
+}
+
+#[test]
+fn the_guard_refuses_unknown_hosts_and_calls_without_the_face_header() {
+    let port = free_port();
+    let base = format!("http://127.0.0.1:{port}");
+    let (_core, services) = start(port);
+    let (s, body) = post(&base, "auth.sign_in", json!({"name": "alice", "password": "pw"}), None, Some("evil.example"));
+    assert_eq!(s, 421, "{body}");
+    let mut res = agent().post(&format!("{base}/link/call/auth.sign_in")).header("Content-Type", "application/json").send("{}").unwrap();
+    assert_eq!(res.status().as_u16(), 400, "{:?}", res.body_mut().read_to_string());
+    services.stop();
+}

@@ -54,20 +54,20 @@ enum Cmd {
     },
     Serve {
         /// Run a Profile file (what the wizard saves) instead of --db and --accounts.
-        #[arg(long, conflicts_with_all = ["db", "accounts"])]
+        #[arg(long, env = "NUAH_PROFILE", conflicts_with_all = ["db", "accounts"])]
         profile: Option<PathBuf>,
-        #[arg(long, requires = "accounts")]
+        #[arg(long, env = "NUAH_DB", requires = "accounts")]
         db: Option<String>,
-        #[arg(long, requires = "db")]
+        #[arg(long, env = "NUAH_ACCOUNTS", requires = "db")]
         accounts: Option<String>,
         /// Where the http plugin listens. Overrides the Profile; default 127.0.0.1:3000.
-        #[arg(long)]
+        #[arg(long, env = "NUAH_LISTEN")]
         listen: Option<String>,
-        /// Extra Host names to answer to (behind a reverse proxy).
-        #[arg(long = "allow-host")]
+        /// Extra Host names to answer to (behind a reverse proxy). Comma separated in the environment.
+        #[arg(long = "allow-host", env = "NUAH_ALLOW_HOSTS", value_delimiter = ',')]
         allow_host: Vec<String>,
         /// The proxy terminates TLS: mark the session cookie Secure.
-        #[arg(long)]
+        #[arg(long, env = "NUAH_SECURE_COOKIE")]
         secure_cookie: bool,
         /// Directory of the product's web face (hosted at /faces/web).
         #[arg(long)]
@@ -79,8 +79,13 @@ enum Cmd {
         #[arg(long = "face")]
         faces: Vec<String>,
         /// A switch the product understands (Madar: `previews`).
-        #[arg(long = "with")]
+        #[arg(long = "with", env = "NUAH_WITH", value_delimiter = ',')]
         with: Vec<String>,
+    },
+    /// Exit 0 if a running host answers on /healthz (for container health checks; no curl needed).
+    Healthcheck {
+        #[arg(long, env = "NUAH_LISTEN", default_value = "127.0.0.1:3000")]
+        listen: String,
     },
 }
 
@@ -94,6 +99,20 @@ pub fn run(product: impl Product) -> ! {
             let mut s = String::new();
             std::io::stdin().read_to_string(&mut s).expect("read stdin");
             println!("{}", AuthPassword::hash_password(s.trim_end_matches(['\r', '\n'])));
+        }
+        Cmd::Healthcheck { listen } => {
+            use std::io::Write;
+            let ok = (|| -> std::io::Result<bool> {
+                let addr = listen.replace("0.0.0.0", "127.0.0.1");
+                let mut c = std::net::TcpStream::connect_timeout(&addr.parse().map_err(|_| std::io::ErrorKind::InvalidInput)?, std::time::Duration::from_secs(3))?;
+                c.set_read_timeout(Some(std::time::Duration::from_secs(3)))?;
+                c.write_all(b"GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")?;
+                let mut head = String::new();
+                let _ = c.take(64).read_to_string(&mut head);
+                Ok(head.starts_with("HTTP/1.1 200"))
+            })()
+            .unwrap_or(false);
+            std::process::exit(if ok { 0 } else { 1 });
         }
         Cmd::Setup { profile, listen, face } => runtime().block_on(setup_mode(&product, profile, listen, face)),
         Cmd::Serve { profile, db, accounts, listen, allow_host, secure_cookie, web, console, faces, with } => {
