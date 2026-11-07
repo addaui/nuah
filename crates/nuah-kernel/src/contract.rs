@@ -1,6 +1,6 @@
 //! Generated faces start here. Everything in this file reads the core's `describe` answer and
 //! nothing else, so it works for any distribution and any plugin set: an OpenAPI document, a typed
-//! TypeScript client, a list of tools for an AI agent, and the argument parser of a generic CLI.
+//! TypeScript client, a tool list for agents, and the argument parser of a generic CLI.
 //! None of it knows what a task is.
 
 use serde_json::{json, Map, Value};

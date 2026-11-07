@@ -4,6 +4,3 @@ node_modules/
 *.db-wal
 *.db-shm
 .DS_Store
-
-# the editor build resolves packages from here (a link or an install); never committed
-faces/editor-src/node_modules
