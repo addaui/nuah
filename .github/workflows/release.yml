@@ -32,3 +32,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release create "${GITHUB_REF_NAME}" --generate-notes --title "${GITHUB_REF_NAME}"
+      - name: Tell the products a new tag exists
+        # Optional: with a token that may dispatch to the product's repository, its nuah-update workflow runs now
+        # instead of at its next scheduled run.
+        env:
+          GH_TOKEN: ${{ secrets.PRODUCTS_DISPATCH_TOKEN }}
+        run: |
+          [ -n "$GH_TOKEN" ] || { echo "no PRODUCTS_DISPATCH_TOKEN; products pick the tag up on their schedule"; exit 0; }
+          for repo in addaui/madar; do
+            gh api "repos/$repo/dispatches" -f event_type=nuah-released -f "client_payload[tag]=${GITHUB_REF_NAME}"
+          done
