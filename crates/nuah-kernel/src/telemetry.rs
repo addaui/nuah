@@ -366,9 +366,8 @@ pub(crate) struct Telemetry {
     logs: Vec<(Dispatcher<Arc<Record>>, Level)>,
     traces: Vec<Dispatcher<Arc<Span>>>,
     sample: f64,
-    metric_out: Vec<(Dispatcher<Arc<Snapshot>>, u64)>,
-    beat_out: Vec<(Dispatcher<Arc<Health>>, u64)>,
-    last_push: Mutex<(Instant, Instant)>,
+    metric_out: Vec<(Dispatcher<Arc<Snapshot>>, u64, Mutex<Instant>)>,
+    beat_out: Vec<(Dispatcher<Arc<Health>>, u64, Mutex<Instant>)>,
     pub(crate) metrics: Metrics,
     pub(crate) started: Instant,
 }
@@ -403,14 +402,14 @@ impl Telemetry {
             .into_iter()
             .map(|a| {
                 let (a2, a3, secs) = (a.clone(), a.clone(), a.interval_secs());
-                (Dispatcher::start(a.name(), 2, move |s: Arc<Snapshot>| a2.export(&s), move || a3.flush()), secs)
+                (Dispatcher::start(a.name(), 2, move |s: Arc<Snapshot>| a2.export(&s), move || a3.flush()), secs, Mutex::new(Instant::now()))
             })
             .collect();
         let beat_out = beats
             .into_iter()
             .map(|a| {
                 let (a2, a3, secs) = (a.clone(), a.clone(), a.interval_secs());
-                (Dispatcher::start(a.name(), 2, move |h: Arc<Health>| a2.beat(&h), move || a3.flush()), secs)
+                (Dispatcher::start(a.name(), 2, move |h: Arc<Health>| a2.beat(&h), move || a3.flush()), secs, Mutex::new(Instant::now()))
             })
             .collect();
         let now = Instant::now();
@@ -421,7 +420,6 @@ impl Telemetry {
             sample: s.trace_sample.unwrap_or(1.0),
             metric_out,
             beat_out,
-            last_push: Mutex::new((now, now)),
             metrics: Metrics::default(),
             started: now,
         }
@@ -447,8 +445,11 @@ impl Telemetry {
             return;
         }
         if self.logs.is_empty() {
-            // Nothing is enabled: errors must still never be silent.
-            eprintln!("{}", fallback_line(&rec));
+            // Nothing is enabled: warnings and errors must still never be silent. A broken stderr is ignored.
+            if rec.level <= Level::Warn {
+                use std::io::Write;
+                let _ = writeln!(std::io::stderr(), "{}", fallback_line(&rec));
+            }
             return;
         }
         let rec = Arc::new(rec);
@@ -486,10 +487,10 @@ impl Telemetry {
         for d in &self.traces {
             v.push((d.name.clone(), d.dropped()));
         }
-        for (d, _) in &self.metric_out {
+        for (d, _, _) in &self.metric_out {
             v.push((d.name.clone(), d.dropped()));
         }
-        for (d, _) in &self.beat_out {
+        for (d, _, _) in &self.beat_out {
             v.push((d.name.clone(), d.dropped()));
         }
         v
@@ -497,33 +498,32 @@ impl Telemetry {
 
     /// Hand snapshots and heartbeats to the Adapters whose interval has passed. Called by housekeeping.
     pub(crate) fn tick(&self, now_ms: Millis, health: impl FnOnce() -> Health) {
+        let health: Box<dyn FnOnce() -> Health> = Box::new(health);
         for (name, n) in self.dropped_total() {
             self.metrics.set("nuah_telemetry_dropped_total", &[("adapter", &name)], n as f64);
         }
         self.metrics.set("nuah_uptime_seconds", &[], self.started.elapsed().as_secs_f64());
-        let mut last = self.last_push.lock().unwrap_or_else(|e| e.into_inner());
         let now = Instant::now();
-        if !self.metric_out.is_empty() {
-            let due = self.metric_out.iter().any(|(_, secs)| *secs > 0 && now.duration_since(last.0).as_secs() >= *secs);
-            if due {
-                last.0 = now;
-                let snap = Arc::new(self.metrics.snapshot(now_ms));
-                for (d, secs) in &self.metric_out {
-                    if *secs > 0 {
-                        d.send(snap.clone());
-                    }
-                }
+        // Each Adapter has its own interval: it is handed a snapshot when its own time has passed.
+        let mut snap: Option<Arc<Snapshot>> = None;
+        for (d, secs, last) in &self.metric_out {
+            let mut last = last.lock().unwrap_or_else(|e| e.into_inner());
+            if *secs > 0 && now.duration_since(*last).as_secs() >= *secs {
+                *last = now;
+                d.send(snap.get_or_insert_with(|| Arc::new(self.metrics.snapshot(now_ms))).clone());
             }
         }
-        if !self.beat_out.is_empty() {
-            let due = self.beat_out.iter().any(|(_, secs)| *secs > 0 && now.duration_since(last.1).as_secs() >= *secs);
-            if due {
-                last.1 = now;
-                let h = Arc::new(health());
-                for (d, secs) in &self.beat_out {
-                    if *secs > 0 {
-                        d.send(h.clone());
-                    }
+        let mut health = Some(health);
+        let mut beat: Option<Arc<Health>> = None;
+        for (d, secs, last) in &self.beat_out {
+            let mut last = last.lock().unwrap_or_else(|e| e.into_inner());
+            if *secs > 0 && now.duration_since(*last).as_secs() >= *secs {
+                *last = now;
+                if beat.is_none() {
+                    beat = health.take().map(|f| Arc::new(f()));
+                }
+                if let Some(h) = &beat {
+                    d.send(h.clone());
                 }
             }
         }
@@ -539,10 +539,10 @@ impl Telemetry {
         for d in &self.traces {
             d.flush(left());
         }
-        for (d, _) in &self.metric_out {
+        for (d, _, _) in &self.metric_out {
             d.flush(left());
         }
-        for (d, _) in &self.beat_out {
+        for (d, _, _) in &self.beat_out {
             d.flush(left());
         }
     }

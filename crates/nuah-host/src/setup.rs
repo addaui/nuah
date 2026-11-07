@@ -76,7 +76,7 @@ async fn state(State(s): State<Setup>) -> Response {
     };
     let dist = s.dist(profile);
     let mut body = catalog_info(&dist);
-    body["problems"] = json!(Core::check(&dist));
+    body["problems"] = json!(Core::check_for_setup(&dist));
     body["path"] = json!(s.0.profile_path.display().to_string());
     body["file_exists"] = json!(exists);
     body["load_error"] = json!(load_error);
@@ -95,7 +95,7 @@ fn draft(s: &Setup, body: &Value) -> Result<Profile, Response> {
 async fn check(State(s): State<Setup>, Json(body): Json<Value>) -> Response {
     match draft(&s, &body) {
         Err(r) => r,
-        Ok(p) => Json(json!({"problems": Core::check(&s.dist(p))})).into_response(),
+        Ok(p) => Json(json!({"problems": Core::check_for_setup(&s.dist(p))})).into_response(),
     }
 }
 
@@ -105,7 +105,7 @@ async fn save(State(s): State<Setup>, Json(body): Json<Value>) -> Response {
         Ok(p) => p,
     };
     let dist = s.dist(p.clone());
-    let problems = Core::check(&dist);
+    let problems = Core::check_for_setup(&dist);
     if !problems.is_empty() {
         return (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"ok": false, "problems": problems}))).into_response();
     }

@@ -79,8 +79,14 @@ impl Core {
         let mut res = self.call_as_inner(who, op, input, key, &mut request);
         // An internal error carries the request id as its reference, so what the caller is told to quote finds the log line.
         if let Err(e) = &mut res {
-            if e.category == Category::Internal && e.params.is_null() && !request.is_empty() {
-                e.params = json!({"ref": request});
+            if e.category == Category::Internal && !request.is_empty() {
+                match &mut e.params {
+                    Value::Null => e.params = json!({"ref": request}),
+                    Value::Object(o) => {
+                        o.entry("ref").or_insert(json!(request));
+                    }
+                    _ => {}
+                }
             }
         }
         let ms = started.elapsed().as_secs_f64() * 1000.0;

@@ -163,7 +163,14 @@ pub struct FileLog {
 
 impl FileLog {
     fn open(path: &std::path::Path) -> std::io::Result<FileState> {
-        let file = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
+        let mut o = std::fs::OpenOptions::new();
+        o.create(true).append(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            o.mode(0o600);
+        }
+        let file = o.open(path)?;
         let size = file.metadata().map(|m| m.len()).unwrap_or(0);
         Ok(FileState { file, size })
     }
@@ -177,8 +184,10 @@ impl FileLog {
         } else {
             let _ = std::fs::remove_file(&self.path);
         }
-        if let Ok(s) = Self::open(&self.path) {
-            *st = s;
+        match Self::open(&self.path) {
+            Ok(s) => *st = s,
+            // Keep writing to the old handle, but do not try to rotate again on every record.
+            Err(_) => st.size = 0,
         }
     }
     fn numbered(&self, i: usize) -> std::path::PathBuf {

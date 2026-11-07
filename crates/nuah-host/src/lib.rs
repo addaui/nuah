@@ -161,8 +161,8 @@ pub fn run(product: impl Product) -> ! {
             let for_panics = core.clone();
             let previous = std::panic::take_hook();
             std::panic::set_hook(Box::new(move |info| {
-                for_panics.log(Level::Error, "nuah.host", "host.panic", json!({"where": info.location().map(|l| l.to_string()), "message": info.to_string()}));
-                for_panics.flush_telemetry(std::time::Duration::from_millis(500));
+                // Queued, never waited for: a panicking thread must not stall on a slow log. The message can hold data, so only the place is recorded.
+                for_panics.log(Level::Error, "nuah.host", "host.panic", json!({"where": info.location().map(|l| l.to_string())}));
                 previous(info);
             }));
             runtime().block_on(wait_for_stop());

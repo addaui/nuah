@@ -316,3 +316,64 @@ fn first_party_settings_say_where_they_live_and_how_a_change_applies() {
         assert!(problems.is_empty(), "{}: {problems:?}", m.id);
     }
 }
+
+struct SlowInterval(Seen<usize>, u64, &'static str);
+impl MetricAdapter for SlowInterval {
+    fn name(&self) -> &str {
+        self.2
+    }
+    fn interval_secs(&self) -> u64 {
+        self.1
+    }
+    fn export(&self, s: &Snapshot) {
+        self.0.lock().push(s.series.len());
+    }
+}
+struct SlowIntervalPlugin(Seen<usize>, u64, &'static str);
+impl Plugin for SlowIntervalPlugin {
+    fn manifest(&self) -> Manifest {
+        serde_json::from_value(json!({"id": self.2, "version": "1.0.0", "fills": "metric"})).unwrap()
+    }
+    fn fill(&self, _s: &Value) -> Result<Option<PortImpl>> {
+        Ok(Some(PortImpl::Metric(Arc::new(SlowInterval(self.0.clone(), self.1, self.2)))))
+    }
+}
+
+#[test]
+fn each_metric_adapter_has_its_own_interval() {
+    let (fast, slow): (Seen<usize>, Seen<usize>) = (Arc::new(Mutex::new(vec![])), Arc::new(Mutex::new(vec![])));
+    let r = rig(&[], |_| {}, vec![Arc::new(SlowIntervalPlugin(fast.clone(), 1, "fast")), Arc::new(SlowIntervalPlugin(slow.clone(), 3600, "slow"))], &["fast", "slow"]);
+    let services = r.core.start_services().unwrap();
+    let t = Instant::now();
+    while fast.lock().is_empty() && t.elapsed() < Duration::from_secs(6) {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    services.stop();
+    assert!(!fast.lock().is_empty());
+    assert!(slow.lock().is_empty(), "the hourly Adapter is not handed a snapshot every second");
+}
+
+#[test]
+fn setup_does_not_insist_on_a_reference_that_only_resolves_where_the_core_runs() {
+    let clock = FixedClock::at(1);
+    let seen = Arc::new(Mutex::new(vec![]));
+    let mut cat = catalog(&clock, &seen);
+    cat.0.push(Arc::new(LogFile));
+    let mut p = profile(&["db-memory", "auth-local", "policy-roles", "clock-fixed", "ids-sequential", "notes", "tell", "tell-a", "log-file"]);
+    p.settings.insert("log-file".into(), json!({"path": {"$env": "NUAH_SURELY_NOT_SET_9f3"}}));
+    let d = Distribution { name: "t".into(), catalog: cat, profile: p };
+    assert!(!Core::check(&d).is_empty(), "starting still fails");
+    assert!(Core::check_for_setup(&d).is_empty(), "saving a Profile in setup does not");
+}
+
+#[cfg(unix)]
+#[test]
+fn the_log_file_is_private() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = std::env::temp_dir().join(format!("nuah-logmode-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("x.log");
+    let _ = LogFile.fill(&json!({"path": path.display().to_string()})).unwrap();
+    assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+    let _ = std::fs::remove_dir_all(&dir);
+}

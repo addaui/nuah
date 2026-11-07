@@ -38,6 +38,14 @@ impl Core {
         resolve(dist).0
     }
 
+    /// Like [`Core::check`], for a person editing a Profile somewhere other than where it will run: a
+    /// `$env` or `$file` reference that does not resolve here is not a Problem yet (it is when the Core starts).
+    pub fn check_for_setup(dist: &Distribution) -> Vec<Problem> {
+        let all = resolve(dist).0;
+        let unresolved: Vec<String> = all.iter().filter(|p| p.code == "bad_secret_ref").flat_map(|p| p.plugins.clone()).collect();
+        all.into_iter().filter(|p| p.code != "bad_secret_ref" && !(p.code == "invalid_settings" && p.plugins.iter().any(|id| unresolved.contains(id)))).collect()
+    }
+
     /// Resolve, open the Adapters, record who owns which collection, migrate data, and be ready.
     pub fn start(dist: &Distribution) -> std::result::Result<Core, Vec<Problem>> {
         let (mut problems, plan) = resolve(dist);
