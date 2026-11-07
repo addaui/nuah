@@ -80,6 +80,7 @@ pub fn pretty_line(r: &Record, color: bool) -> String {
     s
 }
 
+/// The Adapter's own minimum, which only narrows what the Core's level lets through.
 fn level_of(settings: &Value, default: Level) -> Level {
     settings.get("level").and_then(|l| l.as_str()).and_then(Level::parse).unwrap_or(default)
 }
@@ -141,7 +142,7 @@ impl Plugin for LogConsole {
             "never" => false,
             _ => tty && std::env::var_os("NO_COLOR").is_none(),
         };
-        Ok(Some(PortImpl::Log(Arc::new(ConsoleLog { min: level_of(s, Level::Info), json, color, stdout }))))
+        Ok(Some(PortImpl::Log(Arc::new(ConsoleLog { min: level_of(s, Level::Trace), json, color, stdout }))))
     }
 }
 
@@ -228,7 +229,7 @@ impl Plugin for LogFile {
         let state = FileLog::open(&path).map_err(|e| Error::internal(format!("cannot open the log file {}: {e}", path.display())))?;
         Ok(Some(PortImpl::Log(Arc::new(FileLog {
             path,
-            min: level_of(s, Level::Info),
+            min: level_of(s, Level::Trace),
             max_bytes: s.get("max_bytes").and_then(|v| v.as_u64()).unwrap_or(10 * 1024 * 1024),
             keep: s.get("keep").and_then(|v| v.as_u64()).unwrap_or(5) as usize,
             state: Mutex::new(state),

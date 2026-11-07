@@ -300,6 +300,15 @@ fn a_secret_can_be_a_reference_to_the_environment_or_a_file() {
 }
 
 #[test]
+fn the_services_stopping_twice_says_so_once() {
+    let r = rig(&[("log-a", Duration::ZERO)], |_| {}, vec![], &[]);
+    let s = r.core.start_services().unwrap();
+    s.stop();
+    r.core.flush_telemetry(Duration::from_secs(1));
+    assert_eq!(r.logs[0].lock().iter().filter(|x| x.key == "core.stopped").count(), 1);
+}
+
+#[test]
 fn first_party_settings_say_where_they_live_and_how_a_change_applies() {
     for p in [Arc::new(LogConsole) as Arc<dyn Plugin>, Arc::new(LogFile), Arc::new(AdapterSqlite)] {
         let m = p.manifest();

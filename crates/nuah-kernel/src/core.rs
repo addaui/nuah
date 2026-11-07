@@ -188,6 +188,7 @@ impl Core {
 /// The Core's running services, started by [`Core::start_services`]. Dropping it stops them, last started first.
 pub struct Services {
     core: Core,
+    done: bool,
     started: Vec<(String, Box<dyn Service>)>,
     stop: Arc<std::sync::atomic::AtomicBool>,
     housekeeping: Option<std::thread::JoinHandle<()>>,
@@ -203,6 +204,10 @@ impl Services {
         self.shutdown();
     }
     fn shutdown(&mut self) {
+        if self.done {
+            return;
+        }
+        self.done = true;
         while let Some((_, s)) = self.started.pop() {
             s.stop();
         }
@@ -258,7 +263,7 @@ impl Core {
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (c, s) = (self.clone(), stop.clone());
         let housekeeping = std::thread::Builder::new().name("nuah-housekeeping".into()).spawn(move || housekeeping(c, s)).map_err(|e| Error::internal(format!("cannot start housekeeping: {e}")))?;
-        let mut services = Services { core: self.clone(), started: vec![], stop, housekeeping: Some(housekeeping) };
+        let mut services = Services { core: self.clone(), done: false, started: vec![], stop, housekeeping: Some(housekeeping) };
         for (id, a) in &self.inner.plan.active {
             if !a.manifest.requires.capabilities.iter().any(|c| c == "serve") {
                 continue;
