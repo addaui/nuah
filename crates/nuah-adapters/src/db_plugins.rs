@@ -21,12 +21,16 @@ impl Plugin for AdapterSqlite {
     fn manifest(&self) -> Manifest {
         serde_json::from_value(json!({
             "id":"db-sqlite","version":"0.2.0","name":"SQLite database","description":"Keeps data in one SQLite file","fills":"db",
-            "settings_schema":{"type":"object","properties":{"path":{"type":"string","minLength":1,"x-tier":"bootstrap","x-apply":"restart"},"readers":{"type":"integer","minimum":0,"maximum":128,"x-tier":"bootstrap","x-apply":"restart"}},"additionalProperties":false}
+            "settings_schema":{"type":"object","properties":{"path":{"type":"string","minLength":1,"x-tier":"bootstrap","x-apply":"restart"},"readers":{"type":"integer","minimum":0,"maximum":128,"x-tier":"bootstrap","x-apply":"restart"},"backup_dir":{"type":"string","minLength":1,"x-tier":"bootstrap","x-apply":"restart"}},"additionalProperties":false}
         })).unwrap()
     }
     fn fill(&self, s: &Value) -> Result<Option<PortImpl>> {
         let path = s.get("path").and_then(|p| p.as_str()).unwrap_or(":memory:");
         let readers = s.get("readers").and_then(|r| r.as_u64()).map(|r| r as usize).unwrap_or_else(crate::sqlite::default_readers);
-        Ok(Some(PortImpl::Db(Arc::new(SqliteDb::open_with(path, readers)?))))
+        let mut db = SqliteDb::open_with(path, readers)?;
+        if let Some(dir) = s.get("backup_dir").and_then(|d| d.as_str()) {
+            db = db.with_backup_dir(dir);
+        }
+        Ok(Some(PortImpl::Db(Arc::new(db))))
     }
 }

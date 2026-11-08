@@ -17,6 +17,8 @@ pub struct SqliteDb {
     /// The writer; also serves reads when there is no pool.
     conn: Mutex<Connection>,
     readers: Option<Readers>,
+    /// When set, a copy of the database is written here before the Core migrates existing data.
+    backup_dir: Option<std::path::PathBuf>,
 }
 
 /// Idle reader connections. A read takes one and puts it back; when all are busy it waits for one.
@@ -59,6 +61,12 @@ fn json_err(e: serde_json::Error) -> Error {
 }
 
 impl SqliteDb {
+    /// Take a copy of the database in `dir` before the Core migrates data that already exists.
+    pub fn with_backup_dir(mut self, dir: impl Into<std::path::PathBuf>) -> Self {
+        self.backup_dir = Some(dir.into());
+        self
+    }
+
     pub fn open(path: &str) -> Result<Self> {
         Self::open_with(path, default_readers())
     }
@@ -100,7 +108,7 @@ impl SqliteDb {
             }
             Some(Readers { idle: Mutex::new(idle), back: Condvar::new() })
         };
-        Ok(SqliteDb { conn: Mutex::new(conn), readers })
+        Ok(SqliteDb { conn: Mutex::new(conn), readers, backup_dir: None })
     }
 }
 
@@ -258,6 +266,11 @@ impl DbRead for Conn<'_> {
         let n: Option<i64> = self.c.query_row("SELECT seq FROM sqlite_sequence WHERE name='changes'", [], |r| r.get(0)).optional().map_err(db_err)?;
         Ok(n.unwrap_or(0) as u64)
     }
+    fn scan(&self, ac: &str, ai: &str, limit: usize) -> Result<Vec<Doc>> {
+        let mut st = self.c.prepare_cached("SELECT collection,id,rev,changed_at,deleted,owner,body FROM docs WHERE (collection,id) > (?1,?2) ORDER BY collection,id LIMIT ?3").map_err(db_err)?;
+        let rows = st.query_map(params![ac, ai, limit as i64], row_doc).map_err(db_err)?.collect::<std::result::Result<Vec<_>, _>>().map_err(db_err)?;
+        finish(rows)
+    }
 }
 
 fn check_expect(existing: &Option<Doc>, expect: Expect) -> Result<()> {
@@ -300,6 +313,22 @@ impl DbWrite for Conn<'_> {
     fn prune_changes(&mut self, keep: usize) -> Result<()> {
         let latest = self.latest_change()? as i64;
         self.c.execute("DELETE FROM changes WHERE seq <= ?1", params![latest - keep as i64]).map_err(db_err)?;
+        Ok(())
+    }
+    fn restore(&mut self, d: Doc) -> Result<()> {
+        self.c.execute("INSERT OR REPLACE INTO docs (collection,id,rev,changed_at,deleted,owner,body) VALUES (?1,?2,?3,?4,?5,?6,?7)", params![d.collection, d.id, d.rev as i64, d.changed_at, d.deleted as i64, d.owner, d.body.to_string()]).map_err(db_err)?;
+        Ok(())
+    }
+    fn restore_change(&mut self, rec: ChangeRecord) -> Result<()> {
+        self.c.execute("INSERT INTO changes (seq, record) VALUES (?1, ?2)", params![rec.seq as i64, serde_json::to_string(&rec).map_err(json_err)?]).map_err(db_err)?;
+        Ok(())
+    }
+    fn restore_latest_change(&mut self, n: u64) -> Result<()> {
+        if self.latest_change()? < n {
+            // a row with that number, then gone: the counter keeps the highest number it has seen
+            self.c.execute("INSERT INTO changes (seq, record) VALUES (?1, '{}')", params![n as i64]).map_err(db_err)?;
+            self.c.execute("DELETE FROM changes WHERE seq=?1", params![n as i64]).map_err(db_err)?;
+        }
         Ok(())
     }
     fn begin_nested(&mut self) -> Result<()> {
@@ -354,6 +383,14 @@ impl Db for SqliteDb {
             .with(feature::INDEX_COMPOSITE, Support::Native)
             .with(feature::BACKUP_SNAPSHOT, Support::Native)
             .fact("storage_version", LAYOUT)
+    }
+    fn before_migration(&self, what: &str) -> Result<()> {
+        let Some(dir) = &self.backup_dir else { return Ok(()) };
+        std::fs::create_dir_all(dir).map_err(|e| Error::internal(format!("backup folder: {e}")))?;
+        let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        let file = dir.join(format!("before-migration-{secs}.db"));
+        self.snapshot(file.to_str().ok_or_else(|| Error::internal("backup path is not text"))?)
+            .map_err(|e| Error::internal(format!("could not take the backup before migrating ({what}): {}", e.message)))
     }
     fn snapshot(&self, path: &str) -> Result<()> {
         if std::path::Path::new(path).exists() {

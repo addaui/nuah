@@ -10,6 +10,7 @@ pub mod memory;
 pub mod policy;
 pub mod sqlite;
 pub mod std_ports;
+pub mod transfer;
 
 pub use auth::{AuthLocal, AuthPassword};
 pub use log::{LogConsole, LogFile};
@@ -17,4 +18,5 @@ pub use db_plugins::{AdapterMemory, AdapterSqlite};
 pub use memory::MemoryDb;
 pub use policy::{PolicyAllowAll, PolicyRoles};
 pub use sqlite::SqliteDb;
+pub use transfer::{export, import};
 pub use std_ports::*;

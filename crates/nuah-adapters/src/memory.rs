@@ -113,6 +113,10 @@ impl DbRead for Reader {
     fn latest_change(&self) -> Result<u64> {
         Ok(self.0.last_seq)
     }
+    fn scan(&self, ac: &str, ai: &str, limit: usize) -> Result<Vec<Doc>> {
+        use std::ops::Bound::*;
+        Ok(self.0.docs.range((Excluded((ac.to_string(), ai.to_string())), Unbounded)).take(limit).map(|(_, d)| d.clone()).collect())
+    }
 }
 
 struct Writer {
@@ -138,6 +142,10 @@ impl DbRead for Writer {
     }
     fn latest_change(&self) -> Result<u64> {
         Ok(self.work.last_seq)
+    }
+    fn scan(&self, ac: &str, ai: &str, limit: usize) -> Result<Vec<Doc>> {
+        use std::ops::Bound::*;
+        Ok(self.work.docs.range((Excluded((ac.to_string(), ai.to_string())), Unbounded)).take(limit).map(|(_, d)| d.clone()).collect())
     }
 }
 
@@ -188,6 +196,19 @@ impl DbWrite for Writer {
             let first = *self.work.changes.keys().next().unwrap();
             self.work.changes.remove(&first);
         }
+        Ok(())
+    }
+    fn restore(&mut self, doc: Doc) -> Result<()> {
+        self.work.docs.insert((doc.collection.clone(), doc.id.clone()), doc);
+        Ok(())
+    }
+    fn restore_change(&mut self, rec: ChangeRecord) -> Result<()> {
+        self.work.last_seq = self.work.last_seq.max(rec.seq);
+        self.work.changes.insert(rec.seq, rec);
+        Ok(())
+    }
+    fn restore_latest_change(&mut self, n: u64) -> Result<()> {
+        self.work.last_seq = self.work.last_seq.max(n);
         Ok(())
     }
     fn begin_nested(&mut self) -> Result<()> {

@@ -22,7 +22,34 @@ pub fn run(db: &dyn Db) {
     nested(db);
     change_log(db);
     concurrent_writers(db);
+    scan_all(db);
     features(db);
+}
+
+/// `scan` walks every document, tombstones included, in byte order of `(collection, id)`, a page at a time.
+fn scan_all(db: &dyn Db) {
+    db.write(&mut |w| {
+        for (c, id) in [("sc", "b"), ("sc", "a"), ("sc", "B"), ("sc2", "a"), ("sc", "ab")] {
+            put(w, c, id, json!({"k": id}));
+        }
+        w.delete("sc", "a", Expect::Any, 1).unwrap();
+        Ok(())
+    })
+    .unwrap();
+    db.read(&mut |r| {
+        let mut got = vec![];
+        let (mut c, mut i) = (String::new(), String::new());
+        loop {
+            let page = r.scan(&c, &i, 2)?;
+            let Some(last) = page.last() else { break };
+            (c, i) = (last.collection.clone(), last.id.clone());
+            got.extend(page.into_iter().filter(|d| d.collection.starts_with("sc")).map(|d| (d.collection, d.id, d.deleted)));
+        }
+        let want: Vec<(String, String, bool)> = [("sc", "B", false), ("sc", "a", true), ("sc", "ab", false), ("sc", "b", false), ("sc2", "a", false)].iter().map(|(c, i, d)| (c.to_string(), i.to_string(), *d)).collect();
+        assert_eq!(got, want, "bytes order, tombstones included");
+        Ok(())
+    })
+    .unwrap();
 }
 
 /// What the Adapter claims, tested; and what it does not claim, refused with `unsupported`.

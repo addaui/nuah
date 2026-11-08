@@ -136,3 +136,87 @@ fn the_kernel_checks_a_declared_collection_schema_on_every_put() {
         assert!(e.message.contains("feat.docs"));
     }
 }
+
+/// One memory database kept across Core starts, counting the copies the Core asked for.
+struct Counting(Arc<MemoryDb>, Arc<std::sync::atomic::AtomicUsize>);
+impl Db for Counting {
+    fn name(&self) -> &str {
+        "counting"
+    }
+    fn features(&self) -> Features {
+        self.0.features()
+    }
+    fn read(&self, f: &mut dyn FnMut(&dyn DbRead) -> Result<()>) -> Result<()> {
+        self.0.read(f)
+    }
+    fn write(&self, f: &mut dyn FnMut(&mut dyn DbWrite) -> Result<()>) -> Result<()> {
+        self.0.write(f)
+    }
+    fn ensure_index(&self, spec: &IndexSpec) -> Result<()> {
+        self.0.ensure_index(spec)
+    }
+    fn before_migration(&self, _what: &str) -> Result<()> {
+        self.1.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+}
+struct AdapterCounting(Arc<MemoryDb>, Arc<std::sync::atomic::AtomicUsize>);
+impl Plugin for AdapterCounting {
+    fn manifest(&self) -> Manifest {
+        serde_json::from_value(json!({"id": "db-counting", "version": "1", "name": "Counting", "description": "Counts", "fills": "db"})).unwrap()
+    }
+    fn fill(&self, _s: &Value) -> Result<Option<PortImpl>> {
+        Ok(Some(PortImpl::Db(Arc::new(Counting(self.0.clone(), self.1.clone())))))
+    }
+}
+
+#[test]
+fn the_adapter_is_told_before_data_that_exists_is_migrated_and_never_for_a_new_database() {
+    let (mem, calls) = (Arc::new(MemoryDb::new()), Arc::new(std::sync::atomic::AtomicUsize::new(0)));
+    let boot = |version: u32| {
+        let clock = FixedClock::at(1_000_000);
+        let seen = Default::default();
+        let mut cat = catalog(&clock, &seen);
+        cat.0.push(Arc::new(Feat(json!({"collections": ["feat.docs"], "version": version}))));
+        cat.0.push(Arc::new(AdapterCounting(mem.clone(), calls.clone())));
+        let mut p = profile(&["db-counting", "auth-local", "policy-roles", "clock-fixed", "ids-sequential", "feat"]);
+        p.grants.clear();
+        Core::start(&Distribution { name: "t".into(), catalog: cat, profile: p }).unwrap();
+        calls.load(std::sync::atomic::Ordering::SeqCst)
+    };
+    assert_eq!(boot(1), 0, "a new database has nothing to lose");
+    assert_eq!(boot(1), 0, "nothing to migrate");
+    assert_eq!(boot(2), 1, "version 1 data is about to become version 2");
+    assert_eq!(boot(2), 1, "and not again");
+}
+
+#[test]
+fn sqlite_writes_a_copy_before_migrating_when_asked() {
+    let dir = std::env::temp_dir().join(format!("nuah-bm-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let (path, backups) = (dir.join("live.db"), dir.join("backups"));
+    let boot = |version: u32| {
+        let clock = FixedClock::at(1_000_000);
+        let seen = Default::default();
+        let mut cat = catalog(&clock, &seen);
+        cat.0.push(Arc::new(Feat(json!({"collections": ["feat.docs"], "version": version}))));
+        cat.0.push(Arc::new(AdapterSqlite));
+        let mut p = profile(&["db-sqlite", "auth-local", "policy-roles", "clock-fixed", "ids-sequential", "feat"]);
+        p.grants.clear();
+        p.settings.insert("db-sqlite".into(), json!({"path": path.to_str().unwrap(), "backup_dir": backups.to_str().unwrap()}));
+        Core::start(&Distribution { name: "t".into(), catalog: cat, profile: p }).unwrap();
+    };
+    boot(1);
+    assert!(!backups.exists(), "no copy for a new database");
+    boot(2);
+    let files: Vec<_> = std::fs::read_dir(&backups).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
+    assert_eq!(files.len(), 1, "{files:?}");
+    assert!(files[0].starts_with("before-migration-"));
+    let copy = SqliteDb::open(backups.join(&files[0]).to_str().unwrap()).unwrap();
+    copy.read(&mut |r| {
+        assert_eq!(r.get("_meta", "version:feat")?.unwrap().body["version"], 1, "the copy is from before the migration");
+        Ok(())
+    })
+    .unwrap();
+    std::fs::remove_dir_all(dir).ok();
+}

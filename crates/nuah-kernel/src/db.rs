@@ -293,6 +293,9 @@ pub trait DbRead {
     fn oldest_change(&self) -> Result<u64>;
     /// The largest `seq` ever assigned (0 when none).
     fn latest_change(&self) -> Result<u64>;
+    /// Every document including tombstones, in the order of `(collection, id)` compared as bytes, starting after
+    /// the given key (`("", "")` for the start). Used by export; a plugin never sees it.
+    fn scan(&self, after_collection: &str, after_id: &str, limit: usize) -> Result<Vec<Doc>>;
 }
 
 pub trait DbWrite: DbRead {
@@ -304,6 +307,12 @@ pub trait DbWrite: DbRead {
     fn append_change(&mut self, rec: ChangeRecord) -> Result<u64>;
     /// Drop change records older than the newest `keep`.
     fn prune_changes(&mut self, keep: usize) -> Result<()>;
+    /// Put a document back exactly as exported, envelope included (import into an empty database).
+    fn restore(&mut self, doc: Doc) -> Result<()>;
+    /// Put a change record back with its own `seq`.
+    fn restore_change(&mut self, rec: ChangeRecord) -> Result<()>;
+    /// Make sure the largest `seq` ever assigned is at least `n`, so numbers are never reused after an import.
+    fn restore_latest_change(&mut self, n: u64) -> Result<()>;
     /// Nested work that can be undone without undoing the caller: begin, then end with keep or discard.
     fn begin_nested(&mut self) -> Result<()>;
     fn end_nested(&mut self, keep: bool) -> Result<()>;
@@ -314,6 +323,11 @@ pub trait Db: Send + Sync {
     /// What this Adapter provides beyond the required contract. Plugins declare what they need in
     /// `data.requires` and `data.prefers`; the Core checks them against this at start.
     fn features(&self) -> Features;
+    /// Called once by the Core before it migrates data a plugin already has (never on a new database), so an
+    /// Adapter can take a copy first if the operator asked for that. A failure stops the start.
+    fn before_migration(&self, _what: &str) -> Result<()> {
+        Ok(())
+    }
     /// A consistent copy of the whole database at `path`, taken while it is in use (`backup.snapshot`).
     fn snapshot(&self, _path: &str) -> Result<()> {
         Err(Error::unsupported(feature::BACKUP_SNAPSHOT, self.name()))

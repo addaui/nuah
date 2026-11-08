@@ -327,6 +327,21 @@ impl Inner {
 
     /// Record collection ownership, make indexes, and bring each plugin's data to its declared version.
     fn prepare_storage(&self) -> Result<()> {
+        // before any migration of data that already exists, let the Adapter take a copy
+        let mut upgrading = vec![];
+        for (id, a) in &self.plan.active {
+            let mut have = 0u32;
+            self.db.read(&mut |r| {
+                have = r.get("_meta", &format!("version:{id}"))?.filter(|d| !d.deleted).and_then(|d| d.body["version"].as_u64()).unwrap_or(0) as u32;
+                Ok(())
+            })?;
+            if have > 0 && have < a.manifest.data.version {
+                upgrading.push(format!("{id} v{have} to v{}", a.manifest.data.version));
+            }
+        }
+        if !upgrading.is_empty() {
+            self.db.before_migration(&upgrading.join(", "))?;
+        }
         for (id, a) in &self.plan.active {
             for f in &a.manifest.data.requires {
                 if !self.features.has(f) {
