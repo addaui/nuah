@@ -9,6 +9,10 @@ publish.workspace = true
 argon2 = "0.5"
 nuah-kernel = { path = "../nuah-kernel" }
 parking_lot = "0.13.0"
+postgres = "0.19"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-postgres-rustls = "0.14"
+webpki-roots = "1"
 rand_core = { version = "0.6.4", features = ["getrandom"] }
 rusqlite = { version = "0.41.1", features = ["bundled"] }
 serde_json = "1.0.154"

@@ -239,6 +239,7 @@ fn queries(db: &dyn Db) {
         assert!(r.query("q", &Query::new().has("tags", "a"))?.items.is_empty(), "a missing array contains nothing");
         assert_eq!(r.count("q", &[Cond { field: "s".into(), op: Cmp::Eq, value: json!("todo") }])?, 3);
         assert!(r.query("q", &Query::new().eq("a b", 1)).is_err(), "field paths are checked");
+        assert!(r.query("q", &Query::new().eq("n.0", 1)).is_err(), "a segment of digits is refused");
         assert!(r.query("q", &Query::new().eq("a'); drop table docs; --", 1)).is_err());
         Ok(())
     })
@@ -273,7 +274,10 @@ fn mixed_types(db: &dyn Db) {
         assert_eq!(q(Query::new().gt("f", "a")), ["v08", "v09", "v10"]);
         assert_eq!(q(Query::new().lte("f", false)), ["v01"]);
         assert_eq!(q(Query::new().gt("f", Value::Null)).len(), 10, "everything present and not null");
-        assert_eq!(q(Query::new().asc("f")), ["v00", "v99", "v01", "v02", "v03", "v04", "v05", "v06", "v07", "v09", "v08", "v10"]);
+        let asc = q(Query::new().asc("f"));
+        assert_eq!(asc[..8], ["v00", "v99", "v01", "v02", "v03", "v04", "v05", "v06"], "null, bool, numbers, then strings");
+        assert_eq!((&asc[8..9], &asc[11..]), (&["v07".to_string()][..], &["v10".to_string()][..]));
+        assert!(asc[9..11].contains(&"v08".to_string()) && asc[9..11].contains(&"v09".to_string()), "arrays come before objects; their order among themselves is not specified");
         assert_eq!(q(Query::new().desc("f"))[0], "v10");
         Ok(())
     })
@@ -448,4 +452,73 @@ fn concurrent_writers(db: &dyn Db) {
     sorted.sort();
     assert_eq!(sorted, all, "every number is used once, with no gaps");
     assert_eq!(followed, all, "a reader following the log sees every record once, in order");
+}
+
+/// Random documents whose one field holds any JSON type, queried with every operator: `b` must give exactly the
+/// answers of `a`. Meant for `a` = the in-memory Adapter, which applies the Port's rule directly. The order of
+/// arrays and objects among themselves is not specified, so ordered operators only use plain values.
+pub fn differential(a: &dyn Db, b: &dyn Db, seed: u64) {
+    let flat = [json!(null), json!(false), json!(true), json!(0), json!(1), json!(2), json!(-3), json!(1.5), json!(""), json!("0"), json!("1"), json!("a"), json!("B"), json!("é")];
+    let nested = [json!([]), json!([1]), json!(["a"]), json!([true]), json!({}), json!({"k": 1}), json!({"k": "a"})];
+    let all: Vec<Value> = flat.iter().chain(nested.iter()).cloned().collect();
+    let mut s = seed.wrapping_mul(0x9E3779B97F4A7C15) | 1;
+    let mut next = move |n: usize| {
+        s ^= s << 13;
+        s ^= s >> 7;
+        s ^= s << 17;
+        (s % n as u64) as usize
+    };
+    for i in 0..60 {
+        let wide = match next(8) {
+            0 => json!({}),
+            1 => json!({"o": {"f": all[next(all.len())].clone()}}),
+            2 => json!({"f": [all[next(all.len())].clone(), flat[next(flat.len())].clone()]}),
+            _ => json!({"f": all[next(all.len())].clone()}),
+        };
+        let plain = if next(6) == 0 { json!({}) } else { json!({"f": flat[next(flat.len())].clone()}) };
+        for db in [a, b] {
+            db.write(&mut |w| {
+                w.put("wide", &format!("d{i:02}"), "t", wide.clone(), Expect::Any, 5)?;
+                w.put("flat", &format!("d{i:02}"), "t", plain.clone(), Expect::Any, 5)?;
+                Ok(())
+            })
+            .unwrap();
+        }
+    }
+    let same = |coll: &str, q: &Query| {
+        let (mut ra, mut rb) = (None, None);
+        a.read(&mut |r| { ra = Some((r.query(coll, q)?, r.count(coll, &q.conds)?)); Ok(()) }).unwrap();
+        b.read(&mut |r| { rb = Some((r.query(coll, q)?, r.count(coll, &q.conds)?)); Ok(()) }).unwrap();
+        assert_eq!(ra, rb, "{} vs {}, seed {seed}, {coll}, {q:?}", a.name(), b.name());
+    };
+    for field in ["f", "o.f"] {
+        for v in &all {
+            same("wide", &Query::new().eq(field, v.clone()));
+            same("wide", &Query::new().ne(field, v.clone()));
+            same("wide", &Query::new().has(field, v.clone()));
+            same("wide", &Query::new().is_in(field, vec![v.clone(), all[next(all.len())].clone()]));
+        }
+        for v in &flat {
+            for coll in ["wide", "flat"] {
+                same(coll, &Query::new().lt(field, v.clone()));
+                same(coll, &Query::new().lte(field, v.clone()));
+                same(coll, &Query::new().gt(field, v.clone()));
+                same(coll, &Query::new().gte(field, v.clone()));
+            }
+            same("flat", &Query::new().gte(field, v.clone()).desc(field));
+            same("flat", &Query::new().lt(field, v.clone()).asc(field).limit(7).offset(2));
+        }
+    }
+    same("flat", &Query::new().asc("f"));
+    same("flat", &Query::new().desc("f"));
+    // an index changes speed, never answers
+    for db in [b] {
+        db.ensure_index(&IndexSpec::on("flat", "f")).unwrap();
+        db.ensure_index(&IndexSpec::on("wide", "f")).unwrap();
+    }
+    for v in &flat {
+        same("flat", &Query::new().gt("f", v.clone()).asc("f"));
+        same("flat", &Query::new().eq("f", v.clone()));
+        same("wide", &Query::new().eq("f", v.clone()));
+    }
 }

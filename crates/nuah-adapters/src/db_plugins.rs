@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Data Adapters as plugins.
 
-use crate::{memory::MemoryDb, sqlite::SqliteDb};
+use crate::{memory::MemoryDb, pg::PgDb, sqlite::SqliteDb};
 use nuah_kernel::*;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -32,5 +32,24 @@ impl Plugin for AdapterSqlite {
             db = db.with_backup_dir(dir);
         }
         Ok(Some(PortImpl::Db(Arc::new(db))))
+    }
+}
+
+pub struct AdapterPostgres;
+impl Plugin for AdapterPostgres {
+    fn manifest(&self) -> Manifest {
+        serde_json::from_value(json!({
+            "id":"db-postgres","version":"0.1.0","name":"PostgreSQL database","description":"Keeps data in PostgreSQL; one Nuah process per database","fills":"db",
+            "settings_schema":{"type":"object","required":["url"],"properties":{
+                "url":{"type":"string","minLength":1,"x-tier":"bootstrap","x-apply":"restart"},
+                "schema":{"type":"string","minLength":1,"maxLength":48,"x-tier":"bootstrap","x-apply":"restart"},
+                "readers":{"type":"integer","minimum":0,"maximum":128,"x-tier":"bootstrap","x-apply":"restart"}},"additionalProperties":false}
+        })).unwrap()
+    }
+    fn fill(&self, s: &Value) -> Result<Option<PortImpl>> {
+        let url = s.get("url").and_then(|u| u.as_str()).ok_or_else(|| Error::invalid("url", "the Postgres Adapter needs a url"))?;
+        let schema = s.get("schema").and_then(|u| u.as_str());
+        let readers = s.get("readers").and_then(|r| r.as_u64()).map(|r| r as usize).unwrap_or(4);
+        Ok(Some(PortImpl::Db(Arc::new(PgDb::open(url, schema, readers)?))))
     }
 }

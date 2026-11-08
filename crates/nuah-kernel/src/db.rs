@@ -349,6 +349,8 @@ pub fn valid_field(field: &str) -> bool {
         && !field.starts_with('.')
         && !field.ends_with('.')
         && !field.contains("..")
+        // a segment of digits would mean an array position in some databases and a key in others
+        && !field.split('.').any(|p| p.chars().all(|c| c.is_ascii_digit()))
         && field.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
 }
 
@@ -361,7 +363,10 @@ pub fn field_of<'a>(body: &'a Value, path: &str) -> Option<&'a Value> {
     Some(cur)
 }
 
-/// The one ordering every adapter must agree on: null < bool < number < string < array < object.
+/// The one ordering every adapter must agree on: null < bool < number < string < array < object. Within a
+/// type, booleans (false < true), numbers and strings (by bytes) have their natural order. Arrays and objects are
+/// equal exactly when their JSON values are equal; their order among themselves is not specified, so a database
+/// may order them as it likes (the in-memory Adapter orders them by their JSON text).
 pub fn compare(a: &Value, b: &Value) -> std::cmp::Ordering {
     use std::cmp::Ordering::*;
     fn rank(v: &Value) -> u8 {
