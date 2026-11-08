@@ -382,6 +382,10 @@ impl DbWrite for Conn<'_> {
         check_expect(&prev, expect)?;
         let rev = prev.map(|p| p.rev + 1).unwrap_or(1);
         let text = body.to_string();
+        if text.contains("\\u0000") {
+            // jsonb cannot hold it; refused here so no statement fails and poisons the transaction
+            return Err(Error::invalid("body", "text may not contain the character U+0000"));
+        }
         let args: [&(dyn ToSql + Sync); 7] = [&collection, &id, &(rev as i64), &now, &false, &owner, &text];
         if self.savepoint_puts {
             self.c.borrow_mut().batch_execute("SAVEPOINT nuah_put").map_err(pg_err)?;
@@ -470,10 +474,17 @@ impl Db for PgDb {
             r
         };
         if let Some(pool) = &self.readers {
-            let mut c = pool.take();
-            let r = run(&mut c, f);
-            pool.give(c);
-            return r;
+            // handed back even if the closure panics, so the pool never shrinks
+            struct Lent<'a>(&'a Pool, Option<Client>);
+            impl Drop for Lent<'_> {
+                fn drop(&mut self) {
+                    if let Some(c) = self.1.take() {
+                        self.0.give(c);
+                    }
+                }
+            }
+            let mut lent = Lent(pool, Some(pool.take()));
+            return run(lent.1.as_mut().expect("just taken"), f);
         }
         run(&mut self.writer.lock(), f)
     }

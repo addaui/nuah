@@ -127,6 +127,20 @@ fn index_unique(db: &dyn Db) {
     })
     .unwrap();
     assert!(db.ensure_index(&IndexSpec::on("uqd", "k").unique()).is_err());
+    // names that look alike are different indexes
+    for c in ["un.a", "un_a"] {
+        db.ensure_index(&IndexSpec::on(c, "x.y").unique()).unwrap();
+        db.ensure_index(&IndexSpec::on(c, "x_y").unique()).unwrap();
+    }
+    db.write(&mut |w| {
+        for c in ["un.a", "un_a"] {
+            put(w, c, "1", json!({"x": {"y": 1}, "x_y": 1}));
+            conflict_unique(w.put(c, "2", "t", json!({"x": {"y": 1}}), Expect::Any, 1));
+            conflict_unique(w.put(c, "3", "t", json!({"x_y": 1}), Expect::Any, 1));
+        }
+        Ok(())
+    })
+    .unwrap();
     // several fields together
     db.ensure_index(&IndexSpec::on("uq2", "a").and("b").unique()).unwrap();
     db.write(&mut |w| {

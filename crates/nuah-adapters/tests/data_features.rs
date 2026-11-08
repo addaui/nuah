@@ -220,3 +220,39 @@ fn sqlite_writes_a_copy_before_migrating_when_asked() {
     .unwrap();
     std::fs::remove_dir_all(dir).ok();
 }
+
+/// Two plugins; the second needs a feature the Adapter lacks. Nothing of the first may be migrated or claimed.
+struct Pair(&'static str, u32, Value);
+impl Plugin for Pair {
+    fn manifest(&self) -> Manifest {
+        let mut m = json!({"id": self.0, "version": "1", "namespaces": [self.0]});
+        let mut d = self.2.clone();
+        d["version"] = json!(self.1);
+        m["data"] = d;
+        serde_json::from_value(m).unwrap()
+    }
+}
+
+#[test]
+fn a_refused_start_writes_nothing() {
+    let mem = Arc::new(MemoryDb::new());
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let boot = |second: Value| {
+        let clock = FixedClock::at(1_000_000);
+        let seen = Default::default();
+        let mut cat = catalog(&clock, &seen);
+        cat.0.push(Arc::new(Pair("aaa", 1, json!({"collections": ["aaa.docs"]}))));
+        cat.0.push(Arc::new(Pair("zzz", 1, second)));
+        cat.0.push(Arc::new(AdapterCounting(mem.clone(), calls.clone())));
+        let mut p = profile(&["db-counting", "auth-local", "policy-roles", "clock-fixed", "ids-sequential", "aaa", "zzz"]);
+        p.grants.clear();
+        Core::start(&Distribution { name: "t".into(), catalog: cat, profile: p })
+    };
+    assert!(boot(json!({"collections": ["zzz.docs"], "requires": ["query.text"]})).is_err());
+    mem.read(&mut |r| {
+        assert!(r.scan("", "", 10)?.is_empty(), "nothing was claimed or migrated");
+        Ok(())
+    })
+    .unwrap();
+    assert!(boot(json!({"collections": ["zzz.docs"]})).is_ok());
+}

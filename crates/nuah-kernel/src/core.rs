@@ -326,24 +326,14 @@ impl Inner {
     }
 
     /// Record collection ownership, make indexes, and bring each plugin's data to its declared version.
+    /// Everything that can be refused is checked first, before anything is written, so a start that fails
+    /// leaves the data as it was.
     fn prepare_storage(&self) -> Result<()> {
-        // before any migration of data that already exists, let the Adapter take a copy
+        let mut have_of: BTreeMap<&String, u32> = BTreeMap::new();
         let mut upgrading = vec![];
         for (id, a) in &self.plan.active {
-            let mut have = 0u32;
-            self.db.read(&mut |r| {
-                have = r.get("_meta", &format!("version:{id}"))?.filter(|d| !d.deleted).and_then(|d| d.body["version"].as_u64()).unwrap_or(0) as u32;
-                Ok(())
-            })?;
-            if have > 0 && have < a.manifest.data.version {
-                upgrading.push(format!("{id} v{have} to v{}", a.manifest.data.version));
-            }
-        }
-        if !upgrading.is_empty() {
-            self.db.before_migration(&upgrading.join(", "))?;
-        }
-        for (id, a) in &self.plan.active {
-            for f in &a.manifest.data.requires {
+            let data = &a.manifest.data;
+            for f in &data.requires {
                 if !self.features.has(f) {
                     return Err(Error::new(
                         Category::Unsupported,
@@ -353,38 +343,16 @@ impl Inner {
                     .with_params(json!({"plugin": id, "feature": f, "adapter": self.db.name()})));
                 }
             }
-            for f in a.manifest.data.prefers.iter().filter(|f| !self.features.has(f)) {
+            for f in data.prefers.iter().filter(|f| !self.features.has(f)) {
                 let t = &self.telemetry;
                 if t.enabled(Level::Warn, "nuah.kernel") {
                     t.log(crate::telemetry::record(self.clock.now(), Level::Warn, "nuah.kernel", "data.feature_missing", json!({"plugin": id, "feature": f, "adapter": self.db.name()}), None, None));
                 }
             }
-            // ownership is claimed once, in the database
-            let mut result = Ok(());
-            self.db.write(&mut |w| {
-                let now = self.clock.now();
-                for c in &a.manifest.data.collections {
-                    let key = format!("collection:{c}");
-                    match w.get("_meta", &key)? {
-                        Some(d) if !d.deleted => {
-                            let owner = d.body["owner"].as_str().unwrap_or("");
-                            if owner != id {
-                                result = Err(Error::internal(format!("the collection {c} belongs to the plugin {owner}, not {id}")));
-                                return Ok(());
-                            }
-                        }
-                        _ => {
-                            w.put("_meta", &key, "kernel", json!({"owner": id}), Expect::Any, now)?;
-                        }
-                    }
-                }
-                Ok(())
-            })?;
-            result?;
-            for ix in &a.manifest.data.indexes {
+            for ix in &data.indexes {
                 let spec = ix.spec();
                 spec.check()?;
-                if !a.manifest.data.collections.contains(&spec.collection) {
+                if !data.collections.contains(&spec.collection) {
                     return Err(Error::internal(format!("the plugin {id} declares an index on {}, which it does not own", spec.collection)));
                 }
                 if spec.unique && !self.features.has(feature::INDEX_UNIQUE) {
@@ -393,18 +361,59 @@ impl Inner {
                 if spec.fields.len() > 1 && !self.features.has(feature::INDEX_COMPOSITE) {
                     return Err(Error::unsupported(feature::INDEX_COMPOSITE, self.db.name()));
                 }
-                self.db.ensure_index(&spec)?;
             }
-            // migrations, one step at a time, each in its own transaction
-            let want = a.manifest.data.version;
             let mut have = 0u32;
+            let mut foreign = None;
             self.db.read(&mut |r| {
                 have = r.get("_meta", &format!("version:{id}"))?.filter(|d| !d.deleted).and_then(|d| d.body["version"].as_u64()).unwrap_or(0) as u32;
+                for c in &data.collections {
+                    if let Some(d) = r.get("_meta", &format!("collection:{c}"))?.filter(|d| !d.deleted) {
+                        let owner = d.body["owner"].as_str().unwrap_or("");
+                        if owner != id {
+                            foreign = Some(format!("the collection {c} belongs to the plugin {owner}, not {id}"));
+                        }
+                    }
+                }
                 Ok(())
             })?;
-            if have > want {
-                return Err(Error::internal(format!("the data of {id} is at version {have}, newer than the plugin's {want}")));
+            if let Some(m) = foreign {
+                return Err(Error::internal(m));
             }
+            if have > data.version {
+                return Err(Error::internal(format!("the data of {id} is at version {have}, newer than the plugin's {}", data.version)));
+            }
+            if have > 0 && have < data.version {
+                upgrading.push(format!("{id} v{have} to v{}", data.version));
+            }
+            have_of.insert(id, have);
+        }
+        // before any migration of data that already exists, let the Adapter take a copy
+        if !upgrading.is_empty() {
+            self.db.before_migration(&upgrading.join(", "))?;
+        }
+        for (id, a) in &self.plan.active {
+            // ownership is claimed once, in the database
+            self.db.write(&mut |w| {
+                let now = self.clock.now();
+                for c in &a.manifest.data.collections {
+                    let key = format!("collection:{c}");
+                    match w.get("_meta", &key)?.filter(|d| !d.deleted) {
+                        Some(d) if d.body["owner"].as_str() != Some(id.as_str()) => {
+                            return Err(Error::internal(format!("the collection {c} belongs to the plugin {}, not {id}", d.body["owner"].as_str().unwrap_or(""))));
+                        }
+                        Some(_) => {}
+                        None => {
+                            w.put("_meta", &key, "kernel", json!({"owner": id}), Expect::Any, now)?;
+                        }
+                    }
+                }
+                Ok(())
+            })?;
+            for ix in &a.manifest.data.indexes {
+                self.db.ensure_index(&ix.spec())?;
+            }
+            // migrations, one step at a time, each in its own transaction
+            let (want, have) = (a.manifest.data.version, have_of[id]);
             for from in have..want {
                 self.run_kernel(id, &mut |tx| {
                     a.plugin.migrate(from, tx)?;

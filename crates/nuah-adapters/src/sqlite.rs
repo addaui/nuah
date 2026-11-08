@@ -50,7 +50,7 @@ pub fn default_readers() -> usize {
 
 fn db_err(e: rusqlite::Error) -> Error {
     if let rusqlite::Error::SqliteFailure(f, _) = &e {
-        if f.code == rusqlite::ErrorCode::ConstraintViolation {
+        if f.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE {
             return Error::conflict("kernel.unique", "another document already has the same value in a unique index");
         }
     }
@@ -110,6 +110,10 @@ impl SqliteDb {
         };
         Ok(SqliteDb { conn: Mutex::new(conn), readers, backup_dir: None })
     }
+}
+
+fn fnv(s: &str) -> u64 {
+    s.bytes().fold(0xcbf29ce484222325, |h, b| (h ^ b as u64).wrapping_mul(0x100000001b3))
 }
 
 fn plain_name(s: &str) -> bool {
@@ -388,7 +392,13 @@ impl Db for SqliteDb {
         let Some(dir) = &self.backup_dir else { return Ok(()) };
         std::fs::create_dir_all(dir).map_err(|e| Error::internal(format!("backup folder: {e}")))?;
         let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-        let file = dir.join(format!("before-migration-{secs}.db"));
+        let mut file = dir.join(format!("before-migration-{secs}.db"));
+        for n in 2.. {
+            if !file.exists() {
+                break;
+            }
+            file = dir.join(format!("before-migration-{secs}-{n}.db"));
+        }
         self.snapshot(file.to_str().ok_or_else(|| Error::internal("backup path is not text"))?)
             .map_err(|e| Error::internal(format!("could not take the backup before migrating ({what}): {}", e.message)))
     }
@@ -405,7 +415,8 @@ impl Db for SqliteDb {
         if !plain_name(collection) {
             return Err(Error::internal("bad index name"));
         }
-        let base = format!("{}_{}", collection.replace(['.', '-', ':'], "_"), spec.fields.iter().map(|f| f.replace('.', "_")).collect::<Vec<_>>().join("__"));
+        // a name made of the exact spec, so two specs never share one (replacing '.' by '_' would let "a.b" and "a_b" collide)
+        let base = format!("{:016x}", fnv(&format!("{collection}|{}|{}", spec.fields.join(","), spec.unique)));
         let mut cols = vec![];
         for f in &spec.fields {
             if spec.unique {
@@ -418,11 +429,12 @@ impl Db for SqliteDb {
         }
         let cols = cols.join(", ");
         let sql = if spec.unique {
-            format!("CREATE UNIQUE INDEX IF NOT EXISTS uq_{base} ON docs ({cols}) WHERE collection='{collection}' AND deleted=0")
+            format!("CREATE UNIQUE INDEX IF NOT EXISTS uq3_{base} ON docs ({cols}) WHERE collection='{collection}' AND deleted=0")
         } else {
             // the index leads with the rank, so it serves the same expressions the queries use
-            let old = if spec.fields.len() == 1 { format!("DROP INDEX IF EXISTS ix_{base}; ") } else { String::new() };
-            format!("{old}CREATE INDEX IF NOT EXISTS ix2_{base} ON docs ({cols}) WHERE collection='{collection}'")
+            let legacy = format!("ix_{}_{}", collection.replace(['.', '-', ':'], "_"), spec.fields[0].replace('.', "_"));
+            let old = if spec.fields.len() == 1 { format!("DROP INDEX IF EXISTS {legacy}; ") } else { String::new() };
+            format!("{old}CREATE INDEX IF NOT EXISTS ix3_{base} ON docs ({cols}) WHERE collection='{collection}'")
         };
         self.conn.lock().execute_batch(&sql).map_err(|e| match db_err(e) {
             c if c.category == Category::Conflict => Error::internal(format!("cannot make a unique index on {collection}: existing documents already share values")),

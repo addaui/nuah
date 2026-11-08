@@ -135,3 +135,17 @@ fn unique_indexes_survive_a_restart_and_keep_refusing_without_poisoning_the_tran
     })
     .unwrap();
 }
+
+#[test]
+fn text_jsonb_cannot_hold_is_refused_without_poisoning_the_transaction() {
+    let Some(u) = url() else { return };
+    let s = Schema::new(&u);
+    let pg = s.open(1).unwrap();
+    pg.write(&mut |w| {
+        let e = w.put("c", "a", "t", json!({"s": "x\u{0}y"}), Expect::Any, 1).unwrap_err();
+        assert_eq!(e.category, Category::Invalid);
+        w.put("c", "b", "t", json!({"s": "fine"}), Expect::Any, 1)?;
+        Ok(())
+    })
+    .unwrap();
+}
