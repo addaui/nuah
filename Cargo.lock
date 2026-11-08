@@ -1022,7 +1022,7 @@ dependencies = [
 
 [[package]]
 name = "nuah-adapters"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "argon2",
  "nuah-kernel",
@@ -1040,7 +1040,7 @@ dependencies = [
 
 [[package]]
 name = "nuah-host"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "axum",
  "clap",
@@ -1055,7 +1055,7 @@ dependencies = [
 
 [[package]]
 name = "nuah-http"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "async-stream",
  "axum",
@@ -1070,7 +1070,7 @@ dependencies = [
 
 [[package]]
 name = "nuah-kernel"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "serde",
  "serde_json",
