@@ -2,7 +2,7 @@
 //! A Core: the kernel together with its active plugins and the Adapters bound to its Ports.
 
 use crate::db::*;
-use crate::error::{Error, Result};
+use crate::error::{Category, Error, Result};
 use crate::manifest::*;
 use crate::plugin::*;
 use crate::ports::*;
@@ -16,6 +16,7 @@ use tokio::sync::watch;
 
 pub(crate) struct Inner {
     pub(crate) db: Arc<dyn Db>,
+    pub(crate) features: Features,
     pub(crate) auth: Arc<dyn Auth>,
     pub(crate) policy: Arc<dyn Policy>,
     pub(crate) clock: Arc<dyn Clock>,
@@ -103,9 +104,11 @@ impl Core {
         let ids = take!("ids", Ids);
         let (wake, _) = watch::channel(0u64);
         let settings = plan.settings.clone();
-        let inner = Arc::new(Inner { db, auth, policy, clock, ids, plan, settings, wake, profile_name: dist.profile.name.clone(), telemetry });
+        let features = db.features();
+        let inner = Arc::new(Inner { db, features, auth, policy, clock, ids, plan, settings, wake, profile_name: dist.profile.name.clone(), telemetry });
         if let Err(e) = inner.prepare_storage() {
-            return Err(vec![Problem { code: "storage".into(), plugins: vec![], message: e.message }]);
+            let code = if e.category == Category::Unsupported { "unsupported" } else { "storage" };
+            return Err(vec![Problem { code: code.into(), plugins: e.params["plugin"].as_str().map(|p| vec![p.to_string()]).unwrap_or_default(), message: e.message }]);
         }
         if let Err(e) = inner.init_listener_cursors() {
             return Err(vec![Problem { code: "storage".into(), plugins: vec![], message: e.message }]);
@@ -325,6 +328,22 @@ impl Inner {
     /// Record collection ownership, make indexes, and bring each plugin's data to its declared version.
     fn prepare_storage(&self) -> Result<()> {
         for (id, a) in &self.plan.active {
+            for f in &a.manifest.data.requires {
+                if !self.features.has(f) {
+                    return Err(Error::new(
+                        Category::Unsupported,
+                        "kernel.unsupported",
+                        format!("the plugin {id} requires the data feature {f}, which the data Adapter {} does not provide", self.db.name()),
+                    )
+                    .with_params(json!({"plugin": id, "feature": f, "adapter": self.db.name()})));
+                }
+            }
+            for f in a.manifest.data.prefers.iter().filter(|f| !self.features.has(f)) {
+                let t = &self.telemetry;
+                if t.enabled(Level::Warn, "nuah.kernel") {
+                    t.log(crate::telemetry::record(self.clock.now(), Level::Warn, "nuah.kernel", "data.feature_missing", json!({"plugin": id, "feature": f, "adapter": self.db.name()}), None, None));
+                }
+            }
             // ownership is claimed once, in the database
             let mut result = Ok(());
             self.db.write(&mut |w| {
@@ -348,7 +367,18 @@ impl Inner {
             })?;
             result?;
             for ix in &a.manifest.data.indexes {
-                self.db.ensure_index(&ix.collection, &ix.field)?;
+                let spec = ix.spec();
+                spec.check()?;
+                if !a.manifest.data.collections.contains(&spec.collection) {
+                    return Err(Error::internal(format!("the plugin {id} declares an index on {}, which it does not own", spec.collection)));
+                }
+                if spec.unique && !self.features.has(feature::INDEX_UNIQUE) {
+                    return Err(Error::unsupported(feature::INDEX_UNIQUE, self.db.name()));
+                }
+                if spec.fields.len() > 1 && !self.features.has(feature::INDEX_COMPOSITE) {
+                    return Err(Error::unsupported(feature::INDEX_COMPOSITE, self.db.name()));
+                }
+                self.db.ensure_index(&spec)?;
             }
             // migrations, one step at a time, each in its own transaction
             let want = a.manifest.data.version;

@@ -22,6 +22,114 @@ pub fn run(db: &dyn Db) {
     nested(db);
     change_log(db);
     concurrent_writers(db);
+    features(db);
+}
+
+/// What the Adapter claims, tested; and what it does not claim, refused with `unsupported`.
+fn features(db: &dyn Db) {
+    let f = db.features();
+    for name in f.have.keys() {
+        assert!([feature::INDEX_UNIQUE, feature::INDEX_COMPOSITE, feature::BACKUP_SNAPSHOT].contains(&name.as_str()), "unknown feature {name}");
+    }
+    if f.has(feature::INDEX_UNIQUE) {
+        index_unique(db);
+    } else {
+        assert_eq!(db.ensure_index(&IndexSpec::on("nu", "k").unique()).unwrap_err().category, Category::Unsupported);
+    }
+    if f.has(feature::INDEX_COMPOSITE) {
+        index_composite(db);
+    }
+    if !f.has(feature::BACKUP_SNAPSHOT) {
+        assert_eq!(db.snapshot("/nonexistent/never").unwrap_err().category, Category::Unsupported);
+    }
+}
+
+fn conflict_unique(r: Result<Doc>) {
+    let e = r.expect_err("a unique index must refuse this");
+    assert_eq!((e.category, e.reason.as_deref()), (Category::Conflict, Some("kernel.unique")), "{e:?}");
+}
+
+fn index_unique(db: &dyn Db) {
+    // a rule over live documents; missing and null are exempt; types are not mixed up
+    db.ensure_index(&IndexSpec::on("uq", "email").unique()).unwrap();
+    db.ensure_index(&IndexSpec::on("uq", "email").unique()).expect("asking again is fine");
+    db.write(&mut |w| {
+        put(w, "uq", "a", json!({"email": "x"}));
+        put(w, "uq", "b", json!({"email": "y"}));
+        conflict_unique(w.put("uq", "c", "t", json!({"email": "x"}), Expect::Any, 1));
+        put(w, "uq", "a", json!({"email": "x", "more": 1}));
+        put(w, "uq", "n1", json!({}));
+        put(w, "uq", "n2", json!({}));
+        put(w, "uq", "n3", json!({"email": null}));
+        put(w, "uq", "n4", json!({"email": null}));
+        put(w, "uq", "one", json!({"email": 1}));
+        put(w, "uq", "yes", json!({"email": true}));
+        put(w, "uq", "str", json!({"email": "1"}));
+        conflict_unique(w.put("uq", "one2", "t", json!({"email": 1}), Expect::Any, 1));
+        conflict_unique(w.put("uq", "yes2", "t", json!({"email": true}), Expect::Any, 1));
+        // a tombstone gives the value back
+        w.delete("uq", "a", Expect::Any, 1).unwrap();
+        put(w, "uq", "c", json!({"email": "x"}));
+        Ok(())
+    })
+    .unwrap();
+    // another collection is not affected
+    db.write(&mut |w| {
+        put(w, "uq_other", "z", json!({"email": "x"}));
+        put(w, "uq_other", "z2", json!({"email": "x"}));
+        Ok(())
+    })
+    .unwrap();
+    // the failed put leaves nothing behind
+    let r = db.write(&mut |w| {
+        put(w, "uq", "fresh", json!({"email": "fresh"}));
+        w.put("uq", "dup", "t", json!({"email": "fresh"}), Expect::Any, 1)?;
+        Ok(())
+    });
+    assert_eq!(r.unwrap_err().reason.as_deref(), Some("kernel.unique"));
+    db.read(&mut |r| {
+        assert!(r.get("uq", "fresh")?.is_none());
+        Ok(())
+    })
+    .unwrap();
+    // an index cannot be made over data that already breaks it
+    db.write(&mut |w| {
+        put(w, "uqd", "a", json!({"k": 1}));
+        put(w, "uqd", "b", json!({"k": 1}));
+        Ok(())
+    })
+    .unwrap();
+    assert!(db.ensure_index(&IndexSpec::on("uqd", "k").unique()).is_err());
+    // several fields together
+    db.ensure_index(&IndexSpec::on("uq2", "a").and("b").unique()).unwrap();
+    db.write(&mut |w| {
+        put(w, "uq2", "1", json!({"a": 1, "b": 2}));
+        put(w, "uq2", "2", json!({"a": 1, "b": 3}));
+        put(w, "uq2", "3", json!({"a": 2, "b": 2}));
+        put(w, "uq2", "4", json!({"a": 1}));
+        put(w, "uq2", "5", json!({"a": 1}));
+        conflict_unique(w.put("uq2", "6", "t", json!({"a": 1, "b": 2}), Expect::Any, 1));
+        Ok(())
+    })
+    .unwrap();
+}
+
+fn index_composite(db: &dyn Db) {
+    db.ensure_index(&IndexSpec::on("cx", "a").and("b.c")).unwrap();
+    db.write(&mut |w| {
+        for i in 0..10 {
+            put(w, "cx", &format!("d{i}"), json!({"a": i % 2, "b": {"c": i % 3}}));
+        }
+        Ok(())
+    })
+    .unwrap();
+    db.read(&mut |r| {
+        assert_eq!(ids(&r.query("cx", &Query::new().eq("a", 1).eq("b.c", 0))?), ["d3", "d9"]);
+        Ok(())
+    })
+    .unwrap();
+    assert!(db.ensure_index(&IndexSpec { collection: "cx".into(), fields: vec![], unique: false }).is_err());
+    assert!(db.ensure_index(&IndexSpec::on("cx", "a b")).is_err());
 }
 
 fn envelope(db: &dyn Db) {

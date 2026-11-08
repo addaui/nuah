@@ -18,9 +18,10 @@
 //! [ADR 0011]: https://docs.addaui.com/nuah/adr/0011-kernel-owned-document-envelope/
 //! [ADR 0002]: https://docs.addaui.com/nuah/adr/0002-ports-stay-synchronous-for-now/
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeMap;
 
 pub type Millis = i64;
 
@@ -200,6 +201,84 @@ pub struct ChangeRecord {
     pub events: Vec<Event>,
 }
 
+/// How an Adapter provides a feature: by the database itself, or by the Adapter making up for it (correct,
+/// but possibly slower). A feature an Adapter does not list is not provided.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Support {
+    Native,
+    Emulated,
+}
+
+/// What an Adapter offers beyond the required contract, and facts about it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Features {
+    pub have: BTreeMap<String, Support>,
+    pub facts: BTreeMap<String, Value>,
+}
+
+/// Feature names. Each has a conformance test that runs for every Adapter that claims it.
+pub mod feature {
+    /// Unique indexes ([`IndexSpec::unique`](super::IndexSpec)).
+    pub const INDEX_UNIQUE: &str = "index.unique";
+    /// An index on several fields.
+    pub const INDEX_COMPOSITE: &str = "index.composite";
+    /// [`Db::snapshot`](super::Db::snapshot): a consistent copy of the database, taken while it is in use.
+    pub const BACKUP_SNAPSHOT: &str = "backup.snapshot";
+}
+
+impl Features {
+    pub fn with(mut self, name: &str, level: Support) -> Self {
+        self.have.insert(name.into(), level);
+        self
+    }
+    pub fn fact(mut self, name: &str, value: impl Into<Value>) -> Self {
+        self.facts.insert(name.into(), value.into());
+        self
+    }
+    pub fn has(&self, name: &str) -> bool {
+        self.have.contains_key(name)
+    }
+}
+
+/// An index on one or more fields of a collection.
+///
+/// `unique`: among live documents of the collection, no two have equal values (by the Port's equality) in all
+/// of `fields`. A document where any of the fields is missing or null is exempt, so an optional field can be
+/// unique. A put that would break the rule fails with a `conflict`, reason `kernel.unique`, and changes nothing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IndexSpec {
+    pub collection: String,
+    pub fields: Vec<String>,
+    #[serde(default)]
+    pub unique: bool,
+}
+
+impl IndexSpec {
+    pub fn on(collection: &str, field: &str) -> Self {
+        IndexSpec { collection: collection.into(), fields: vec![field.into()], unique: false }
+    }
+    pub fn unique(mut self) -> Self {
+        self.unique = true;
+        self
+    }
+    pub fn and(mut self, field: &str) -> Self {
+        self.fields.push(field.into());
+        self
+    }
+    /// Checked wherever a spec enters an Adapter.
+    pub fn check(&self) -> Result<()> {
+        if self.fields.is_empty() || self.fields.len() > 8 || !self.fields.iter().all(|f| valid_field(f)) {
+            return Err(Error::internal(format!("bad index on {}", self.collection)));
+        }
+        Ok(())
+    }
+}
+
+pub fn unique_violation(fields: &[String]) -> Error {
+    Error::conflict("kernel.unique", &format!("another document already has the same {}", fields.join(", ")))
+}
+
 // ---- the handles ------------------------------------------------------------------------------
 
 pub trait DbRead {
@@ -232,13 +311,21 @@ pub trait DbWrite: DbRead {
 
 pub trait Db: Send + Sync {
     fn name(&self) -> &str;
+    /// What this Adapter provides beyond the required contract. Plugins declare what they need in
+    /// `data.requires` and `data.prefers`; the Core checks them against this at start.
+    fn features(&self) -> Features;
+    /// A consistent copy of the whole database at `path`, taken while it is in use (`backup.snapshot`).
+    fn snapshot(&self, _path: &str) -> Result<()> {
+        Err(Error::unsupported(feature::BACKUP_SNAPSHOT, self.name()))
+    }
     /// Run `f` against one consistent snapshot.
     fn read(&self, f: &mut dyn FnMut(&dyn DbRead) -> Result<()>) -> Result<()>;
     /// Run `f` as one atomic, serializable write. The adapter may run `f` again after a failed attempt
     /// to commit, so `f` must start from scratch every time. An `Err` rolls everything back.
     fn write(&self, f: &mut dyn FnMut(&mut dyn DbWrite) -> Result<()>) -> Result<()>;
-    /// Make queries on `field` of `collection` fast. A hint, never required for correctness.
-    fn ensure_index(&self, collection: &str, field: &str) -> Result<()>;
+    /// Make queries on the fields of `spec` fast. A plain index is a hint, never required for correctness; a
+    /// unique index is a rule (see [`IndexSpec`]) and needs the `index.unique` feature.
+    fn ensure_index(&self, spec: &IndexSpec) -> Result<()>;
 }
 
 /// Field paths are placed in queries and indexes, so they are checked wherever they enter.

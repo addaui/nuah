@@ -13,6 +13,8 @@ struct State {
     docs: BTreeMap<(String, String), Doc>,
     changes: BTreeMap<u64, ChangeRecord>,
     last_seq: u64,
+    /// Unique indexes; a put checks them by looking at the other live documents of the collection.
+    uniques: Vec<IndexSpec>,
 }
 
 pub struct MemoryDb {
@@ -45,7 +47,20 @@ fn check_fields(conds: &[Cond], order: &Option<(String, bool)>) -> Result<()> {
     Ok(())
 }
 
+/// The values of `fields` in `body`, or `None` when any is missing or null (such a document is exempt from a
+/// unique index).
+fn key_of<'a>(body: &'a Value, fields: &[String]) -> Option<Vec<&'a Value>> {
+    fields.iter().map(|f| field_of(body, f).filter(|v| !v.is_null())).collect()
+}
+
 impl State {
+    /// Does another live document of the collection share `body`'s values for the index?
+    fn clashes(&self, spec: &IndexSpec, id: &str, body: &Value) -> bool {
+        let Some(mine) = key_of(body, &spec.fields) else { return false };
+        self.live(&spec.collection).any(|d| {
+            d.id != id && key_of(&d.body, &spec.fields).is_some_and(|theirs| theirs.iter().zip(&mine).all(|(a, b)| compare(a, b).is_eq()))
+        })
+    }
     fn live<'a>(&'a self, collection: &'a str) -> impl Iterator<Item = &'a Doc> + 'a {
         self.docs
             .range((collection.to_string(), String::new())..)
@@ -143,6 +158,9 @@ impl DbWrite for Writer {
     fn put(&mut self, c: &str, id: &str, owner: &str, body: Value, expect: Expect, now: Millis) -> Result<Doc> {
         let prev = self.work.do_get(c, id);
         check_expect(&prev, expect)?;
+        if let Some(spec) = self.work.uniques.iter().find(|u| u.collection == c && self.work.clashes(u, id, &body)) {
+            return Err(unique_violation(&spec.fields));
+        }
         let doc = Doc { id: id.into(), collection: c.into(), rev: prev.map(|p| p.rev + 1).unwrap_or(1), changed_at: now, deleted: false, owner: owner.into(), body };
         self.work.docs.insert((c.into(), id.into()), doc.clone());
         Ok(doc)
@@ -201,7 +219,25 @@ impl Db for MemoryDb {
         *self.state.lock() = Arc::new(w.work);
         Ok(())
     }
-    fn ensure_index(&self, _collection: &str, field: &str) -> Result<()> {
-        if valid_field(field) { Ok(()) } else { Err(Error::internal("bad field path")) }
+    fn features(&self) -> Features {
+        Features::default().with(feature::INDEX_UNIQUE, Support::Emulated).with(feature::INDEX_COMPOSITE, Support::Native).fact("storage_version", 0)
+    }
+    fn ensure_index(&self, spec: &IndexSpec) -> Result<()> {
+        spec.check()?;
+        if !spec.unique {
+            return Ok(());
+        }
+        let _one_writer = self.writer.lock();
+        let mut next = (**self.state.lock()).clone();
+        if next.uniques.contains(spec) {
+            return Ok(());
+        }
+        let taken = next.live(&spec.collection).any(|d| next.clashes(spec, &d.id, &d.body));
+        if taken {
+            return Err(Error::internal(format!("cannot make a unique index on {}: existing documents already share values", spec.collection)));
+        }
+        next.uniques.push(spec.clone());
+        *self.state.lock() = Arc::new(next);
+        Ok(())
     }
 }

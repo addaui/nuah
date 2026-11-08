@@ -7,6 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use crate::db::IndexSpec;
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -106,7 +107,21 @@ pub struct Provide {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IndexDecl {
     pub collection: String,
+    /// One field; or give `fields` for several.
+    #[serde(default)]
     pub field: String,
+    #[serde(default)]
+    pub fields: Vec<String>,
+    /// No two live documents may share the values (needs the `index.unique` feature).
+    #[serde(default)]
+    pub unique: bool,
+}
+
+impl IndexDecl {
+    pub fn spec(&self) -> IndexSpec {
+        let fields = if self.fields.is_empty() && !self.field.is_empty() { vec![self.field.clone()] } else { self.fields.clone() };
+        IndexSpec { collection: self.collection.clone(), fields, unique: self.unique }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -118,6 +133,13 @@ pub struct DataDecl {
     pub reads: Vec<String>,
     pub version: u32,
     pub indexes: Vec<IndexDecl>,
+    /// Features of the data Adapter the plugin cannot work without (see `nuah_kernel::feature`). The Core
+    /// refuses to start when the Adapter lacks one.
+    pub requires: Vec<String>,
+    /// Features the plugin uses when there, and works without; a warning is logged when absent.
+    pub prefers: Vec<String>,
+    /// A JSON Schema per owned collection, checked by the kernel on every put.
+    pub schemas: BTreeMap<String, Value>,
 }
 
 /// The thing an Operation acts on, so the policy can see it ([ADR 0005]).

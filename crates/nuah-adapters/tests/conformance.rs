@@ -118,7 +118,7 @@ fn memory_and_sqlite_agree_on_mixed_types() {
             }
         }
         // an index changes speed, never answers
-        b.ensure_index("c", "f").unwrap();
+        b.ensure_index(&IndexSpec::on("c", "f")).unwrap();
         for v in &pool {
             let q = Query::new().gt("f", v.clone()).asc("f");
             let (mut ra, mut rb) = (None, None);

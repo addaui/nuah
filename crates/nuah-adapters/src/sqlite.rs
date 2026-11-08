@@ -10,6 +10,9 @@ use parking_lot::{Condvar, Mutex};
 use rusqlite::{params, params_from_iter, types::Value as Sql, Connection, OptionalExtension};
 use serde_json::Value;
 
+/// The layout of the tables this Adapter creates (kept in `PRAGMA user_version`).
+const LAYOUT: u32 = 1;
+
 pub struct SqliteDb {
     /// The writer; also serves reads when there is no pool.
     conn: Mutex<Connection>,
@@ -44,6 +47,11 @@ pub fn default_readers() -> usize {
 }
 
 fn db_err(e: rusqlite::Error) -> Error {
+    if let rusqlite::Error::SqliteFailure(f, _) = &e {
+        if f.code == rusqlite::ErrorCode::ConstraintViolation {
+            return Error::conflict("kernel.unique", "another document already has the same value in a unique index");
+        }
+    }
     Error::internal(format!("sqlite: {e}"))
 }
 fn json_err(e: serde_json::Error) -> Error {
@@ -65,12 +73,20 @@ impl SqliteDb {
             conn.pragma_update(None, "cache_size", -32_000).map_err(db_err)?;
         }
         conn.busy_timeout(std::time::Duration::from_secs(5)).map_err(db_err)?;
+        // the layout version this Adapter writes; a database from a newer Adapter is refused, not guessed at
+        let layout: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).map_err(db_err)?;
+        if layout > LAYOUT {
+            return Err(Error::internal(format!("this database has layout {layout}, newer than the {LAYOUT} this version of the SQLite Adapter understands; update Nuah")));
+        }
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS docs (collection TEXT NOT NULL, id TEXT NOT NULL, rev INTEGER NOT NULL, changed_at INTEGER NOT NULL,
                deleted INTEGER NOT NULL, owner TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY (collection, id)) WITHOUT ROWID;
              CREATE TABLE IF NOT EXISTS changes (seq INTEGER PRIMARY KEY AUTOINCREMENT, record TEXT NOT NULL);",
         )
         .map_err(db_err)?;
+        if layout < LAYOUT {
+            conn.pragma_update(None, "user_version", LAYOUT).map_err(db_err)?;
+        }
         let readers = if path == ":memory:" || readers == 0 {
             None
         } else {
@@ -262,7 +278,8 @@ impl DbWrite for Conn<'_> {
         let prev = self.get(collection, id)?;
         check_expect(&prev, expect)?;
         let rev = prev.map(|p| p.rev + 1).unwrap_or(1);
-        self.c.execute("INSERT OR REPLACE INTO docs (collection,id,rev,changed_at,deleted,owner,body) VALUES (?1,?2,?3,?4,0,?5,?6)", params![collection, id, rev as i64, now, owner, body.to_string()]).map_err(db_err)?;
+        self.c.execute("INSERT INTO docs (collection,id,rev,changed_at,deleted,owner,body) VALUES (?1,?2,?3,?4,0,?5,?6)
+             ON CONFLICT (collection,id) DO UPDATE SET rev=excluded.rev, changed_at=excluded.changed_at, deleted=0, owner=excluded.owner, body=excluded.body", params![collection, id, rev as i64, now, owner, body.to_string()]).map_err(db_err)?;
         Ok(Doc { id: id.into(), collection: collection.into(), rev, changed_at: now, deleted: false, owner: owner.into(), body })
     }
     fn delete(&mut self, collection: &str, id: &str, expect: Expect, now: Millis) -> Result<Option<Doc>> {
@@ -331,16 +348,48 @@ impl Db for SqliteDb {
             }
         }
     }
-    fn ensure_index(&self, collection: &str, field: &str) -> Result<()> {
-        if !plain_name(collection) || !valid_field(field) {
+    fn features(&self) -> Features {
+        Features::default()
+            .with(feature::INDEX_UNIQUE, Support::Native)
+            .with(feature::INDEX_COMPOSITE, Support::Native)
+            .with(feature::BACKUP_SNAPSHOT, Support::Native)
+            .fact("storage_version", LAYOUT)
+    }
+    fn snapshot(&self, path: &str) -> Result<()> {
+        if std::path::Path::new(path).exists() {
+            return Err(Error::invalid("path", "the snapshot target already exists"));
+        }
+        self.conn.lock().execute("VACUUM INTO ?1", params![path]).map_err(db_err)?;
+        Ok(())
+    }
+    fn ensure_index(&self, spec: &IndexSpec) -> Result<()> {
+        spec.check()?;
+        let collection = &spec.collection;
+        if !plain_name(collection) {
             return Err(Error::internal("bad index name"));
         }
-        let base = format!("{}_{}", collection.replace(['.', '-', ':'], "_"), field.replace('.', "_"));
-        // the index leads with the rank, so it serves the same expressions the queries use
-        let sql = format!(
-            "DROP INDEX IF EXISTS ix_{base}; CREATE INDEX IF NOT EXISTS ix2_{base} ON docs ({}, json_extract(body,'$.{field}')) WHERE collection='{collection}'",
-            field_rank(field)?
-        );
-        self.conn.lock().execute_batch(&sql).map_err(db_err)
+        let base = format!("{}_{}", collection.replace(['.', '-', ':'], "_"), spec.fields.iter().map(|f| f.replace('.', "_")).collect::<Vec<_>>().join("__"));
+        let mut cols = vec![];
+        for f in &spec.fields {
+            if spec.unique {
+                // a missing or null value is exempt from uniqueness: both parts are NULL
+                cols.push(format!("NULLIF({}, 0)", field_rank(f)?));
+            } else {
+                cols.push(field_rank(f)?);
+            }
+            cols.push(path(f)?);
+        }
+        let cols = cols.join(", ");
+        let sql = if spec.unique {
+            format!("CREATE UNIQUE INDEX IF NOT EXISTS uq_{base} ON docs ({cols}) WHERE collection='{collection}' AND deleted=0")
+        } else {
+            // the index leads with the rank, so it serves the same expressions the queries use
+            let old = if spec.fields.len() == 1 { format!("DROP INDEX IF EXISTS ix_{base}; ") } else { String::new() };
+            format!("{old}CREATE INDEX IF NOT EXISTS ix2_{base} ON docs ({cols}) WHERE collection='{collection}'")
+        };
+        self.conn.lock().execute_batch(&sql).map_err(|e| match db_err(e) {
+            c if c.category == Category::Conflict => Error::internal(format!("cannot make a unique index on {collection}: existing documents already share values")),
+            other => other,
+        })
     }
 }

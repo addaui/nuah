@@ -194,6 +194,11 @@ impl<'a> Tx<'a> {
     pub fn settings(&self) -> Value {
         self.inner.settings.get(&self.plugin).cloned().unwrap_or(Value::Null)
     }
+    /// Does the data Adapter provide this feature (see [`feature`](crate::feature))? For a plugin that
+    /// `prefers` a feature and takes another path without it.
+    pub fn has_feature(&self, name: &str) -> bool {
+        self.inner.features.has(name)
+    }
     pub fn is_query(&self) -> bool {
         matches!(self.h, Handle::R(_))
     }
@@ -247,6 +252,9 @@ impl<'a> Tx<'a> {
         self.may_write(collection)?;
         if !body.is_object() {
             return Err(Error::internal("documents are JSON objects"));
+        }
+        if let Some(schema) = self.inner.manifest(&self.plugin).and_then(|m| m.data.schemas.get(collection)) {
+            crate::schema::validate(schema, &body).map_err(|e| Error::internal(format!("a document of {collection} breaks the schema the plugin declared: {}", e.message)))?;
         }
         let now = self.now();
         let owner = self.plugin.clone();

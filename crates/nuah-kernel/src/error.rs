@@ -22,6 +22,8 @@ pub enum Category {
     Conflict,
     /// The Face and Core disagree on the contract version.
     Incompatible,
+    /// This deployment cannot do it (a feature the data Adapter does not provide); retrying never helps.
+    Unsupported,
     /// A bug or a failure of infrastructure; the caller can do nothing but retry later.
     Internal,
 }
@@ -35,6 +37,7 @@ impl Category {
             Category::NotFound => 404,
             Category::Conflict => 409,
             Category::Incompatible => 426,
+            Category::Unsupported => 501,
             Category::Internal => 500,
         }
     }
@@ -86,6 +89,10 @@ impl Error {
     }
     pub fn conflict(reason: &str, message: &str) -> Self {
         Error::new(Category::Conflict, reason, message).with_reason(reason)
+    }
+    pub fn unsupported(feature: &str, adapter: &str) -> Self {
+        Error::new(Category::Unsupported, "kernel.unsupported", format!("the data Adapter {adapter} does not provide {feature}"))
+            .with_params(json!({ "feature": feature, "adapter": adapter }))
     }
     pub fn internal(message: impl Into<String>) -> Self {
         Error::new(Category::Internal, "kernel.internal", message)
