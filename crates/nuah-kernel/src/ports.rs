@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! The fixed Ports: db, auth, policy, clock, ids (one Adapter each) and the telemetry Ports log, trace, metric,
 //! heartbeat (every enabled Adapter, optional). Each Port declares how many Adapters fill it.
 

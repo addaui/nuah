@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! A small JSON-Schema subset. The contract is checked by the kernel before any plugin code runs,
 //! so every handler can trust the shape of its input.
 //!

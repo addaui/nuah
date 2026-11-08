@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Self-description: one call tells a Face what exists and what the caller may do.
 
 use crate::core::Core;

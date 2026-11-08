@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! The `http` plugin on its own, with a one-operation plugin and no product around it (ADR 0031).
 
 use nuah_adapters::*;

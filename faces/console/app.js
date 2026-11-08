@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 "use strict";
 // The generated console. It knows nothing about tasks or projects: it reads /link/describe and builds
 // a form for each Operation from its input schema. Anything a plugin adds shows up here on its own.

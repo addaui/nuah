@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! The SQLite data Adapter. A file database has one writer connection (writes are serialized, as SQLite
 //! requires) and a pool of reader connections (WAL), so many people can read at once, each on one
 //! snapshot, while a write is going on ([ADR 0031]). `:memory:` has one connection for everything.

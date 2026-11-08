@@ -1,6 +1,8 @@
 # Nuah (نواه)
 
-A plugin-first core in Rust. A small kernel runs plugins; products are made by choosing and configuring them.
+An open-source framework and runtime in Rust. A small kernel runs plugins; product distributions are made by choosing and configuring them.
+
+Nuah is the foundation, not an end-user application. [Madar](https://github.com/addaui/madar) is an application built on it.
 
 ```bash
 cargo test --workspace
@@ -14,12 +16,14 @@ cargo test --workspace
 - `crates/nuah-host`: the program that runs a product
 - `faces/console`, `faces/setup`: generic faces
 
+## License
+
+[Apache License 2.0](LICENSE). Use it, change it, self-host it, and build your own products and services on it, commercially or not. The names and logos are covered separately, see [TRADEMARK.md](TRADEMARK.md). To contribute, see [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## TODO
 
 - [ ] Publish the documentation
-- [ ] Choose a license (currently `UNLICENSED`)
 - [ ] Usage guide: depend on a tagged release from a product
-- [ ] Contribution guide
 - [ ] Telemetry ports (log, trace, metric, heartbeat)
 - [ ] Settings tiers, admin plugin, backup and migration
 - [ ] Verify the macOS and Windows CI legs

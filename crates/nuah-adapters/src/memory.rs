@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! The in-memory data Adapter: the reference for what the data Port means, and the fast test Adapter.
 //! A reader holds an immutable snapshot; a writer works on a private copy that replaces the state on commit.
 

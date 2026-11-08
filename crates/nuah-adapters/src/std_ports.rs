@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Clock and id Adapters: the system ones, and fixed ones for tests and replay.
 
 use nuah_kernel::*;

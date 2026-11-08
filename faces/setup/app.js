@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // The setup wizard. It reads the catalog from the setup server, lets you choose plugins, bindings and
 // settings, and asks the kernel's own resolver whether the draft works. It holds no rules itself.
 

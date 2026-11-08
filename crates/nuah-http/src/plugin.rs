@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! The `http` plugin: the HTTP and SSE Projection as a plugin that runs as a service (ADR 0031).
 //! It runs inside the Core's process on threads of its own: a multi-threaded tokio runtime for the
 //! connections, while storage work goes to tokio's blocking pool and so on to the data Port.

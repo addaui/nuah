@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! The Manifest ([ADR 0004]): everything a plugin says about itself without running any code.
 //! Operations, hooks, listeners, Events, permissions and data are declared here; code only attaches a
 //! handler to each declared name.

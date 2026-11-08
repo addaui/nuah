@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Telemetry: levels, fan-out to every Adapter, a stalled Adapter never slows a command, nothing is lost silently.
 
 mod common;

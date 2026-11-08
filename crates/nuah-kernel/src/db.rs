@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! The data Port ([ADR 0001], [ADR 0011], [ADR 0002]).
 //!
 //! The kernel states *intent*: read handles see one consistent snapshot; write handles are

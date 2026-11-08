@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! A Core: the kernel together with its active plugins and the Adapters bound to its Ports.
 
 use crate::db::*;

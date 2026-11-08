@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! The host: the one `main` a product built on Nuah needs ([ADR 0031]). A product describes itself with
 //! [`Product`] and calls [`run`]; the host reads a Profile, starts the Core, starts its services (the
 //! Projections the Profile enables, and the Core's own upkeep) and stops them on SIGINT or SIGTERM.

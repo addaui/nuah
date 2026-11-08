@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! The error model ([ADR 0007]): a closed set of categories, plugin-owned reason codes and message keys.
 //!
 //! [ADR 0007]: https://docs.addaui.com/nuah/adr/0007-closed-error-categories-plugin-reason-codes-message-keys/

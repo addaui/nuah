@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Pulse (what one Subject sees of the Event log) and durable Listeners ([ADR 0003]).
 //!
 //! [ADR 0003]: https://docs.addaui.com/nuah/adr/0003-one-change-record-scoped-audience-durable-listeners/

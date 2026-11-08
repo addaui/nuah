@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! The Resolver: reads Manifests and a Profile and reports *every* problem at once, without starting
 //! anything (no Adapter opened, no data touched). Problems carry their code and the plugins involved.
 

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! The call pipeline: authenticate, validate, authorize with the resource, replay check, hooks,
 //! handler, change record, commit. One transaction per Command; Queries read one snapshot.
 

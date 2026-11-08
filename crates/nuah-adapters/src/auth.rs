@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Auth Adapters. Sign-in is an Operation ([ADR 0010]), so every Projection works the same way.
 //!
 //! [ADR 0010]: https://docs.addaui.com/nuah/adr/0010-sign-in-is-an-operation-sessions-expire/

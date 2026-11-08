@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 mod common;
 use common::*;
 use nuah_adapters::*;

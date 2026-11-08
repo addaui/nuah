@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! The setup wizard's server mode ([ADR 0014]): serves `/setup/*` and the wizard Face before any
 //! Core exists. It starts no plugin and opens no database; it only reads manifests, asks the
 //! Resolver, and writes a Profile file that resolves.

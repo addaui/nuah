@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! What every data Adapter must do. The suite tests the guarantees the kernel depends on (snapshot
 //! reads, atomic writes, nested undo, tombstones, ordering, the change log), not any mechanism.
 

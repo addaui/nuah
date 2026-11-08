@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! What a setup Face needs, without starting anything: the Catalog as plain data, a strict reader
 //! for Profiles, and the secret handling of [ADR 0014].
 //!

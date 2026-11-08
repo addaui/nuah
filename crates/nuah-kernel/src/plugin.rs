@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! What a plugin is in code: a Manifest plus handlers attached to the names the Manifest declares,
 //! and the [`Tx`] a handler works through.
 

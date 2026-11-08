@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! A small toy app ("notes") used to test the kernel without any real app in the way.
 #![allow(dead_code)]
 

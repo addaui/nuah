@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Policy Adapters ([ADR 0005]): the policy sees the resource, and knows no app's vocabulary.
 //!
 //! [ADR 0005]: https://docs.addaui.com/nuah/adr/0005-policy-sees-the-resource-results-carry-what-you-may-do/

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Telemetry: what the Core records, and the four optional Ports that carry it away (log, trace,
 //! metric, heartbeat). The Core decides *what* is recorded (levels, fields, errors); an Adapter
 //! decides how it looks and where it goes.

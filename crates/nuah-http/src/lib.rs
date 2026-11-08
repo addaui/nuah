@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! The HTTP and SSE Projection of the Link ([Link spec]), as a plugin (`http`, ADR 0031). It knows nothing
 //! about any product: it exposes whatever contract the Core describes. A product that needs more routes
 //! hands them to [`Http::with_routes`]; it never edits this crate. Sessions come from the `auth.*` Operations ([ADR 0010]);

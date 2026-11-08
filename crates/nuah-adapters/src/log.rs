@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Log Adapters: the console (pretty on a terminal, JSON lines elsewhere) and a rotating file.
 //! They only decide how a record looks and where it is written; what is recorded is the Core's business.
 

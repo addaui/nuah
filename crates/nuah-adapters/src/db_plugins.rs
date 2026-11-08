@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Data Adapters as plugins.
 
 use crate::{memory::MemoryDb, sqlite::SqliteDb};

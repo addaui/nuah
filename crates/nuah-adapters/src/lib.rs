@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Adapters for the kernel's Ports: memory and SQLite data, local and password sign-in, allow-all and
 //! role policy, system and fixed clock/ids. Also the data conformance suite every data Adapter passes.
 
