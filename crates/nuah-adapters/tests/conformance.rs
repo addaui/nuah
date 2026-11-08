@@ -70,6 +70,65 @@ fn memory_and_sqlite_agree_on_random_sessions() {
     }
 }
 
+/// Random documents whose one field holds any JSON type, queried with every operator: SQLite must give exactly
+/// the answers of the in-memory Adapter, which applies the Port's rule directly.
+#[test]
+fn memory_and_sqlite_agree_on_mixed_types() {
+    let pool = [json!(null), json!(false), json!(true), json!(0), json!(1), json!(2), json!(-3), json!(1.5), json!(""), json!("0"), json!("1"), json!("a"), json!("b"), json!([]), json!([1]), json!(["a"]), json!([true]), json!({}), json!({"k": 1}), json!({"k": "a"})];
+    for seed in 1..=8u64 {
+        let (a, b) = (MemoryDb::new(), SqliteDb::open(":memory:").unwrap());
+        let mut s = seed.wrapping_mul(0x9E3779B97F4A7C15);
+        let mut next = move |n: usize| {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            (s % n as u64) as usize
+        };
+        for i in 0..60 {
+            let body = match next(8) {
+                0 => json!({}),
+                1 => json!({"o": {"f": pool[next(pool.len())].clone()}}),
+                2 => json!({"f": [pool[next(pool.len())].clone(), pool[next(pool.len())].clone()]}),
+                _ => json!({"f": pool[next(pool.len())].clone()}),
+            };
+            for db in [&a as &dyn Db, &b as &dyn Db] {
+                db.write(&mut |w| w.put("c", &format!("d{i:02}"), "t", body.clone(), Expect::Any, 5).map(|_| ())).unwrap();
+            }
+        }
+        for field in ["f", "o.f"] {
+            for v in &pool {
+                let qs = [
+                    Query::new().eq(field, v.clone()),
+                    Query::new().ne(field, v.clone()),
+                    Query::new().lt(field, v.clone()),
+                    Query::new().lte(field, v.clone()),
+                    Query::new().gt(field, v.clone()),
+                    Query::new().gte(field, v.clone()),
+                    Query::new().has(field, v.clone()),
+                    Query::new().is_in(field, vec![v.clone(), pool[next(pool.len())].clone()]),
+                    Query::new().asc(field),
+                    Query::new().desc(field).gte(field, v.clone()),
+                ];
+                for q in &qs {
+                    let (mut ra, mut rb) = (None, None);
+                    a.read(&mut |r| { ra = Some((r.query("c", q)?, r.count("c", &q.conds)?)); Ok(()) }).unwrap();
+                    b.read(&mut |r| { rb = Some((r.query("c", q)?, r.count("c", &q.conds)?)); Ok(()) }).unwrap();
+                    assert_eq!(ra, rb, "seed {seed}, query {q:?}");
+                }
+            }
+        }
+        // an index changes speed, never answers
+        b.ensure_index("c", "f").unwrap();
+        for v in &pool {
+            let q = Query::new().gt("f", v.clone()).asc("f");
+            let (mut ra, mut rb) = (None, None);
+            a.read(&mut |r| { ra = Some(r.query("c", &q)?); Ok(()) }).unwrap();
+            b.read(&mut |r| { rb = Some(r.query("c", &q)?); Ok(()) }).unwrap();
+            assert_eq!(ra, rb, "indexed, seed {seed}, {q:?}");
+        }
+    }
+}
+
 /// Many threads read while one writes: reads never block on the writer, every read sees a whole commit,
 /// and a read that starts after a commit sees it.
 #[test]

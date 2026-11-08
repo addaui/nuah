@@ -17,6 +17,7 @@ pub fn run(db: &dyn Db) {
     envelope(db);
     expectations(db);
     queries(db);
+    mixed_types(db);
     atomicity(db);
     nested(db);
     change_log(db);
@@ -103,6 +104,53 @@ fn queries(db: &dyn Db) {
         assert_eq!(r.count("q", &[Cond { field: "s".into(), op: Cmp::Eq, value: json!("todo") }])?, 3);
         assert!(r.query("q", &Query::new().eq("a b", 1)).is_err(), "field paths are checked");
         assert!(r.query("q", &Query::new().eq("a'); drop table docs; --", 1)).is_err());
+        Ok(())
+    })
+    .unwrap();
+}
+
+/// One field holding values of every JSON type: equality and order follow the Port's rule, never the
+/// engine's own (a stored `true` is not `1`, an array is not a string).
+fn mixed_types(db: &dyn Db) {
+    let vals = [json!(null), json!(false), json!(true), json!(0), json!(1), json!(2.5), json!("1"), json!("a"), json!([1]), json!(["a"]), json!({"k": 1})];
+    db.write(&mut |w| {
+        for (i, v) in vals.iter().enumerate() {
+            put(w, "mx", &format!("v{i:02}"), json!({ "f": v }));
+        }
+        put(w, "mx", "v99", json!({}));
+        Ok(())
+    })
+    .unwrap();
+    db.read(&mut |r| {
+        let q = |qq: Query| ids(&r.query("mx", &qq).unwrap());
+        assert_eq!(q(Query::new().eq("f", 1)), ["v04"], "1 is not true");
+        assert_eq!(q(Query::new().eq("f", true)), ["v02"], "true is not 1");
+        assert_eq!(q(Query::new().eq("f", "1")), ["v06"], "\"1\" is not 1");
+        assert_eq!(q(Query::new().eq("f", json!([1]))), ["v08"]);
+        assert_eq!(q(Query::new().eq("f", Value::Null)), ["v00", "v99"]);
+        assert_eq!(q(Query::new().ne("f", 1)).len(), 11);
+        assert_eq!(q(Query::new().is_in("f", vec![json!(1), json!("a")])), ["v04", "v07"]);
+        assert_eq!(q(Query::new().gt("f", 0)), ["v04", "v05", "v06", "v07", "v08", "v09", "v10"], "bool < number < string < array < object");
+        assert_eq!(q(Query::new().gte("f", 0)), ["v03", "v04", "v05", "v06", "v07", "v08", "v09", "v10"]);
+        assert_eq!(q(Query::new().lt("f", 1)), ["v01", "v02", "v03"], "bool, then numbers below 1; null and missing never match");
+        assert_eq!(q(Query::new().lt("f", "1")), ["v01", "v02", "v03", "v04", "v05"]);
+        assert_eq!(q(Query::new().gt("f", "a")), ["v08", "v09", "v10"]);
+        assert_eq!(q(Query::new().lte("f", false)), ["v01"]);
+        assert_eq!(q(Query::new().gt("f", Value::Null)).len(), 10, "everything present and not null");
+        assert_eq!(q(Query::new().asc("f")), ["v00", "v99", "v01", "v02", "v03", "v04", "v05", "v06", "v07", "v09", "v08", "v10"]);
+        assert_eq!(q(Query::new().desc("f"))[0], "v10");
+        Ok(())
+    })
+    .unwrap();
+    db.write(&mut |w| {
+        put(w, "mh", "a", json!({"t": [1, true, "1", null, [2]]}));
+        Ok(())
+    })
+    .unwrap();
+    db.read(&mut |r| {
+        for (v, hit) in [(json!(1), true), (json!(true), true), (json!("1"), true), (json!(null), true), (json!([2]), true), (json!(false), false), (json!(2), false), (json!("x"), false)] {
+            assert_eq!(r.query("mh", &Query::new().has("t", v.clone()))?.items.len() == 1, hit, "has {v}");
+        }
         Ok(())
     })
     .unwrap();

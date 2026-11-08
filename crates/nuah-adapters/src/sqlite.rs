@@ -106,6 +106,40 @@ fn path(field: &str) -> Result<String> {
     if valid_field(field) { Ok(format!("json_extract(body,'$.{field}')")) } else { Err(Error::internal(format!("bad field path {field}"))) }
 }
 
+/// The rank of a value in the Port's ordering (null < bool < number < string < array < object), computed from
+/// a SQLite JSON type name. SQLite itself would compare a stored `true` equal to `1` and sort arrays among
+/// strings, so every comparison is made on the rank first.
+fn rank_of(type_expr: &str) -> String {
+    format!("(CASE {type_expr} WHEN 'true' THEN 1 WHEN 'false' THEN 1 WHEN 'integer' THEN 2 WHEN 'real' THEN 2 WHEN 'text' THEN 3 WHEN 'array' THEN 4 WHEN 'object' THEN 5 ELSE 0 END)")
+}
+
+fn field_rank(field: &str) -> Result<String> {
+    if !valid_field(field) {
+        return Err(Error::internal(format!("bad field path {field}")));
+    }
+    Ok(rank_of(&format!("json_type(body,'$.{field}')")))
+}
+
+fn value_rank(v: &Value) -> i64 {
+    match v {
+        Value::Null => 0,
+        Value::Bool(_) => 1,
+        Value::Number(_) => 2,
+        Value::String(_) => 3,
+        Value::Array(_) => 4,
+        Value::Object(_) => 5,
+    }
+}
+
+/// `rank = the value's rank AND the value is equal`, as the Port defines equality.
+fn eq_sql(rank: &str, val: &str, v: &Value, args: &mut Vec<Sql>) -> String {
+    if v.is_null() {
+        return format!("{rank}=0");
+    }
+    args.push(to_sql(v));
+    format!("({rank}={} AND {val} IS ?)", value_rank(v))
+}
+
 /// WHERE fragments (all literals are validated names; values are bound).
 fn where_sql(collection: &str, conds: &[Cond]) -> Result<(String, Vec<Sql>)> {
     if !plain_name(collection) {
@@ -115,40 +149,33 @@ fn where_sql(collection: &str, conds: &[Cond]) -> Result<(String, Vec<Sql>)> {
     let mut args = vec![];
     for c in conds {
         let p = path(&c.field)?;
+        let r = field_rank(&c.field)?;
         match c.op {
-            Cmp::Eq => {
-                sql += &format!(" AND {p} IS ?");
-                args.push(to_sql(&c.value));
-            }
-            Cmp::Ne => {
-                sql += &format!(" AND {p} IS NOT ?");
-                args.push(to_sql(&c.value));
-            }
+            Cmp::Eq => sql += &format!(" AND {}", eq_sql(&r, &p, &c.value, &mut args)),
+            Cmp::Ne => sql += &format!(" AND NOT {}", eq_sql(&r, &p, &c.value, &mut args)),
             Cmp::In => {
                 let list = c.value.as_array().cloned().unwrap_or_default();
-                let has_null = list.iter().any(|v| v.is_null());
-                let items: Vec<&Value> = list.iter().filter(|v| !v.is_null()).collect();
-                let marks = vec!["?"; items.len()].join(",");
-                let mut parts = vec![];
-                if !items.is_empty() {
-                    parts.push(format!("{p} IN ({marks})"));
-                }
-                if has_null {
-                    parts.push(format!("{p} IS NULL"));
-                }
+                let mut parts: Vec<String> = list.iter().map(|v| eq_sql(&r, &p, v, &mut args)).collect();
                 if parts.is_empty() {
                     parts.push("0".into());
                 }
                 sql += &format!(" AND ({})", parts.join(" OR "));
-                args.extend(items.into_iter().map(to_sql));
             }
             Cmp::Has => {
-                sql += &format!(" AND json_type(body,'$.{f}')='array' AND EXISTS (SELECT 1 FROM json_each(body,'$.{f}') WHERE value IS ?)", f = c.field);
-                args.push(to_sql(&c.value));
+                let inner = eq_sql(&rank_of("type"), "value", &c.value, &mut args);
+                sql += &format!(" AND json_type(body,'$.{f}')='array' AND EXISTS (SELECT 1 FROM json_each(body,'$.{f}') WHERE {inner})", f = c.field);
             }
             Cmp::Lt | Cmp::Lte | Cmp::Gt | Cmp::Gte => {
-                let op = match c.op { Cmp::Lt => "<", Cmp::Lte => "<=", Cmp::Gt => ">", _ => ">=" };
-                sql += &format!(" AND {p} {op} ?");
+                // never matches a missing or null field; a lower rank is smaller, the same rank compares values
+                let (op, below, above) = match c.op {
+                    Cmp::Lt => ("<", true, false),
+                    Cmp::Lte => ("<=", true, false),
+                    Cmp::Gt => (">", false, true),
+                    _ => (">=", false, true),
+                };
+                let rv = value_rank(&c.value);
+                let across = if below { format!("{r}<{rv}") } else if above { format!("{r}>{rv}") } else { "0".into() };
+                sql += &format!(" AND {r}>0 AND ({across} OR ({r}={rv} AND {p} {op} ?))");
                 args.push(to_sql(&c.value));
             }
         }
@@ -181,7 +208,10 @@ impl DbRead for Conn<'_> {
     fn query(&self, collection: &str, q: &Query) -> Result<Page> {
         let (w, mut args) = where_sql(collection, &q.conds)?;
         let order = match &q.order {
-            Some((f, desc)) => format!(" ORDER BY {} {}, id", path(f)?, if *desc { "DESC" } else { "ASC" }),
+            Some((f, desc)) => {
+                let dir = if *desc { "DESC" } else { "ASC" };
+                format!(" ORDER BY {} {dir}, {} {dir}, id", field_rank(f)?, path(f)?)
+            },
             None => " ORDER BY id".into(),
         };
         // ask for one more than the limit to know whether there is a next page
@@ -305,8 +335,12 @@ impl Db for SqliteDb {
         if !plain_name(collection) || !valid_field(field) {
             return Err(Error::internal("bad index name"));
         }
-        let name = format!("ix_{}_{}", collection.replace(['.', '-', ':'], "_"), field.replace('.', "_"));
-        let sql = format!("CREATE INDEX IF NOT EXISTS {name} ON docs (json_extract(body,'$.{field}')) WHERE collection='{collection}'");
+        let base = format!("{}_{}", collection.replace(['.', '-', ':'], "_"), field.replace('.', "_"));
+        // the index leads with the rank, so it serves the same expressions the queries use
+        let sql = format!(
+            "DROP INDEX IF EXISTS ix_{base}; CREATE INDEX IF NOT EXISTS ix2_{base} ON docs ({}, json_extract(body,'$.{field}')) WHERE collection='{collection}'",
+            field_rank(field)?
+        );
         self.conn.lock().execute_batch(&sql).map_err(db_err)
     }
 }
