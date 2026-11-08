@@ -48,6 +48,11 @@ impl Core {
         all.into_iter().filter(|p| p.code != "bad_secret_ref" && !(p.code == "invalid_settings" && p.plugins.iter().any(|id| unresolved.contains(id)))).collect()
     }
 
+    /// The contract hash this Distribution would have, without starting anything (for the lock in a saved Profile).
+    pub fn contract_for(dist: &Distribution) -> String {
+        resolve(dist).1.hash
+    }
+
     /// Resolve, open the Adapters, record who owns which collection, migrate data, and be ready.
     pub fn start(dist: &Distribution) -> std::result::Result<Core, Vec<Problem>> {
         let (mut problems, plan) = resolve(dist);

@@ -18,6 +18,10 @@ use std::sync::Arc;
 #[serde(default)]
 pub struct Profile {
     pub name: String,
+    /// The contract hash this file was last saved against (like a lockfile). A different hash at start
+    /// means a plugin upgrade changed the API under this file; the host warns.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub contract: Option<String>,
     pub enabled: Vec<String>,
     /// Port -> Adapter plugin id. Optional when exactly one enabled Adapter fills the Port.
     pub bindings: BTreeMap<String, String>,

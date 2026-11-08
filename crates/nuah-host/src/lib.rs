@@ -3,9 +3,11 @@
 //! [`Product`] and calls [`run`]; the host reads a Profile, starts the Core, starts its services (the
 //! Projections the Profile enables, and the Core's own upkeep) and stops them on SIGINT or SIGTERM.
 //!
-//!   <product> hash-password                        read a password on stdin, print its stored form
-//!   <product> serve --profile profile.json         run a Profile (what the wizard saves)
+//!   <product> serve                                run the identity file (`<product>.json` in $NUAH_HOME or the working
+//!                                                  directory); with no file, the setup wizard runs first and writes it
+//!   <product> serve --profile profile.json         run another Profile file
 //!   <product> serve --db a.db --accounts b.json    the shortcut: the product's server Profile
+//!   <product> hash-password                        read a password on stdin, print its stored form
 //!   <product> setup --profile profile.json         choose plugins and settings in a browser
 //!
 //! [ADR 0031]: https://docs.addaui.com/nuah/adr/0031-products-add-to-nuah-and-never-edit-it-ports-declare-cardinality-projections-are-plugins/
@@ -63,6 +65,12 @@ enum Cmd {
         db: Option<String>,
         #[arg(long, env = "NUAH_ACCOUNTS", requires = "db")]
         accounts: Option<String>,
+        /// The directory holding the identity file `<product>.json` (default: the working directory).
+        #[arg(long, env = "NUAH_HOME")]
+        home: Option<PathBuf>,
+        /// A directory whose sub-directories are Faces: each `NAME` is hosted at /faces/NAME (`setup` is the wizard).
+        #[arg(long, env = "NUAH_FACES")]
+        faces_dir: Option<PathBuf>,
         /// Where the http plugin listens. Overrides the Profile; default 127.0.0.1:3000.
         #[arg(long, env = "NUAH_LISTEN")]
         listen: Option<String>,
@@ -123,28 +131,36 @@ pub fn run(product: impl Product) -> ! {
             .unwrap_or(false);
             std::process::exit(if ok { 0 } else { 1 });
         }
-        Cmd::Setup { profile, listen, face } => runtime().block_on(setup_mode(&product, profile, listen, face)),
-        Cmd::Serve { profile, db, accounts, listen, allow_host, secure_cookie, web, console, faces, log_level, log_file, with } => {
-            let mut profile = match (profile, db, accounts) {
-                (Some(path), _, _) => {
-                    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| die(&format!("cannot read {}: {e}", path.display())));
-                    let v: Value = serde_json::from_str(&text).unwrap_or_else(|e| die(&format!("{} is not JSON: {e}", path.display())));
-                    nuah_kernel::setup::profile_from_json(&v).unwrap_or_else(|e| die(&e))
-                }
+        Cmd::Setup { profile, listen, face } => runtime().block_on(setup_mode(&product, profile, listen, face, false)),
+        Cmd::Serve { profile, db, accounts, home, faces_dir, listen, allow_host, secure_cookie, web, console, faces, log_level, log_file, with } => {
+            let identity = home.clone().unwrap_or_else(|| PathBuf::from(".")).join(format!("{}.json", product.name()));
+            let (mut profile, source) = match (profile, db, accounts) {
+                (Some(path), _, _) => (read_profile(&path), path.display().to_string()),
                 (None, Some(db), Some(accounts)) => {
                     let accounts: Value = serde_json::from_str(&std::fs::read_to_string(&accounts).unwrap_or_else(|e| die(&format!("cannot read {accounts}: {e}"))))
                         .unwrap_or_else(|e| die(&format!("{accounts} is not JSON: {e}")));
-                    product.server_profile(&db, accounts)
+                    (product.server_profile(&db, accounts), "--db and --accounts".to_string())
                 }
-                _ => die("give --profile FILE, or both --db and --accounts"),
+                _ => {
+                    if !identity.exists() {
+                        // No identity file: the setup wizard writes one, then this process goes on to run it.
+                        runtime().block_on(setup_until_saved(&product, &identity, listen.clone(), faces_dir.as_ref()));
+                    }
+                    (read_profile(&identity), identity.display().to_string())
+                }
             };
             let mut face_list: Vec<(String, String)> = vec![];
+            if let Some(dir) = &faces_dir {
+                face_list.extend(faces_in(dir).into_iter().filter(|(n, _)| n != "setup").map(|(n, d)| (format!("/faces/{n}"), d.display().to_string())));
+            }
             face_list.extend(web.map(|d| ("/faces/web".to_string(), d.display().to_string())));
             face_list.extend(console.map(|d| ("/faces/console".to_string(), d.display().to_string())));
             for f in &faces {
                 let (prefix, dir) = f.split_once('=').unwrap_or_else(|| die(&format!("--face {f}: write /faces/NAME=DIRECTORY")));
                 face_list.push((prefix.to_string(), dir.to_string()));
             }
+            // The lock is checked against the file as the wizard saw it: before this run's switches and the host's own additions.
+            let file_changed = profile.contract.clone().filter(|c| *c != Core::contract_for(&Distribution { name: product.name().to_string(), catalog: product.catalog(&[]), profile: profile.clone() }));
             product.configure(&mut profile, &with);
             with_http(&mut profile, HttpFlags { listen, hosts: allow_host, secure_cookie, faces: face_list });
             let listen_at = profile.settings["http"]["listen"].as_str().unwrap_or("127.0.0.1:3000").to_string();
@@ -160,6 +176,11 @@ pub fn run(product: impl Product) -> ! {
                 }
                 die("the profile does not resolve")
             });
+            let writable = std::fs::OpenOptions::new().append(true).open(&source).is_ok();
+            core.log(Level::Info, "nuah.host", "host.identity", json!({"source": source, "writable": writable}));
+            if let Some(locked) = file_changed {
+                core.log(Level::Warn, "nuah.host", "host.contract_changed", json!({"locked": locked, "now": core.contract_hash(), "hint": "a plugin upgrade changed the API this file was saved against"}));
+            }
             let services = core.start_services().unwrap_or_else(|e| die(&e.message));
             core.log(Level::Info, "nuah.host", "host.running", json!({"product": product.name(), "contract": core.contract_hash(), "services": services.running()}));
             let for_panics = core.clone();
@@ -250,18 +271,52 @@ pub fn with_http(profile: &mut Profile, f: HttpFlags) {
     }
 }
 
-async fn setup_mode(product: &impl Product, profile: PathBuf, listen: String, face: Option<PathBuf>) {
+fn read_profile(path: &std::path::Path) -> Profile {
+    let text = std::fs::read_to_string(path).unwrap_or_else(|e| die(&format!("cannot read {}: {e}", path.display())));
+    let v: Value = serde_json::from_str(&text).unwrap_or_else(|e| die(&format!("{} is not JSON: {e}", path.display())));
+    nuah_kernel::setup::profile_from_json(&v).unwrap_or_else(|e| die(&e))
+}
+
+/// The sub-directories of `dir`, sorted by name: each one is a Face.
+fn faces_in(dir: &std::path::Path) -> Vec<(String, PathBuf)> {
+    let mut v: Vec<(String, PathBuf)> = std::fs::read_dir(dir)
+        .map(|rd| rd.flatten().filter(|e| e.path().is_dir()).map(|e| (e.file_name().to_string_lossy().to_string(), e.path())).collect())
+        .unwrap_or_default();
+    v.sort();
+    v
+}
+
+/// No identity file yet: run the wizard (guarded by its one-time code) until a Profile is saved, then return.
+/// It listens where `serve` would (`NUAH_LISTEN`, default loopback); the code is what protects it off loopback.
+async fn setup_until_saved(product: &impl Product, profile: &std::path::Path, listen: Option<String>, faces_dir: Option<&PathBuf>) {
+    let face = faces_dir.map(|d| d.join("setup")).filter(|d| d.is_dir());
+    let listen = listen.unwrap_or_else(|| "127.0.0.1:3000".into());
+    eprintln!("no {} found: starting setup", profile.display());
+    setup_mode(product, profile.to_path_buf(), listen, face, true).await;
+}
+
+async fn setup_mode(product: &impl Product, profile: PathBuf, listen: String, face: Option<PathBuf>, until_saved: bool) {
     let addr: std::net::SocketAddr = listen.parse().unwrap_or_else(|_| die(&format!("{listen} is not an address like 127.0.0.1:3100")));
-    if !addr.ip().is_loopback() {
+    if !addr.ip().is_loopback() && !until_saved {
         die("setup listens on loopback only (127.0.0.1 or [::1])");
     }
     let code = uuid::Uuid::new_v4().simple().to_string()[..12].to_string();
+    let saved = std::sync::Arc::new(tokio::sync::Notify::new());
     let mut server = nuah_http::Config::default();
+    if until_saved {
+        server.hosts.extend(std::env::var("NUAH_ALLOW_HOSTS").unwrap_or_default().split(',').filter(|h| !h.is_empty()).map(|h| h.to_lowercase()));
+    }
     server.faces.extend(face.map(|d| ("/faces/setup".to_string(), d)));
-    let cfg = setup::SetupConfig { distribution: product.name().into(), catalog: product.catalog(&[]), starting_point: product.starting_point(), profile_path: profile, code: code.clone(), server };
+    let cfg = setup::SetupConfig { distribution: product.name().into(), catalog: product.catalog(&[]), starting_point: product.starting_point(), profile_path: profile, code: code.clone(), server, saved: saved.clone() };
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap_or_else(|e| die(&format!("cannot listen on {listen}: {e}")));
     eprintln!("setup on http://{listen}/\nsetup code: {code}   (type it into the wizard; it changes every start)");
-    axum::serve(listener, setup::setup_router(cfg)).with_graceful_shutdown(wait_for_stop()).await.expect("serve");
+    axum::serve(listener, setup::setup_router(cfg)).with_graceful_shutdown(async move {
+        if until_saved {
+            tokio::select! { _ = saved.notified() => {}, _ = wait_for_stop() => std::process::exit(0) }
+        } else {
+            wait_for_stop().await
+        }
+    }).await.expect("serve");
 }
 
 fn runtime() -> tokio::runtime::Runtime {

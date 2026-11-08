@@ -41,6 +41,8 @@ pub struct Config {
     pub secure_cookie: bool,
     /// Static Faces to host: (URL prefix such as `/faces/web`, directory).
     pub faces: Vec<(String, std::path::PathBuf)>,
+    /// The Face `/` shows, by name (`web` for `/faces/web`), without redirecting. Default: `web` when it is hosted, else the first.
+    pub root: Option<String>,
     /// Failed sign-ins allowed per account name within `throttle_window` (ADR 0015).
     pub sign_in_failures_per_name: usize,
     /// Failed sign-ins allowed overall within `throttle_window`.
@@ -67,6 +69,7 @@ impl Config {
         }
         c.hosts.extend(v["hosts"].as_array().into_iter().flatten().filter_map(|h| h.as_str()).map(|h| h.to_lowercase()));
         c.secure_cookie = v["secure_cookie"].as_bool().unwrap_or(false);
+        c.root = v["root"].as_str().map(|r| r.trim_matches('/').to_string()).filter(|r| !r.is_empty());
         for (prefix, dir) in v["faces"].as_object().into_iter().flatten() {
             if !prefix.starts_with('/') {
                 return Err(format!("the face prefix {prefix} must start with /"));
@@ -90,6 +93,7 @@ impl Default for Config {
             hosts: ["localhost", "127.0.0.1", "[::1]"].iter().map(|s| s.to_string()).collect(),
             secure_cookie: false,
             faces: vec![],
+            root: None,
             sign_in_failures_per_name: 5,
             sign_in_failures_overall: 100,
             throttle_window: Duration::from_secs(300),
@@ -531,6 +535,12 @@ pub async fn guard(State(cfg): State<Arc<Config>>, req: Request, next: Next) -> 
 /// Routes a product adds to the Projection. Called once with the Core, it returns its own router.
 pub type RouteFn = Arc<dyn Fn(Core) -> Router + Send + Sync>;
 
+/// The directory `/` serves: the named root Face, else `web`, else the first one hosted.
+pub fn root_face(cfg: &Config) -> Option<std::path::PathBuf> {
+    let by = |name: &str| cfg.faces.iter().find(|(p, _)| p.trim_start_matches("/faces/") == name).map(|(_, d)| d.clone());
+    cfg.root.as_deref().and_then(by).or_else(|| by("web")).or_else(|| cfg.faces.first().map(|(_, d)| d.clone()))
+}
+
 pub fn router(core: Core, cfg: Config) -> Router {
     router_with(core, cfg, &[], tokio::sync::watch::channel(false).1)
 }
@@ -555,9 +565,9 @@ pub fn router_with(core: Core, cfg: Config, extra: &[RouteFn], shutdown: tokio::
     for (prefix, dir) in &cfg.faces {
         r = r.nest_service(prefix, tower_http::services::ServeDir::new(dir));
     }
-    if let Some((prefix, _)) = cfg.faces.first() {
-        let to = format!("{prefix}/");
-        r = r.route("/", get(move || async move { axum::response::Redirect::temporary(&to) }));
+    // `/` shows the root Face where it is (no redirect), so a bare address opens the product.
+    if let Some(dir) = root_face(&cfg) {
+        r = r.fallback_service(tower_http::services::ServeDir::new(dir));
     }
     r.layer(middleware::from_fn_with_state(cfg, guard))
 }

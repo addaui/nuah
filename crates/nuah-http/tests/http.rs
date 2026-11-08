@@ -107,3 +107,44 @@ fn readiness_says_whether_the_core_can_read_its_data() {
     assert!(v["checks"].as_array().unwrap().iter().any(|c| c["name"] == "db" && c["ok"] == true));
     services.stop();
 }
+
+fn start_with_http(http: Value) -> (Core, Services) {
+    let mut p = Profile { name: "t".into(), ..Default::default() };
+    p.enabled = ["db-memory", "auth-local", "policy-roles", "clock-system", "ids-random", "http"].iter().map(|s| s.to_string()).collect();
+    p.settings.insert("http".into(), http);
+    p.grants.insert("http".into(), vec!["serve".into()]);
+    let list: Vec<std::sync::Arc<dyn Plugin>> = vec![
+        std::sync::Arc::new(AdapterMemory), std::sync::Arc::new(AuthLocal), std::sync::Arc::new(PolicyRoles), std::sync::Arc::new(StdClock), std::sync::Arc::new(StdIds), std::sync::Arc::new(Http::new()),
+    ];
+    let core = Core::start(&Distribution { name: "t".into(), catalog: Catalog(list), profile: p }).unwrap_or_else(|e| panic!("{e:?}"));
+    let services = core.start_services().unwrap();
+    (core, services)
+}
+
+fn face_dir(tag: &str, marker: &str) -> String {
+    let d = std::env::temp_dir().join(format!("nuah-root-{}-{tag}", std::process::id()));
+    std::fs::create_dir_all(&d).unwrap();
+    std::fs::write(d.join("index.html"), marker).unwrap();
+    d.to_string_lossy().to_string()
+}
+
+fn get_text(url: &str) -> (u16, String) {
+    let mut r = agent().get(url).call().unwrap();
+    (r.status().as_u16(), r.body_mut().read_to_string().unwrap())
+}
+
+#[test]
+fn the_root_path_shows_the_web_face_without_redirecting_unless_another_is_named() {
+    let (console, web) = (face_dir("console", "CONSOLE"), face_dir("web", "WEB"));
+    // `console` sorts before `web`, which used to send `/` to the console.
+    let port = free_port();
+    let (_core, services) = start_with_http(json!({"listen": format!("127.0.0.1:{port}"), "faces": {"/faces/console": console, "/faces/web": web}}));
+    assert_eq!(get_text(&format!("http://127.0.0.1:{port}/")), (200, "WEB".to_string()));
+    assert_eq!(get_text(&format!("http://127.0.0.1:{port}/faces/console/")).1, "CONSOLE");
+    services.stop();
+
+    let port = free_port();
+    let (_core, services) = start_with_http(json!({"listen": format!("127.0.0.1:{port}"), "root": "console", "faces": {"/faces/console": console, "/faces/web": web}}));
+    assert_eq!(get_text(&format!("http://127.0.0.1:{port}/")), (200, "CONSOLE".to_string()));
+    services.stop();
+}

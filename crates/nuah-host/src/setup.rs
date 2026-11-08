@@ -34,6 +34,8 @@ pub struct SetupConfig {
     pub code: String,
     /// `/faces/setup` and so on; the server config's hosts apply.
     pub server: Config,
+    /// Told once a Profile has been saved, so a host that started setup because no file existed can go on to serve it.
+    pub saved: Arc<tokio::sync::Notify>,
 }
 
 #[derive(Clone)]
@@ -101,17 +103,21 @@ async fn check(State(s): State<Setup>, Json(body): Json<Value>) -> Response {
 }
 
 async fn save(State(s): State<Setup>, Json(body): Json<Value>) -> Response {
-    let p = match draft(&s, &body) {
+    let mut p = match draft(&s, &body) {
         Err(r) => return r,
         Ok(p) => p,
     };
     let dist = s.dist(p.clone());
+    p.contract = Some(Core::contract_for(&dist));
     let problems = Core::check_for_setup(&dist);
     if !problems.is_empty() {
         return (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"ok": false, "problems": problems}))).into_response();
     }
     match write_profile(&s.0.profile_path, &p) {
-        Ok(()) => Json(json!({"ok": true, "saved": s.0.profile_path.display().to_string(), "profile": redact_profile(&dist)})).into_response(),
+        Ok(()) => {
+            s.0.saved.notify_one();
+            Json(json!({"ok": true, "saved": s.0.profile_path.display().to_string(), "profile": redact_profile(&dist)})).into_response()
+        }
         Err(e) => refuse(StatusCode::INTERNAL_SERVER_ERROR, "internal", "setup.write_failed", &format!("Could not write the file: {e}")),
     }
 }

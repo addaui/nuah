@@ -8,7 +8,7 @@ use crate::resolver::{Distribution, Profile};
 use crate::ports::PORTS;
 use serde_json::{json, Map, Value};
 
-const PROFILE_KEYS: [&str; 7] = ["name", "enabled", "bindings", "settings", "grants", "permissions", "telemetry"];
+const PROFILE_KEYS: [&str; 8] = ["name", "contract", "enabled", "bindings", "settings", "grants", "permissions", "telemetry"];
 
 /// Read a Profile strictly: an unknown key or a wrong shape is an error, so a typo does not
 /// silently switch a plugin off.
