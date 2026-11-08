@@ -21,6 +21,7 @@ pub fn run(db: &dyn Db) {
     atomicity(db);
     nested(db);
     change_log(db);
+    concurrent_writers(db);
 }
 
 fn envelope(db: &dyn Db) {
@@ -232,4 +233,84 @@ fn change_log(db: &dyn Db) {
         Ok(())
     })
     .unwrap();
+}
+
+/// Several threads write at once. The change log still comes out in commit order: every number is used once,
+/// the numbers have no gaps, and a reader that follows the log with a cursor sees every record exactly once,
+/// in order, however the writes interleave. (A log numbered before commit would let a reader skip a record
+/// that commits late.)
+fn concurrent_writers(db: &dyn Db) {
+    const THREADS: usize = 4;
+    const EACH: usize = 40;
+    let mut base = 0;
+    db.read(&mut |r| {
+        base = r.latest_change()?;
+        Ok(())
+    })
+    .unwrap();
+    let done = std::sync::atomic::AtomicUsize::new(0);
+    let mut assigned: Vec<u64> = vec![];
+    let mut followed: Vec<u64> = vec![];
+    std::thread::scope(|sc| {
+        let writers: Vec<_> = (0..THREADS)
+            .map(|t| {
+                let done = &done;
+                sc.spawn(move || {
+                    let mut got = vec![];
+                    for i in 0..EACH {
+                        let mut seq = 0;
+                        db.write(&mut |w| {
+                            w.put("cw", &format!("t{t}"), "t", json!({"i": i}), Expect::Any, 1)?;
+                            seq = w.append_change(ChangeRecord { seq: 0, at: 1, actor: format!("t{t}"), request: format!("r{t}-{i}"), operation: "op".into(), docs: vec![], events: vec![] })?;
+                            Ok(())
+                        })
+                        .unwrap();
+                        got.push(seq);
+                    }
+                    done.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    got
+                })
+            })
+            .collect();
+        let reader = sc.spawn(|| {
+            let mut cursor = base;
+            let mut seen = vec![];
+            loop {
+                let finished = done.load(std::sync::atomic::Ordering::SeqCst) == THREADS;
+                db.read(&mut |r| {
+                    for c in r.changes_after(cursor, 25)? {
+                        cursor = c.seq;
+                        seen.push(c.seq);
+                    }
+                    Ok(())
+                })
+                .unwrap();
+                if finished && seen.len() == THREADS * EACH {
+                    break;
+                }
+                if finished {
+                    // one more pass after the writers ended picks up the rest
+                    let mut more = 0;
+                    db.read(&mut |r| {
+                        more = r.changes_after(cursor, 1)?.len();
+                        Ok(())
+                    })
+                    .unwrap();
+                    if more == 0 {
+                        break;
+                    }
+                }
+            }
+            seen
+        });
+        for w in writers {
+            assigned.extend(w.join().unwrap());
+        }
+        followed = reader.join().unwrap();
+    });
+    let all: Vec<u64> = (base + 1..=base + (THREADS * EACH) as u64).collect();
+    let mut sorted = assigned.clone();
+    sorted.sort();
+    assert_eq!(sorted, all, "every number is used once, with no gaps");
+    assert_eq!(followed, all, "a reader following the log sees every record once, in order");
 }

@@ -6,6 +6,11 @@
 //! [`Db::write`] must be safe to repeat. How an adapter achieves that (one connection, a pool,
 //! optimistic retries) is its own business. The Port stays synchronous.
 //!
+//! The change log is numbered in commit order: a record's number is fixed by the order in which writes commit,
+//! never by the order in which they began, so a reader following the log with a cursor can never skip a
+//! record that commits late. An Adapter that allows more than one writer at a time must serialize the
+//! numbering (the conformance suite runs writers in parallel to check it).
+//!
 //! Every stored document is wrapped in an envelope kept by the adapter and the kernel (revision, change
 //! time, tombstone, owning plugin), never by plugins.
 //!
