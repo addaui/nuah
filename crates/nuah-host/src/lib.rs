@@ -4,37 +4,59 @@
 //! Projections the Profile enables, and the Core's own upkeep) and stops them on SIGINT or SIGTERM.
 //!
 //!   <product> serve                                run the identity file (`<product>.json` in $NUAH_HOME or the working
-//!                                                  directory); with no file, the setup wizard runs first and writes it
+//!                                                  directory); with no file, the product's bootstrap runs first and writes it
 //!   <product> serve --profile profile.json         run another Profile file
 //!   <product> serve --db a.db --accounts b.json    the shortcut: the product's server Profile
 //!   <product> hash-password                        read a password on stdin, print its stored form
-//!   <product> setup --profile profile.json         choose plugins and settings in a browser
+//!   <product> setup --profile profile.json         change a Profile with the product's bootstrap
 //!
 //! [ADR 0031]: https://docs.addaui.com/nuah/adr/0031-products-add-to-nuah-and-never-edit-it-ports-declare-cardinality-projections-are-plugins/
 
-pub mod setup;
-
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use nuah_adapters::AuthPassword;
-use nuah_kernel::{Catalog, Core, Distribution, Level, Plugin, Profile};
+use nuah_kernel::{Catalog, Core, Distribution, Level, Profile};
 use serde_json::{json, Value};
 use std::io::Read;
 use std::path::PathBuf;
 
 /// What a product tells the host about itself. Everything product-specific is here; the host has no
-/// idea what a task is.
+/// idea what a task is, and does not know whether the product has a web face, a database or a terminal.
 pub trait Product {
     /// The product's name (`madar`): the program name, the Distribution name.
     fn name(&self) -> &str;
-    /// Every plugin available, including the Projections (`nuah_http::Http`) with whatever routes the
-    /// product adds. `with` holds the `--with NAME` switches the operator gave.
-    fn catalog(&self, with: &[String]) -> Catalog;
-    /// The Profile for `serve --db FILE --accounts FILE`: several people with passwords on one database.
-    fn server_profile(&self, db: &str, accounts: Value) -> Profile;
-    /// What the setup wizard starts from when there is no Profile file yet.
+    /// Every plugin available, including the Projections (`nuah_http::Http`) with whatever routes the product adds.
+    fn catalog(&self) -> Catalog;
+    /// What setup starts from when there is no Profile file yet: the product's defaults.
     fn starting_point(&self) -> Profile;
-    /// Adjust the Profile once it is read (a `--with NAME` switch that turns a plugin on, for one). Does nothing by default.
-    fn configure(&self, _profile: &mut Profile, _with: &[String]) {}
+    /// How a first run (no identity file) gets one: a web wizard, terminal prompts, whatever the product picks
+    /// ([ADR 0039]). `None` means the product cannot set itself up, and `serve` without a file says so and stops.
+    ///
+    /// [ADR 0039]: https://docs.addaui.com/nuah/adr/0039-accounts-belong-to-the-auth-plugin-and-live-in-the-database-faces-setup-and-console-are-plugins/
+    fn bootstrap(&self) -> Option<Box<dyn Bootstrap>> {
+        None
+    }
+}
+
+/// Writes the identity file when there is none (or changes one). It runs before any Core exists, so it
+/// reads manifests and asks the Resolver, and starts no plugin.
+pub trait Bootstrap {
+    /// Returns once a Profile that resolves has been saved to `ctx.identity_file`. With `ctx.until_saved`
+    /// false (the `setup` command) it may keep running until the operator stops it.
+    fn run(&self, ctx: SetupContext) -> Result<(), String>;
+}
+
+pub struct SetupContext {
+    pub product: String,
+    pub catalog: Catalog,
+    pub starting_point: Profile,
+    /// Where the Profile is written (and read from, when it exists).
+    pub identity_file: PathBuf,
+    /// `--listen` / `NUAH_LISTEN`, for a bootstrap that listens.
+    pub listen: Option<String>,
+    /// `--allow-host` / `NUAH_ALLOW_HOSTS`, for a bootstrap that listens.
+    pub allow_hosts: Vec<String>,
+    /// True when `serve` found no identity file and will run the one saved; false for the `setup` command.
+    pub until_saved: bool,
 }
 
 #[derive(Parser)]
@@ -46,32 +68,24 @@ struct Args {
 #[derive(Subcommand)]
 enum Cmd {
     HashPassword,
-    /// Choose plugins and settings in a browser and save a Profile (loopback only; ADR 0014).
+    /// Create or change a Profile with the product's bootstrap.
     Setup {
         /// The Profile file to edit (created if missing).
         #[arg(long)]
         profile: PathBuf,
-        #[arg(long, default_value = "127.0.0.1:3100")]
-        listen: String,
-        /// Directory of the wizard (hosted at /faces/setup).
-        #[arg(long)]
-        face: Option<PathBuf>,
+        #[arg(long, env = "NUAH_LISTEN")]
+        listen: Option<String>,
+        #[arg(long = "allow-host", env = "NUAH_ALLOW_HOSTS", value_delimiter = ',')]
+        allow_host: Vec<String>,
     },
     Serve {
-        /// Run a Profile file (what the wizard saves) instead of --db and --accounts.
-        #[arg(long, env = "NUAH_PROFILE", conflicts_with_all = ["db", "accounts"])]
+        /// Run this Profile file instead of the identity file.
+        #[arg(long, env = "NUAH_PROFILE")]
         profile: Option<PathBuf>,
-        #[arg(long, env = "NUAH_DB", requires = "accounts")]
-        db: Option<String>,
-        #[arg(long, env = "NUAH_ACCOUNTS", requires = "db")]
-        accounts: Option<String>,
         /// The directory holding the identity file `<product>.json` (default: the working directory).
         #[arg(long, env = "NUAH_HOME")]
         home: Option<PathBuf>,
-        /// A directory whose sub-directories are Faces: each `NAME` is hosted at /faces/NAME (`setup` is the wizard).
-        #[arg(long, env = "NUAH_FACES")]
-        faces_dir: Option<PathBuf>,
-        /// Where the http plugin listens. Overrides the Profile; default 127.0.0.1:3000.
+        /// Where the http plugin listens (when the Profile enables it). Overrides the Profile; default 127.0.0.1:3000.
         #[arg(long, env = "NUAH_LISTEN")]
         listen: Option<String>,
         /// Extra Host names to answer to (behind a reverse proxy). Comma separated in the environment.
@@ -80,24 +94,9 @@ enum Cmd {
         /// The proxy terminates TLS: mark the session cookie Secure.
         #[arg(long, env = "NUAH_SECURE_COOKIE")]
         secure_cookie: bool,
-        /// Directory of the product's web face (hosted at /faces/web).
-        #[arg(long)]
-        web: Option<PathBuf>,
-        /// Directory of the generated console (hosted at /faces/console).
-        #[arg(long)]
-        console: Option<PathBuf>,
-        /// Another static Face, `/faces/NAME=DIRECTORY`.
-        #[arg(long = "face")]
-        faces: Vec<String>,
         /// Records chattier than this are not written (error, warn, info, debug, trace). Overrides the Profile.
         #[arg(long, env = "NUAH_LOG_LEVEL")]
         log_level: Option<String>,
-        /// Also append log records, as JSON lines, to this file (rotated).
-        #[arg(long, env = "NUAH_LOG_FILE")]
-        log_file: Option<String>,
-        /// A switch the product understands (Madar: `previews`).
-        #[arg(long = "with", env = "NUAH_WITH", value_delimiter = ',')]
-        with: Vec<String>,
     },
     /// Exit 0 if a running host answers on /healthz (for container health checks; no curl needed).
     Healthcheck {
@@ -131,45 +130,34 @@ pub fn run(product: impl Product) -> ! {
             .unwrap_or(false);
             std::process::exit(if ok { 0 } else { 1 });
         }
-        Cmd::Setup { profile, listen, face } => runtime().block_on(setup_mode(&product, profile, listen, face, false)),
-        Cmd::Serve { profile, db, accounts, home, faces_dir, listen, allow_host, secure_cookie, web, console, faces, log_level, log_file, with } => {
+        Cmd::Setup { profile, listen, allow_host } => {
+            let Some(bootstrap) = product.bootstrap() else { die("this product has no setup") };
+            bootstrap.run(context(&product, profile, listen, allow_host, false)).unwrap_or_else(|e| die(&e));
+        }
+        Cmd::Serve { profile, home, listen, allow_host, secure_cookie, log_level } => {
             let identity = home.clone().unwrap_or_else(|| PathBuf::from(".")).join(format!("{}.json", product.name()));
-            let (mut profile, source) = match (profile, db, accounts) {
-                (Some(path), _, _) => (read_profile(&path), path.display().to_string()),
-                (None, Some(db), Some(accounts)) => {
-                    let accounts: Value = serde_json::from_str(&std::fs::read_to_string(&accounts).unwrap_or_else(|e| die(&format!("cannot read {accounts}: {e}"))))
-                        .unwrap_or_else(|e| die(&format!("{accounts} is not JSON: {e}")));
-                    (product.server_profile(&db, accounts), "--db and --accounts".to_string())
-                }
-                _ => {
-                    if !identity.exists() {
-                        // No identity file: the setup wizard writes one, then this process goes on to run it.
-                        runtime().block_on(setup_until_saved(&product, &identity, listen.clone(), faces_dir.as_ref()));
-                    }
-                    (read_profile(&identity), identity.display().to_string())
-                }
-            };
-            let mut face_list: Vec<(String, String)> = vec![];
-            if let Some(dir) = &faces_dir {
-                face_list.extend(faces_in(dir).into_iter().filter(|(n, _)| n != "setup").map(|(n, d)| (format!("/faces/{n}"), d.display().to_string())));
+            let path = profile.unwrap_or_else(|| identity.clone());
+            if !path.exists() {
+                // No identity file: the product's bootstrap writes one, then this process goes on to run it.
+                let Some(bootstrap) = product.bootstrap() else {
+                    die(&format!("{} does not exist, and {} has no setup to create it; write the file or run it with --profile", path.display(), product.name()))
+                };
+                eprintln!("no {} found: starting setup", path.display());
+                bootstrap.run(context(&product, path.clone(), listen.clone(), allow_host.clone(), true)).unwrap_or_else(|e| die(&e));
             }
-            face_list.extend(web.map(|d| ("/faces/web".to_string(), d.display().to_string())));
-            face_list.extend(console.map(|d| ("/faces/console".to_string(), d.display().to_string())));
-            for f in &faces {
-                let (prefix, dir) = f.split_once('=').unwrap_or_else(|| die(&format!("--face {f}: write /faces/NAME=DIRECTORY")));
-                face_list.push((prefix.to_string(), dir.to_string()));
+            let mut profile = read_profile(&path);
+            let source = path.display().to_string();
+            // The lock is checked against the file as it was saved, before this run's command-line changes.
+            let file_changed = profile.contract.clone().filter(|c| *c != Core::contract_for(&Distribution { name: product.name().to_string(), catalog: product.catalog(), profile: profile.clone() }));
+            apply_http_flags(&mut profile, HttpFlags { listen, hosts: allow_host, secure_cookie });
+            if let Some(level) = log_level {
+                profile.telemetry.level = Some(level);
             }
-            // The lock is checked against the file as the wizard saw it: before this run's switches and the host's own additions.
-            let file_changed = profile.contract.clone().filter(|c| *c != Core::contract_for(&Distribution { name: product.name().to_string(), catalog: product.catalog(&[]), profile: profile.clone() }));
-            product.configure(&mut profile, &with);
-            with_http(&mut profile, HttpFlags { listen, hosts: allow_host, secure_cookie, faces: face_list });
             let listen_at = profile.settings["http"]["listen"].as_str().unwrap_or("127.0.0.1:3000").to_string();
-            if profile.enabled.iter().any(|p| p == "auth-local") && !listen_at.parse::<std::net::SocketAddr>().is_ok_and(|a| a.ip().is_loopback()) {
+            if profile.enabled.iter().any(|p| p == "auth-local") && profile.enabled.iter().any(|p| p == "http") && !listen_at.parse::<std::net::SocketAddr>().is_ok_and(|a| a.ip().is_loopback()) {
                 die("the profile uses auth-local (everyone is admin); listen on 127.0.0.1 or use auth-password");
             }
-            let mut catalog = product.catalog(&with);
-            with_logging(&mut catalog, &mut profile, log_level, log_file);
-            let dist = Distribution { name: product.name().to_string(), catalog, profile };
+            let dist = Distribution { name: product.name().to_string(), catalog: product.catalog(), profile };
             let core = Core::start(&dist).unwrap_or_else(|problems| {
                 for p in &problems {
                     eprintln!("{}: {}", p.code, p.message);
@@ -198,50 +186,17 @@ pub fn run(product: impl Product) -> ! {
     std::process::exit(0)
 }
 
-/// Make sure records go somewhere readable: the console adapter when the Profile enables no log adapter,
-/// and a file as well when asked. The Profile's own choice is never overridden.
-pub fn with_logging(catalog: &mut Catalog, profile: &mut Profile, level: Option<String>, file: Option<String>) {
-    let fills_log = |catalog: &Catalog, id: &str| catalog.0.iter().any(|p| p.manifest().id == id && p.manifest().fills.as_deref() == Some("log"));
-    let any_log = profile.enabled.iter().any(|id| fills_log(catalog, id));
-    let add = |catalog: &mut Catalog, plugin: std::sync::Arc<dyn Plugin>| {
-        let id = plugin.manifest().id;
-        if !catalog.0.iter().any(|p| p.manifest().id == id) {
-            catalog.0.push(plugin);
-        }
-    };
-    if !any_log {
-        add(catalog, std::sync::Arc::new(nuah_adapters::LogConsole));
-        profile.enabled.push("log-console".into());
-    }
-    if let Some(path) = file {
-        add(catalog, std::sync::Arc::new(nuah_adapters::LogFile));
-        if !profile.enabled.iter().any(|p| p == "log-file") {
-            profile.enabled.push("log-file".into());
-        }
-        profile.settings.entry("log-file".into()).or_insert_with(|| json!({"path": path}));
-    }
-    if level.is_some() {
-        profile.telemetry.level = level;
-    }
-}
-
-/// What the command line says about the `http` plugin; each piece overrides the Profile only when given.
+/// What the command line says about the `http` plugin; each piece overrides the Profile only when given, and
+/// only when the Profile enables `http` (a product with no web server has nothing to apply them to).
 pub struct HttpFlags {
     pub listen: Option<String>,
     pub hosts: Vec<String>,
     pub secure_cookie: bool,
-    pub faces: Vec<(String, String)>,
 }
 
-/// Make sure the Profile runs the `http` plugin, granted `serve`, with the command line's choices on top of
-/// whatever the Profile already says.
-pub fn with_http(profile: &mut Profile, f: HttpFlags) {
+pub fn apply_http_flags(profile: &mut Profile, f: HttpFlags) {
     if !profile.enabled.iter().any(|p| p == "http") {
-        profile.enabled.push("http".into());
-    }
-    let grant = profile.grants.entry("http".into()).or_default();
-    if !grant.iter().any(|g| g == "serve") {
-        grant.push("serve".into());
+        return;
     }
     let s = profile.settings.entry("http".into()).or_insert_with(|| json!({}));
     if !s.is_object() {
@@ -261,14 +216,10 @@ pub fn with_http(profile: &mut Profile, f: HttpFlags) {
     if f.secure_cookie {
         o.insert("secure_cookie".into(), json!(true));
     }
-    if !f.faces.is_empty() {
-        let faces = o.entry("faces").or_insert(json!({}));
-        if let Some(m) = faces.as_object_mut() {
-            for (prefix, dir) in f.faces {
-                m.insert(prefix, json!(dir));
-            }
-        }
-    }
+}
+
+fn context(product: &impl Product, identity_file: PathBuf, listen: Option<String>, allow_hosts: Vec<String>, until_saved: bool) -> SetupContext {
+    SetupContext { product: product.name().into(), catalog: product.catalog(), starting_point: product.starting_point(), identity_file, listen, allow_hosts, until_saved }
 }
 
 fn read_profile(path: &std::path::Path) -> Profile {
@@ -277,54 +228,12 @@ fn read_profile(path: &std::path::Path) -> Profile {
     nuah_kernel::setup::profile_from_json(&v).unwrap_or_else(|e| die(&e))
 }
 
-/// The sub-directories of `dir`, sorted by name: each one is a Face.
-fn faces_in(dir: &std::path::Path) -> Vec<(String, PathBuf)> {
-    let mut v: Vec<(String, PathBuf)> = std::fs::read_dir(dir)
-        .map(|rd| rd.flatten().filter(|e| e.path().is_dir()).map(|e| (e.file_name().to_string_lossy().to_string(), e.path())).collect())
-        .unwrap_or_default();
-    v.sort();
-    v
-}
-
-/// No identity file yet: run the wizard (guarded by its one-time code) until a Profile is saved, then return.
-/// It listens where `serve` would (`NUAH_LISTEN`, default loopback); the code is what protects it off loopback.
-async fn setup_until_saved(product: &impl Product, profile: &std::path::Path, listen: Option<String>, faces_dir: Option<&PathBuf>) {
-    let face = faces_dir.map(|d| d.join("setup")).filter(|d| d.is_dir());
-    let listen = listen.unwrap_or_else(|| "127.0.0.1:3000".into());
-    eprintln!("no {} found: starting setup", profile.display());
-    setup_mode(product, profile.to_path_buf(), listen, face, true).await;
-}
-
-async fn setup_mode(product: &impl Product, profile: PathBuf, listen: String, face: Option<PathBuf>, until_saved: bool) {
-    let addr: std::net::SocketAddr = listen.parse().unwrap_or_else(|_| die(&format!("{listen} is not an address like 127.0.0.1:3100")));
-    if !addr.ip().is_loopback() && !until_saved {
-        die("setup listens on loopback only (127.0.0.1 or [::1])");
-    }
-    let code = uuid::Uuid::new_v4().simple().to_string()[..12].to_string();
-    let saved = std::sync::Arc::new(tokio::sync::Notify::new());
-    let mut server = nuah_http::Config::default();
-    if until_saved {
-        server.hosts.extend(std::env::var("NUAH_ALLOW_HOSTS").unwrap_or_default().split(',').filter(|h| !h.is_empty()).map(|h| h.to_lowercase()));
-    }
-    server.faces.extend(face.map(|d| ("/faces/setup".to_string(), d)));
-    let cfg = setup::SetupConfig { distribution: product.name().into(), catalog: product.catalog(&[]), starting_point: product.starting_point(), profile_path: profile, code: code.clone(), server, saved: saved.clone() };
-    let listener = tokio::net::TcpListener::bind(addr).await.unwrap_or_else(|e| die(&format!("cannot listen on {listen}: {e}")));
-    eprintln!("setup on http://{listen}/\nsetup code: {code}   (type it into the wizard; it changes every start)");
-    axum::serve(listener, setup::setup_router(cfg)).with_graceful_shutdown(async move {
-        if until_saved {
-            tokio::select! { _ = saved.notified() => {}, _ = wait_for_stop() => std::process::exit(0) }
-        } else {
-            wait_for_stop().await
-        }
-    }).await.expect("serve");
-}
-
 fn runtime() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_current_thread().enable_all().build().expect("tokio runtime")
 }
 
 /// Resolves on Ctrl-C everywhere, and on SIGTERM on Unix (what `docker stop` and systemd send).
-async fn wait_for_stop() {
+pub async fn wait_for_stop() {
     #[cfg(unix)]
     {
         use tokio::signal::unix::{signal, SignalKind};
@@ -340,7 +249,7 @@ async fn wait_for_stop() {
     }
 }
 
-fn die(msg: &str) -> ! {
+pub fn die(msg: &str) -> ! {
     eprintln!("error: {msg}");
     std::process::exit(1)
 }

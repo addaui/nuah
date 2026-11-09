@@ -86,30 +86,67 @@ async fn state(State(s): State<Setup>) -> Response {
     Json(body).into_response()
 }
 
-/// Read a draft from the body and put back the secrets it did not retype.
-fn draft(s: &Setup, body: &Value) -> Result<Profile, Response> {
-    let mut p = profile_from_json(body).map_err(|m| refuse(StatusCode::BAD_REQUEST, "invalid", "setup.bad_profile", &m))?;
+/// The enabled plugin that keeps accounts and wants a first one made at setup (`x-first-account` on its
+/// `accounts` setting names how the password is stored; `password-hash` is the one understood here).
+fn first_account_plugin(s: &Setup, p: &Profile) -> Option<String> {
+    s.0.catalog.0.iter().map(|pl| pl.manifest()).find(|m| p.enabled.contains(&m.id) && m.settings_schema["properties"]["accounts"]["x-first-account"] == "password-hash").map(|m| m.id)
+}
+
+fn has_accounts(p: &Profile, plugin: &str) -> bool {
+    match &p.settings.get(plugin).map(|v| &v["accounts"]) {
+        Some(Value::Array(a)) => !a.is_empty(),
+        Some(Value::Null) | None => false,
+        Some(_) => true, // a hidden secret that stands for accounts already saved
+    }
+}
+
+/// Read a draft from the body and put back the secrets it did not retype. `first_account` (name, password) is
+/// not part of a Profile: it becomes the first administrator in the settings of the plugin that keeps accounts,
+/// as a password hash, when `hash` is true.
+fn draft(s: &Setup, body: &Value, hash: bool) -> Result<(Profile, Vec<nuah_kernel::Problem>), Response> {
+    let mut body = body.clone();
+    let first = body.as_object_mut().and_then(|o| o.remove("first_account"));
+    let mut p = profile_from_json(&body).map_err(|m| refuse(StatusCode::BAD_REQUEST, "invalid", "setup.bad_profile", &m))?;
     let stored = s.stored().ok().flatten().unwrap_or_default();
     let dist = s.dist(p.clone());
     restore_profile(&mut p, &stored, &dist);
-    Ok(p)
+    let mut problems = vec![];
+    if let Some(plugin) = first_account_plugin(s, &p) {
+        let name = first.as_ref().and_then(|f| f["name"].as_str()).unwrap_or("").trim().to_string();
+        let password = first.as_ref().and_then(|f| f["password"].as_str()).unwrap_or("").to_string();
+        if !has_accounts(&p, &plugin) {
+            if name.is_empty() || password.chars().count() < 8 {
+                problems.push(nuah_kernel::Problem { code: "first_account_missing".into(), plugins: vec![plugin.clone()], message: "Choose a name and a password of at least 8 characters for the first administrator.".into() });
+            } else if hash {
+                let acc = json!([{"name": name, "display": name, "password_hash": nuah_adapters::AuthPassword::hash_password(&password), "roles": ["admin"]}]);
+                let slot = p.settings.entry(plugin).or_insert_with(|| json!({}));
+                if let Some(o) = slot.as_object_mut() {
+                    o.insert("accounts".into(), acc);
+                }
+            }
+        }
+    }
+    Ok((p, problems))
 }
 
 async fn check(State(s): State<Setup>, Json(body): Json<Value>) -> Response {
-    match draft(&s, &body) {
+    match draft(&s, &body, false) {
         Err(r) => r,
-        Ok(p) => Json(json!({"problems": Core::check_for_setup(&s.dist(p))})).into_response(),
+        Ok((p, mut problems)) => {
+            problems.extend(Core::check_for_setup(&s.dist(p)));
+            Json(json!({"problems": problems})).into_response()
+        }
     }
 }
 
 async fn save(State(s): State<Setup>, Json(body): Json<Value>) -> Response {
-    let mut p = match draft(&s, &body) {
+    let (mut p, mut problems) = match draft(&s, &body, true) {
         Err(r) => return r,
-        Ok(p) => p,
+        Ok(x) => x,
     };
     let dist = s.dist(p.clone());
     p.contract = Some(Core::contract_for(&dist));
-    let problems = Core::check_for_setup(&dist);
+    problems.extend(Core::check_for_setup(&dist));
     if !problems.is_empty() {
         return (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"ok": false, "problems": problems}))).into_response();
     }

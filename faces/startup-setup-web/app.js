@@ -29,10 +29,16 @@ async function send(path, body) {
 }
 const post = send;
 
-const st = { info: null, name: '', enabled: [], bindings: {}, settings: {}, grants: {}, permissions: {}, parked: {}, bad: {}, raw: {}, problems: [], timer: 0, seq: 0 };
+const st = { first: { name: '', password: '' }, info: null, name: '', enabled: [], bindings: {}, settings: {}, grants: {}, permissions: {}, parked: {}, bad: {}, raw: {}, problems: [], timer: 0, seq: 0 };
 
 // Grants and permissions are not edited here, but they belong to the Profile and must survive a save.
-const draft = () => ({ name: st.name, enabled: st.enabled, bindings: st.bindings, settings: st.settings, grants: st.grants, permissions: st.permissions });
+const draft = () => ({ name: st.name, enabled: st.enabled, bindings: st.bindings, settings: st.settings, grants: st.grants, permissions: st.permissions, ...(needsFirstAccount() ? { first_account: { ...st.first } } : {}) });
+
+// An enabled plugin that keeps accounts and has none saved yet asks for the first administrator.
+function needsFirstAccount() {
+  return st.info.plugins.some((p) => isOn(p.id) && p.settings_schema?.properties?.accounts?.['x-first-account'] === 'password-hash'
+    && !(Array.isArray(st.settings[p.id]?.accounts) ? st.settings[p.id].accounts.length : st.settings[p.id]?.accounts));
+}
 const plugin = (id) => st.info.plugins.find((p) => p.id === id);
 const isOn = (id) => st.enabled.includes(id);
 
@@ -68,6 +74,7 @@ function render() {
   for (const p of st.problems) for (const id of p.plugins) (byPlugin[id] ||= []).push(p);
   const anyBad = st.enabled.some((id) => st.bad[id]);
   $('save').disabled = st.problems.length > 0 || anyBad;
+  $('first').hidden = !needsFirstAccount();
   $('path').textContent = st.info.path + (st.info.file_exists ? '' : ' (new file)');
 
   $('problems').replaceChildren(h('h2', {}, 'Does it work?'), ...(st.problems.length
@@ -142,7 +149,7 @@ function card(p, problems) {
 async function save() {
   const { status, body } = await post('/setup/save', draft());
   if (status === 200 && body.ok) {
-    toast(`Saved ${body.saved}. Start it with: nuah-server serve --profile ${body.saved}`);
+    toast(`Saved ${body.saved}. Start it with: serve`);
     st.info.file_exists = true; render();
   } else {
     st.problems = body.problems || [{ code: 'invalid_profile', plugins: [], message: body.error?.message || 'Could not save' }];
@@ -170,6 +177,8 @@ async function load() {
   render();
 }
 
+$('first-name').addEventListener('input', (e) => { st.first.name = e.target.value; schedule(); });
+$('first-pass').addEventListener('input', (e) => { st.first.password = e.target.value; schedule(); });
 $('name').addEventListener('input', (e) => { st.name = e.target.value; schedule(); });
 $('save').addEventListener('click', save);
 $('gate-form').addEventListener('submit', (e) => {

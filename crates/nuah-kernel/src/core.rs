@@ -102,21 +102,23 @@ impl Core {
                 }
             };
         }
-        let db = take!("db", Db);
-        let auth = take!("auth", Auth);
-        let policy = take!("policy", Policy);
-        let clock = take!("clock", Clock);
-        let ids = take!("ids", Ids);
+        let db: Arc<dyn Db> = if plan.ports.contains_key("db") { take!("db", Db) } else { Arc::new(crate::standins::NoDb) };
+        let auth: Arc<dyn Auth> = if plan.ports.contains_key("auth") { take!("auth", Auth) } else { Arc::new(crate::standins::NoAuth) };
+        let policy: Arc<dyn Policy> = if plan.ports.contains_key("policy") { take!("policy", Policy) } else { Arc::new(crate::standins::DenyAll) };
+        let clock: Arc<dyn Clock> = if plan.ports.contains_key("clock") { take!("clock", Clock) } else { Arc::new(crate::standins::SystemTime) };
+        let ids: Arc<dyn Ids> = if plan.ports.contains_key("ids") { take!("ids", Ids) } else { Arc::new(crate::standins::CounterIds::default()) };
         let (wake, _) = watch::channel(0u64);
         let settings = plan.settings.clone();
         let features = db.features();
         let inner = Arc::new(Inner { db, features, auth, policy, clock, ids, plan, settings, wake, profile_name: dist.profile.name.clone(), telemetry });
-        if let Err(e) = inner.prepare_storage() {
-            let code = if e.category == Category::Unsupported { "unsupported" } else { "storage" };
-            return Err(vec![Problem { code: code.into(), plugins: e.params["plugin"].as_str().map(|p| vec![p.to_string()]).unwrap_or_default(), message: e.message }]);
-        }
-        if let Err(e) = inner.init_listener_cursors() {
-            return Err(vec![Problem { code: "storage".into(), plugins: vec![], message: e.message }]);
+        if inner.plan.ports.contains_key("db") {
+            if let Err(e) = inner.prepare_storage() {
+                let code = if e.category == Category::Unsupported { "unsupported" } else { "storage" };
+                return Err(vec![Problem { code: code.into(), plugins: e.params["plugin"].as_str().map(|p| vec![p.to_string()]).unwrap_or_default(), message: e.message }]);
+            }
+            if let Err(e) = inner.init_listener_cursors() {
+                return Err(vec![Problem { code: "storage".into(), plugins: vec![], message: e.message }]);
+            }
         }
         let latest = {
             let mut l = 0;
@@ -194,6 +196,11 @@ impl Core {
     pub fn profile_name(&self) -> &str {
         &self.inner.profile_name
     }
+    /// The Faces the enabled plugins publish, as (face name, plugin id), by plugin id.
+    pub fn faces(&self) -> Vec<(String, String)> {
+        self.inner.plan.active.iter().filter_map(|(id, a)| a.manifest.face.clone().map(|f| (f, id.clone()))).collect()
+    }
+
     pub fn plugin_ids(&self) -> Vec<String> {
         self.inner.plan.active.keys().cloned().collect()
     }

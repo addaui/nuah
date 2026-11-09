@@ -52,6 +52,7 @@ impl Plugin for Http {
                 "hosts": {"type": "array", "items": {"type": "string"}, "x-tier": "operator", "x-apply": "service"},
                 "secure_cookie": {"type": "boolean", "x-tier": "operator", "x-apply": "service"},
                 "root": {"type": "string", "description": "Which Face `/` shows, by name (for example web). Default: web, else the first.", "x-tier": "operator", "x-apply": "service"},
+                "faces_dir": {"type": "string", "description": "Where plugins' Faces are: a plugin that publishes the Face named X is served from <faces_dir>/<its id>. Default: faces", "x-tier": "operator", "x-apply": "service"},
                 "faces": {"type": "object", "additionalProperties": {"type": "string"}, "x-tier": "operator", "x-apply": "service"},
                 "worker_threads": {"type": "integer", "minimum": 0, "maximum": 1024, "x-tier": "operator", "x-apply": "service"},
                 "sign_in_failures_per_name": {"type": "integer", "minimum": 1, "x-tier": "operator", "x-apply": "service"},

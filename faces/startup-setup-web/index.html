@@ -17,6 +17,12 @@
   </header>
   <main>
     <section id="problems" aria-live="polite"></section>
+    <section id="first" hidden>
+      <h2>First administrator</h2>
+      <p class="muted">The person who signs in first and can add the others. The password is stored hashed; you can change it later.</p>
+      <div class="bind"><label for="first-name">Name</label><input id="first-name" autocomplete="username" maxlength="200"></div>
+      <div class="bind"><label for="first-pass">Password</label><input id="first-pass" type="password" autocomplete="new-password" maxlength="1000"> <span class="muted">at least 8 characters</span></div>
+    </section>
     <section id="bindings"></section>
     <section id="plugins"></section>
   </main>

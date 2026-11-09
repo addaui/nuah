@@ -41,6 +41,8 @@ pub struct Config {
     pub secure_cookie: bool,
     /// Static Faces to host: (URL prefix such as `/faces/web`, directory).
     pub faces: Vec<(String, std::path::PathBuf)>,
+    /// Where the Faces of plugins are: `<faces_dir>/<plugin id>`, for each enabled plugin that publishes one and has no entry in `faces`.
+    pub faces_dir: std::path::PathBuf,
     /// The Face `/` shows, by name (`web` for `/faces/web`), without redirecting. Default: `web` when it is hosted, else the first.
     pub root: Option<String>,
     /// Failed sign-ins allowed per account name within `throttle_window` (ADR 0015).
@@ -69,6 +71,9 @@ impl Config {
         }
         c.hosts.extend(v["hosts"].as_array().into_iter().flatten().filter_map(|h| h.as_str()).map(|h| h.to_lowercase()));
         c.secure_cookie = v["secure_cookie"].as_bool().unwrap_or(false);
+        if let Some(d) = v["faces_dir"].as_str() {
+            c.faces_dir = d.into();
+        }
         c.root = v["root"].as_str().map(|r| r.trim_matches('/').to_string()).filter(|r| !r.is_empty());
         for (prefix, dir) in v["faces"].as_object().into_iter().flatten() {
             if !prefix.starts_with('/') {
@@ -93,6 +98,7 @@ impl Default for Config {
             hosts: ["localhost", "127.0.0.1", "[::1]"].iter().map(|s| s.to_string()).collect(),
             secure_cookie: false,
             faces: vec![],
+            faces_dir: "faces".into(),
             root: None,
             sign_in_failures_per_name: 5,
             sign_in_failures_overall: 100,
@@ -547,7 +553,14 @@ pub fn router(core: Core, cfg: Config) -> Router {
 
 /// The Link, the static Faces and a product's extra routes, behind the guard. `shutdown` ends Pulse streams
 /// when it turns true so the server can stop.
-pub fn router_with(core: Core, cfg: Config, extra: &[RouteFn], shutdown: tokio::sync::watch::Receiver<bool>) -> Router {
+pub fn router_with(core: Core, mut cfg: Config, extra: &[RouteFn], shutdown: tokio::sync::watch::Receiver<bool>) -> Router {
+    // A plugin that publishes a Face is hosted from `<faces_dir>/<plugin id>` unless the Profile gave it a directory.
+    for (name, plugin) in core.faces() {
+        let prefix = format!("/faces/{name}");
+        if !cfg.faces.iter().any(|(p, _)| *p == prefix) {
+            cfg.faces.push((prefix, cfg.faces_dir.join(plugin)));
+        }
+    }
     let cfg = Arc::new(cfg);
     let mut r = Router::new()
         .route("/healthz", get(health))

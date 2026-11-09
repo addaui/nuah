@@ -309,6 +309,10 @@ pub struct Manifest {
     /// A Theme's data for Faces.
     #[serde(default)]
     pub theme: Option<Value>,
+    /// The name of the Face this plugin publishes (`web`, `console`). A projection that serves static
+    /// Faces finds its files in `<faces dir>/<plugin id>` unless the Profile names another directory.
+    #[serde(default)]
+    pub face: Option<String>,
 }
 
 impl Manifest {

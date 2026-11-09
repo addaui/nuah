@@ -1,0 +1,11 @@
+[package]
+name = "nuah-console"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "The console: a generic Face that shows any Core's Operations, health and settings, published by a plugin."
+
+[dependencies]
+nuah-kernel = { path = "../nuah-kernel" }
+serde_json = "1.0.154"

@@ -4,7 +4,7 @@
 
 use crate::manifest::*;
 use crate::plugin::{Bindings, Plugin};
-use crate::ports::{cardinality, port_required, Cardinality, PORTS};
+use crate::ports::{cardinality, Cardinality, PORTS};
 use crate::schema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -371,6 +371,13 @@ pub fn resolve(dist: &Distribution) -> (Vec<Problem>, Plan) {
             ps.push(problem("bad_binding", &[plugin], format!("the profile binds {port} to {plugin}, which is not an enabled adapter for it")));
         }
     }
+    // A Port is needed only by the plugins that say so (or whose declarations imply it).
+    let mut needers: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for (id, _, m) in &enabled {
+        for port in implied_ports(m) {
+            needers.entry(port).or_default().push(id.as_str());
+        }
+    }
     for port in PORTS {
         if let Some(Cardinality::Many(_)) = cardinality(port) {
             if let Some(b) = p.bindings.get(port) {
@@ -380,8 +387,11 @@ pub fn resolve(dist: &Distribution) -> (Vec<Problem>, Plan) {
                 Some(f) => {
                     plan.many.insert(port.into(), f.iter().map(|s| s.to_string()).collect());
                 }
-                None if port_required(port) => ps.push(problem("port_unfilled", &[], format!("no enabled adapter fills the port {port}"))),
-                None => {}
+                None => {
+                    if let Some(who) = needers.get(port) {
+                        ps.push(problem("port_unfilled", who, format!("{} need the port {port}, and no enabled adapter fills it", who.join(", "))))
+                    }
+                }
             }
             continue;
         }
@@ -389,7 +399,11 @@ pub fn resolve(dist: &Distribution) -> (Vec<Problem>, Plan) {
             (Some(b), _) => {
                 plan.ports.insert(port.into(), b.clone());
             }
-            (None, None) => ps.push(problem("port_unfilled", &[], format!("no enabled adapter fills the port {port}"))),
+            (None, None) => {
+                if let Some(who) = needers.get(port) {
+                    ps.push(problem("port_unfilled", who, format!("{} need the port {port}, and no enabled adapter fills it", who.join(", "))))
+                }
+            }
             (None, Some(f)) if f.len() == 1 => {
                 plan.ports.insert(port.into(), f[0].to_string());
             }
@@ -583,4 +597,23 @@ fn normalize(m: &mut Manifest) {
             d.input = json!({"type":"object","additionalProperties":false});
         }
     }
+}
+
+/// The Ports a plugin needs: the ones it lists in `requires.ports`, plus the ones its declarations imply
+/// (owning collections needs `db`; an operation that is not public needs `auth` and `policy`).
+pub(crate) fn implied_ports(m: &Manifest) -> BTreeSet<&'static str> {
+    let mut out: BTreeSet<&'static str> = BTreeSet::new();
+    for want in &m.requires.ports {
+        if let Some(name) = PORTS.iter().find(|p| *p == want) {
+            out.insert(name);
+        }
+    }
+    if !m.data.collections.is_empty() || !m.data.reads.is_empty() || !m.data.requires.is_empty() || !m.listeners.is_empty() {
+        out.insert("db");
+    }
+    if m.operations.values().any(|d| !d.public) {
+        out.insert("auth");
+        out.insert("policy");
+    }
+    out
 }

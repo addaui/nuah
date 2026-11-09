@@ -16,6 +16,7 @@ pub mod pulse;
 pub mod resolver;
 pub mod schema;
 pub mod setup;
+pub mod standins;
 pub mod telemetry;
 
 pub use crate::core::{Core, Services};

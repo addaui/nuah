@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 //! The fixed Ports: db, auth, policy, clock, ids (one Adapter each) and the telemetry Ports log, trace, metric,
-//! heartbeat (every enabled Adapter, optional). Each Port declares how many Adapters fill it.
+//! heartbeat (every enabled Adapter). A Port needs an Adapter only when an enabled plugin needs the Port
+//! ([ADR 0039]); the kernel fills an unneeded one with an inert stand-in.
+//!
+//! [ADR 0039]: https://docs.addaui.com/nuah/adr/0039-accounts-belong-to-the-auth-plugin-and-live-in-the-database-faces-setup-and-console-are-plugins/
 
 use crate::db::{DbRead, Millis};
 use crate::error::Result;
@@ -8,6 +11,13 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 /// Who is making a request, as verified by the auth Adapter.
+///
+/// `subject` is the one key every other plugin stores about a person. The auth Port's contract ([ADR 0039]):
+/// it is opaque, made once when the person is first known, never reused and never changed when their login
+/// name or display name does. An Adapter that takes over from another (OIDC after passwords) maps its own
+/// identity onto the subject already in use, so what other plugins stored keeps pointing at the same person.
+///
+/// [ADR 0039]: https://docs.addaui.com/nuah/adr/0039-accounts-belong-to-the-auth-plugin-and-live-in-the-database-faces-setup-and-console-are-plugins/
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Identity {
     pub subject: String,
@@ -83,24 +93,22 @@ pub enum Routing {
 pub struct PortSpec {
     pub name: &'static str,
     pub cardinality: Cardinality,
-    /// A Core cannot start without an Adapter for a required Port.
-    pub required: bool,
 }
 
-const fn spec(name: &'static str, cardinality: Cardinality, required: bool) -> PortSpec {
-    PortSpec { name, cardinality, required }
+const fn spec(name: &'static str, cardinality: Cardinality) -> PortSpec {
+    PortSpec { name, cardinality }
 }
 
 pub const PORT_SPECS: [PortSpec; 9] = [
-    spec("db", Cardinality::Single, true),
-    spec("auth", Cardinality::Single, true),
-    spec("policy", Cardinality::Single, true),
-    spec("clock", Cardinality::Single, true),
-    spec("ids", Cardinality::Single, true),
-    spec("log", Cardinality::Many(Routing::Broadcast), false),
-    spec("trace", Cardinality::Many(Routing::Broadcast), false),
-    spec("metric", Cardinality::Many(Routing::Broadcast), false),
-    spec("heartbeat", Cardinality::Many(Routing::Broadcast), false),
+    spec("db", Cardinality::Single),
+    spec("auth", Cardinality::Single),
+    spec("policy", Cardinality::Single),
+    spec("clock", Cardinality::Single),
+    spec("ids", Cardinality::Single),
+    spec("log", Cardinality::Many(Routing::Broadcast)),
+    spec("trace", Cardinality::Many(Routing::Broadcast)),
+    spec("metric", Cardinality::Many(Routing::Broadcast)),
+    spec("heartbeat", Cardinality::Many(Routing::Broadcast)),
 ];
 
 pub const PORTS: [&str; 9] = ["db", "auth", "policy", "clock", "ids", "log", "trace", "metric", "heartbeat"];
@@ -108,8 +116,4 @@ pub const PORTS: [&str; 9] = ["db", "auth", "policy", "clock", "ids", "log", "tr
 /// How many Adapters fill this Port; `None` for a name that is not a Port.
 pub fn cardinality(port: &str) -> Option<Cardinality> {
     PORT_SPECS.iter().find(|s| s.name == port).map(|s| s.cardinality)
-}
-
-pub fn port_required(port: &str) -> bool {
-    PORT_SPECS.iter().find(|s| s.name == port).is_some_and(|s| s.required)
 }

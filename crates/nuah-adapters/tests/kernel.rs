@@ -400,3 +400,41 @@ fn housekeeping_delivers_events_to_listeners_without_a_server() {
     assert_eq!(w.core.drain_listeners().unwrap(), 0);
     services.stop();
 }
+
+// ---- Ports are needed only when a plugin needs them (ADR 0039) ---------------------------------
+
+fn hello(extra: Value) -> std::sync::Arc<dyn Plugin> {
+    struct Hello(Value);
+    impl Plugin for Hello {
+        fn manifest(&self) -> Manifest {
+            let mut m = json!({"id":"hello","version":"1","namespaces":["hello"],"operations":{"hello.say":{"kind":"query","public":true}}});
+            for (k, v) in self.0.as_object().unwrap() {
+                m[k] = v.clone();
+            }
+            serde_json::from_value(m).unwrap()
+        }
+        fn bind(&self, b: &mut Bindings) {
+            b.op("hello.say", |_, _| Ok(json!({"hi": true})));
+        }
+    }
+    std::sync::Arc::new(Hello(extra))
+}
+
+#[test]
+fn a_distribution_with_no_database_starts_when_no_plugin_needs_one() {
+    let mut p = profile(&["hello"]);
+    p.settings.clear();
+    p.grants.clear();
+    let dist = Distribution { name: "t".into(), catalog: Catalog(vec![hello(json!({}))]), profile: p };
+    let core = Core::start(&dist).expect("a core with no adapters");
+    let anyone = Identity::new("x", "x", &[]);
+    assert_eq!(core.call_as(&anyone, "hello.say", json!({}), None).unwrap().output["hi"], true);
+}
+
+#[test]
+fn a_plugin_that_owns_data_makes_the_database_needed_and_the_problem_names_it() {
+    let dist = Distribution { name: "t".into(), catalog: Catalog(vec![hello(json!({"data":{"collections":["hello.things"],"version":1}}))]), profile: profile(&["hello"]) };
+    let problems = Core::check(&dist);
+    let p = problems.iter().find(|p| p.code == "port_unfilled").expect("db is needed");
+    assert!(p.message.contains("hello") && p.message.contains("db"), "{}", p.message);
+}

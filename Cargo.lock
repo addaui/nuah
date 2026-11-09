@@ -1039,18 +1039,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "nuah-console"
+version = "0.7.0"
+dependencies = [
+ "nuah-kernel",
+ "serde_json",
+]
+
+[[package]]
 name = "nuah-host"
 version = "0.7.0"
 dependencies = [
- "axum",
  "clap",
  "nuah-adapters",
- "nuah-http",
  "nuah-kernel",
  "serde_json",
  "tokio",
- "tower-http",
- "uuid",
 ]
 
 [[package]]
@@ -1076,6 +1080,21 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "tokio",
+]
+
+[[package]]
+name = "nuah-setup-web"
+version = "0.7.0"
+dependencies = [
+ "axum",
+ "nuah-adapters",
+ "nuah-host",
+ "nuah-http",
+ "nuah-kernel",
+ "serde_json",
+ "tokio",
+ "tower-http",
+ "uuid",
 ]
 
 [[package]]
