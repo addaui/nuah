@@ -109,8 +109,8 @@ pub struct Plan {
     pub hash: String,
 }
 
-/// `serve`: the plugin runs a long-lived service (a Projection, for one). See ADR 0031.
-const CAPABILITIES: [&str; 3] = ["emit", "call", "serve"];
+/// `serve`: the plugin runs a long-lived service (a Projection, for one). See ADR 0031. `net`: an outbound Operation may use the `net` Port (ADR 0040).
+const CAPABILITIES: [&str; 4] = ["emit", "call", "serve", "net"];
 
 /// The hash of the operation and schema set, so a Face can tell it was built for a different Core.
 pub const ENVELOPE_VERSION: u32 = 1;
@@ -271,6 +271,14 @@ pub fn resolve(dist: &Distribution) -> (Vec<Problem>, Plan) {
                     ps.push(problem("unknown_resource", &[id], format!("{op} reports can-lists for resource type {}, which no enabled plugin answers for", a.kind)));
                 }
             }
+            if d.kind == OpKind::Outbound {
+                if d.affordances.is_some() {
+                    ps.push(problem("bad_operation", &[id], format!("{op} is outbound, so it cannot report can-lists (it holds no transaction to ask in)")));
+                }
+                for h in plan_hooks_on(&enabled, op) {
+                    ps.push(problem("hook_on_outbound", &[id, &h.0], format!("{} hooks {op} at stage {:?}; an outbound Operation takes only `before` hooks", h.0, h.1)));
+                }
+            }
             if d.public && (d.permission.is_some() || d.resource.is_some()) {
                 ps.push(problem("bad_operation", &[id], format!("{op} is public, so it cannot also need a permission or resource")));
             }
@@ -429,14 +437,20 @@ pub fn resolve(dist: &Distribution) -> (Vec<Problem>, Plan) {
         pl.bind(&mut b);
         let miss = |ps: &mut Vec<Problem>, what: &str, name: &str| ps.push(problem("unbound_handler", &[id], format!("{id} declares {what} {name} but binds no handler for it")));
         let extra = |ps: &mut Vec<Problem>, what: &str, name: &str| ps.push(problem("extra_handler", &[id], format!("{id} binds a handler for {what} {name} that its manifest does not declare")));
+        let outbound = |n: &String| m.operations.get(n).is_some_and(|d| d.kind == OpKind::Outbound);
         for n in m.operations.keys() {
-            if !b.ops.contains_key(n) {
+            if !(if outbound(n) { b.outbound.contains_key(n) } else { b.ops.contains_key(n) }) {
                 miss(&mut ps, "operation", n);
             }
         }
         for n in b.ops.keys() {
-            if !m.operations.contains_key(n) {
+            if !m.operations.contains_key(n) || outbound(n) {
                 extra(&mut ps, "operation", n);
+            }
+        }
+        for n in b.outbound.keys() {
+            if !outbound(n) {
+                extra(&mut ps, "outbound operation", n);
             }
         }
         let hook_names: BTreeSet<&str> = m.hooks.iter().map(|h| h.handler.as_str()).collect();
@@ -611,9 +625,26 @@ pub(crate) fn implied_ports(m: &Manifest) -> BTreeSet<&'static str> {
     if !m.data.collections.is_empty() || !m.data.reads.is_empty() || !m.data.requires.is_empty() || !m.listeners.is_empty() {
         out.insert("db");
     }
+    if m.requires.capabilities.iter().any(|c| c == "net") {
+        out.insert("net");
+    }
     if m.operations.values().any(|d| !d.public) {
         out.insert("auth");
         out.insert("policy");
     }
     out
+}
+
+/// The (plugin, stage) of every `around` or `after` hook that names the Operation exactly. A wildcard hook
+/// (`notes.*`, `*`) simply does not apply to an outbound Operation, which has only `before` hooks.
+fn plan_hooks_on(enabled: &[(String, Arc<dyn Plugin>, Manifest)], op: &str) -> Vec<(String, Stage)> {
+    let mut v = vec![];
+    for (id, _, m) in enabled {
+        for h in &m.hooks {
+            if h.stage != Stage::Before && h.on == op {
+                v.push((id.clone(), h.stage));
+            }
+        }
+    }
+    v
 }

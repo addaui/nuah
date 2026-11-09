@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-//! The fixed Ports: db, auth, policy, clock, ids (one Adapter each) and the telemetry Ports log, trace, metric,
+//! The fixed Ports: db, auth, policy, clock, ids, net (one Adapter each) and the telemetry Ports log, trace, metric,
 //! heartbeat (every enabled Adapter). A Port needs an Adapter only when an enabled plugin needs the Port
 //! ([ADR 0039]); the kernel fills an unneeded one with an inert stand-in.
 //!
@@ -70,6 +70,54 @@ pub trait Ids: Send + Sync {
     fn new_id(&self) -> String;
 }
 
+/// A request to the outside world ([ADR 0040]). Which addresses may be reached, and how, is the Adapter's rule.
+///
+/// [ADR 0040]: https://docs.addaui.com/nuah/adr/0040-outbound-operations-run-outside-the-transaction-and-reach-the-network-through-a-net-port/
+#[derive(Debug, Clone)]
+pub struct NetRequest {
+    pub method: String,
+    pub url: String,
+    pub headers: Vec<(String, String)>,
+    pub body: Option<Vec<u8>>,
+    /// The answer's body is cut after this many bytes.
+    pub max_bytes: usize,
+    pub timeout_ms: u64,
+}
+
+impl NetRequest {
+    pub fn get(url: &str) -> Self {
+        NetRequest { method: "GET".into(), url: url.into(), headers: vec![], body: None, max_bytes: 1 << 20, timeout_ms: 5000 }
+    }
+    pub fn header(mut self, name: &str, value: &str) -> Self {
+        self.headers.push((name.into(), value.into()));
+        self
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct NetResponse {
+    pub status: u16,
+    /// Where the answer came from after redirects.
+    pub url: String,
+    /// Header names in lower case.
+    pub headers: Vec<(String, String)>,
+    pub body: Vec<u8>,
+    /// The body was longer than `max_bytes`.
+    pub truncated: bool,
+}
+
+impl NetResponse {
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers.iter().find(|(n, _)| n == name).map(|(_, v)| v.as_str())
+    }
+}
+
+pub trait Net: Send + Sync {
+    fn name(&self) -> &str;
+    /// Blocks until there is an answer or the time limit passes. A status of 400 or more is an answer, not an error.
+    fn fetch(&self, req: &NetRequest) -> Result<NetResponse>;
+}
+
 /// How many Adapters fill one Port ([ADR 0031]). Whether a Port may have several is a property of the
 /// Port, not a choice of the Profile.
 ///
@@ -99,19 +147,20 @@ const fn spec(name: &'static str, cardinality: Cardinality) -> PortSpec {
     PortSpec { name, cardinality }
 }
 
-pub const PORT_SPECS: [PortSpec; 9] = [
+pub const PORT_SPECS: [PortSpec; 10] = [
     spec("db", Cardinality::Single),
     spec("auth", Cardinality::Single),
     spec("policy", Cardinality::Single),
     spec("clock", Cardinality::Single),
     spec("ids", Cardinality::Single),
+    spec("net", Cardinality::Single),
     spec("log", Cardinality::Many(Routing::Broadcast)),
     spec("trace", Cardinality::Many(Routing::Broadcast)),
     spec("metric", Cardinality::Many(Routing::Broadcast)),
     spec("heartbeat", Cardinality::Many(Routing::Broadcast)),
 ];
 
-pub const PORTS: [&str; 9] = ["db", "auth", "policy", "clock", "ids", "log", "trace", "metric", "heartbeat"];
+pub const PORTS: [&str; 10] = ["db", "auth", "policy", "clock", "ids", "net", "log", "trace", "metric", "heartbeat"];
 
 /// How many Adapters fill this Port; `None` for a name that is not a Port.
 pub fn cardinality(port: &str) -> Option<Cardinality> {

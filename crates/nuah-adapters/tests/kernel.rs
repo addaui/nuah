@@ -438,3 +438,101 @@ fn a_plugin_that_owns_data_makes_the_database_needed_and_the_problem_names_it() 
     let p = problems.iter().find(|p| p.code == "port_unfilled").expect("db is needed");
     assert!(p.message.contains("hello") && p.message.contains("db"), "{}", p.message);
 }
+
+// ---- Outbound Operations (ADR 0040) ------------------------------------------------------------
+
+struct FakeNet(std::sync::Arc<parking_lot::Mutex<Vec<String>>>);
+struct FakeNetPlugin(std::sync::Arc<parking_lot::Mutex<Vec<String>>>);
+impl Net for FakeNet {
+    fn name(&self) -> &str {
+        "net-fake"
+    }
+    fn fetch(&self, r: &NetRequest) -> Result<NetResponse> {
+        self.0.lock().push(r.url.clone());
+        Ok(NetResponse { status: 200, url: r.url.clone(), headers: vec![], body: b"hello".to_vec(), truncated: false })
+    }
+}
+impl Plugin for FakeNetPlugin {
+    fn manifest(&self) -> Manifest {
+        serde_json::from_value(json!({"id":"net-fake","version":"1","fills":"net"})).unwrap()
+    }
+    fn fill(&self, _: &Value) -> Result<Option<PortImpl>> {
+        Ok(Some(PortImpl::Net(std::sync::Arc::new(FakeNet(self.0.clone())))))
+    }
+}
+
+/// A plugin with an outbound Operation that fetches, one that reads data through another Operation, and a Command that tries to call an outbound one.
+struct Fetchy {
+    wants_net: bool,
+}
+impl Plugin for Fetchy {
+    fn manifest(&self) -> Manifest {
+        let caps = if self.wants_net { json!(["call", "net"]) } else { json!(["call"]) };
+        serde_json::from_value(json!({
+            "id": "fetchy", "version": "1", "namespaces": ["fetchy"],
+            "requires": {"capabilities": caps},
+            "data": {"collections": ["fetchy.seen"], "version": 1},
+            "permissions": {"fetchy.use": {"default": ["member"]}},
+            "operations": {
+                "fetchy.get": {"kind": "outbound", "permission": "fetchy.use", "input": {"type":"object","required":["url"],"properties":{"url":{"type":"string"}},"additionalProperties":false}, "output": {"type":"object","required":["body"]}},
+                "fetchy.note": {"kind": "command", "permission": "fetchy.use", "input": {"type":"object"}},
+                "fetchy.count": {"kind": "query", "permission": "fetchy.use"},
+                "fetchy.bad": {"kind": "command", "permission": "fetchy.use"}
+            }
+        })).unwrap()
+    }
+    fn bind(&self, b: &mut Bindings) {
+        b.outbound("fetchy.get", |cx, i| {
+            let r = cx.net()?.fetch(&NetRequest::get(i["url"].as_str().unwrap_or("")))?;
+            // data is reached by calling Operations, each in a transaction of its own
+            cx.call("fetchy.note", json!({}))?;
+            Ok(json!({"body": String::from_utf8_lossy(&r.body)}))
+        });
+        b.op("fetchy.note", |tx, _| {
+            let n = tx.query("fetchy.seen", &Query::new())?.items.len();
+            tx.put("fetchy.seen", &format!("s{n}"), json!({}), Expect::Any)?;
+            Ok(json!({}))
+        });
+        b.op("fetchy.count", |tx, _| Ok(json!({"n": tx.query("fetchy.seen", &Query::new())?.items.len()})));
+        b.op("fetchy.bad", |tx, _| tx.call("fetchy.get", json!({"url": "https://example.com/"})));
+    }
+}
+
+fn outbound_world(wants_net: bool, grant_net: bool) -> std::result::Result<(Core, std::sync::Arc<parking_lot::Mutex<Vec<String>>>), Vec<Problem>> {
+    let asked = std::sync::Arc::new(parking_lot::Mutex::new(vec![]));
+    let mut p = profile(&["db-memory", "auth-local", "policy-roles", "clock-system", "ids-random", "net-fake", "fetchy"]);
+    p.settings.clear();
+    p.grants.clear();
+    p.grants.insert("fetchy".into(), if grant_net { vec!["call".into(), "net".into()] } else { vec!["call".into()] });
+    let list: Vec<std::sync::Arc<dyn Plugin>> = vec![
+        std::sync::Arc::new(AdapterMemory), std::sync::Arc::new(AuthLocal), std::sync::Arc::new(PolicyRoles), std::sync::Arc::new(StdClock), std::sync::Arc::new(StdIds),
+        std::sync::Arc::new(FakeNetPlugin(asked.clone())), std::sync::Arc::new(Fetchy { wants_net }),
+    ];
+    Core::start(&Distribution { name: "t".into(), catalog: Catalog(list), profile: p }).map(|c| (c, asked))
+}
+
+#[test]
+fn an_outbound_operation_uses_the_net_port_outside_a_transaction_and_reaches_data_by_calling_operations() {
+    let (core, asked) = outbound_world(true, true).unwrap();
+    let me = Identity::new("u", "u", &["member"]);
+    let out = core.call_as(&me, "fetchy.get", json!({"url": "https://example.com/"}), None).unwrap().output;
+    assert_eq!(out["body"], "hello");
+    assert_eq!(asked.lock().as_slice(), ["https://example.com/"]);
+    assert_eq!(core.call_as(&me, "fetchy.count", json!({}), None).unwrap().output["n"], 1, "the nested command committed on its own");
+    // the front door still applies: input is checked and the permission is needed
+    assert!(core.call_as(&me, "fetchy.get", json!({"nope": 1}), None).is_err());
+    assert!(core.call_as(&Identity::new("s", "s", &["stranger"]), "fetchy.get", json!({"url": "https://example.com/"}), None).is_err());
+    // a retried call is not a replayed one: keys are refused, and a Command cannot call an outbound Operation
+    assert!(core.call_as(&me, "fetchy.get", json!({"url": "https://example.com/"}), Some("k")).is_err());
+    assert!(core.call_as(&me, "fetchy.bad", json!({}), None).is_err());
+}
+
+#[test]
+fn the_net_capability_and_the_net_port_are_both_needed() {
+    // without the grant the Profile is refused, and the Port is asked for by the capability
+    let problems = outbound_world(true, false).err().expect("not granted");
+    assert!(problems.iter().any(|p| p.code == "capability_not_granted"), "{problems:?}");
+    // granted but the plugin never asked: also refused
+    let problems = outbound_world(false, true).err().expect("not requested");
+    assert!(problems.iter().any(|p| p.code == "capability_not_requested"), "{problems:?}");
+}

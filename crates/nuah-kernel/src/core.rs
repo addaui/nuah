@@ -21,6 +21,7 @@ pub(crate) struct Inner {
     pub(crate) policy: Arc<dyn Policy>,
     pub(crate) clock: Arc<dyn Clock>,
     pub(crate) ids: Arc<dyn Ids>,
+    pub(crate) net: Arc<dyn Net>,
     pub(crate) plan: Plan,
     pub(crate) settings: BTreeMap<String, Value>,
     pub(crate) wake: watch::Sender<u64>,
@@ -107,10 +108,11 @@ impl Core {
         let policy: Arc<dyn Policy> = if plan.ports.contains_key("policy") { take!("policy", Policy) } else { Arc::new(crate::standins::DenyAll) };
         let clock: Arc<dyn Clock> = if plan.ports.contains_key("clock") { take!("clock", Clock) } else { Arc::new(crate::standins::SystemTime) };
         let ids: Arc<dyn Ids> = if plan.ports.contains_key("ids") { take!("ids", Ids) } else { Arc::new(crate::standins::CounterIds::default()) };
+        let net: Arc<dyn Net> = if plan.ports.contains_key("net") { take!("net", Net) } else { Arc::new(crate::standins::NoNet) };
         let (wake, _) = watch::channel(0u64);
         let settings = plan.settings.clone();
         let features = db.features();
-        let inner = Arc::new(Inner { db, features, auth, policy, clock, ids, plan, settings, wake, profile_name: dist.profile.name.clone(), telemetry });
+        let inner = Arc::new(Inner { db, features, auth, policy, clock, ids, net, plan, settings, wake, profile_name: dist.profile.name.clone(), telemetry });
         if inner.plan.ports.contains_key("db") {
             if let Err(e) = inner.prepare_storage() {
                 let code = if e.category == Category::Unsupported { "unsupported" } else { "storage" };

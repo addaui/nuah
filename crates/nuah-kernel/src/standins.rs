@@ -56,6 +56,17 @@ impl Db for NoDb {
     }
 }
 
+/// No network: every request is refused.
+pub struct NoNet;
+impl Net for NoNet {
+    fn name(&self) -> &str {
+        "none"
+    }
+    fn fetch(&self, _: &NetRequest) -> Result<NetResponse> {
+        Err(Error::unsupported("net", "none"))
+    }
+}
+
 /// Nobody is ever signed in.
 pub struct NoAuth;
 impl Auth for NoAuth {

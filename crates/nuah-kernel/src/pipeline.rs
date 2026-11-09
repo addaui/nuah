@@ -128,6 +128,35 @@ impl Core {
                 })?;
                 Ok(CallResponse { output: out.unwrap_or(Value::Null), replayed: false })
             }
+            OpKind::Outbound => {
+                if key.is_some() {
+                    return Err(Error::invalid("key", "an outbound Operation is not replayed by key"));
+                }
+                // The front door is the same as a Query's: input, permission, resource and `before` hooks, in a short read.
+                let mut prepared: Option<Value> = None;
+                inner.db.read(&mut |r| {
+                    let (mut events, mut docs) = (vec![], vec![]);
+                    let mut tx = Tx { inner, plugin: String::new(), who, request: &request, h: Handle::R(r), events: &mut events, docs: &mut docs, depth: 0 };
+                    prepared = Some(guarded(|| inner.prepare_outbound(&mut tx, op, input.clone()))?);
+                    Ok(())
+                })?;
+                let input = prepared.unwrap_or(Value::Null);
+                // Then no transaction at all while the handler runs.
+                let owner = inner.plan.ops.get(op).cloned().ok_or_else(|| Error::not_found(&format!("operation {op}")))?;
+                let f = inner.plan.active[&owner].bindings.outbound[op].clone();
+                thread_local!(static DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) });
+                if DEPTH.with(|d| d.get()) >= 8 {
+                    return Err(Error::internal("operations call each other too deeply"));
+                }
+                DEPTH.with(|d| d.set(d.get() + 1));
+                let out = guarded(|| f(&mut Outbound { core: self, plugin: owner.clone(), who, request: &request }, input));
+                DEPTH.with(|d| d.set(d.get() - 1));
+                let out = out?;
+                if !decl.output.is_null() {
+                    schema::validate(&decl.output, &out).map_err(|e| Error::internal(format!("{op} returned something its manifest does not allow: {}", e.message)))?;
+                }
+                Ok(CallResponse { output: out, replayed: false })
+            }
             OpKind::Command => {
                 let mut res: Option<CallResponse> = None;
                 let mut committed: Option<u64> = None;
@@ -224,6 +253,26 @@ impl Inner {
             }
         }
         Ok(())
+    }
+
+    /// The front door of an `outbound` Operation: validate, authorize, run the `before` hooks. Returns the input to run with.
+    pub(crate) fn prepare_outbound(&self, tx: &mut Tx, op: &str, mut input: Value) -> Result<Value> {
+        let owner = self.plan.ops.get(op).ok_or_else(|| Error::not_found(&format!("operation {op}")))?.clone();
+        let decl = self.manifest(&owner).and_then(|m| m.operations.get(op)).ok_or_else(|| Error::internal("operation vanished"))?;
+        if input.is_null() {
+            input = json!({});
+        }
+        schema::validate(&decl.input, &input)?;
+        self.authorize(tx, decl, &input)?;
+        for h in self.plan.hooks.iter().filter(|h| h.stage == Stage::Before && h.matches(op)) {
+            let f = self.plan.active[&h.plugin].bindings.before[&h.handler].clone();
+            let saved = std::mem::replace(&mut tx.plugin, h.plugin.clone());
+            let r = f(tx, op, &mut input);
+            tx.plugin = saved;
+            r?;
+            schema::validate(&decl.input, &input)?;
+        }
+        Ok(input)
     }
 
     /// Validate, authorize, run hooks and the handler, check the result, add the can-lists.

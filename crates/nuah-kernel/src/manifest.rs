@@ -43,6 +43,10 @@ pub enum OpKind {
     #[default]
     Command,
     Query,
+    /// Runs outside any transaction and may reach the network through the `net` Port ([ADR 0040]).
+    ///
+    /// [ADR 0040]: https://docs.addaui.com/nuah/adr/0040-outbound-operations-run-outside-the-transaction-and-reach-the-network-through-a-net-port/
+    Outbound,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

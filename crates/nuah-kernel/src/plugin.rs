@@ -6,13 +6,14 @@ use crate::core::Inner;
 use crate::db::*;
 use crate::error::{Category, Error, Result};
 use crate::manifest::{CallPolicy, Manifest, OpKind};
-use crate::ports::{Auth, Clock, Ids, Policy};
+use crate::ports::{Auth, Clock, Ids, Net, Policy};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 pub type OpFn = Arc<dyn Fn(&mut Tx, Value) -> Result<Value> + Send + Sync>;
+pub type OutboundFn = Arc<dyn Fn(&mut Outbound, Value) -> Result<Value> + Send + Sync>;
 pub type BeforeFn = Arc<dyn Fn(&mut Tx, &str, &mut Value) -> Result<()> + Send + Sync>;
 pub type Next<'a> = &'a mut dyn FnMut(&mut Tx, Value) -> Result<Value>;
 pub type AroundFn = Arc<dyn for<'a, 'b, 'c> Fn(&'a mut Tx<'b>, &str, Value, Next<'c>) -> Result<Value> + Send + Sync>;
@@ -39,6 +40,7 @@ pub enum PortImpl {
     Policy(Arc<dyn Policy>),
     Clock(Arc<dyn Clock>),
     Ids(Arc<dyn Ids>),
+    Net(Arc<dyn Net>),
     Log(Arc<dyn crate::telemetry::LogAdapter>),
     Trace(Arc<dyn crate::telemetry::TraceAdapter>),
     Metric(Arc<dyn crate::telemetry::MetricAdapter>),
@@ -48,6 +50,7 @@ pub enum PortImpl {
 #[derive(Default)]
 pub struct Bindings {
     pub(crate) ops: BTreeMap<String, OpFn>,
+    pub(crate) outbound: BTreeMap<String, OutboundFn>,
     pub(crate) before: BTreeMap<String, BeforeFn>,
     pub(crate) around: BTreeMap<String, AroundFn>,
     pub(crate) after: BTreeMap<String, AfterFn>,
@@ -63,6 +66,15 @@ impl Bindings {
         F: Fn(&mut Tx, Value) -> Result<Value> + Send + Sync + 'static,
     {
         self.ops.insert(name.into(), Arc::new(f));
+    }
+    /// The handler of an Operation declared with kind `outbound` ([ADR 0040]): it has no transaction.
+    ///
+    /// [ADR 0040]: https://docs.addaui.com/nuah/adr/0040-outbound-operations-run-outside-the-transaction-and-reach-the-network-through-a-net-port/
+    pub fn outbound<F>(&mut self, name: &str, f: F)
+    where
+        F: Fn(&mut Outbound, Value) -> Result<Value> + Send + Sync + 'static,
+    {
+        self.outbound.insert(name.into(), Arc::new(f));
     }
     pub fn before<F>(&mut self, name: &str, f: F)
     where
@@ -302,6 +314,9 @@ impl<'a> Tx<'a> {
         if self.is_query() && decl.kind == OpKind::Command {
             return Err(Error::internal("a Query may not call a Command"));
         }
+        if decl.kind == OpKind::Outbound {
+            return Err(Error::internal("an outbound Operation holds no transaction, so it cannot be called from inside one"));
+        }
         let caller = std::mem::replace(&mut self.plugin, String::new());
         self.depth += 1;
         let out = self.inner.execute(self, op, input);
@@ -358,5 +373,55 @@ impl<'a> Tx<'a> {
     /// Make a conflict out of a plain failure of a stale-state check.
     pub fn stale(reason: &str, what: &str) -> Error {
         Error::new(Category::Conflict, reason, format!("{what} changed since you read it")).with_reason(reason)
+    }
+}
+
+/// What an `outbound` Operation's handler works with ([ADR 0040]): who is asking, the plugin's settings, the
+/// clock, the `net` Port, and other Operations as the same person. There is no database handle: reading and
+/// writing data is done by calling Operations, each in a transaction of its own.
+///
+/// [ADR 0040]: https://docs.addaui.com/nuah/adr/0040-outbound-operations-run-outside-the-transaction-and-reach-the-network-through-a-net-port/
+pub struct Outbound<'a> {
+    pub(crate) core: &'a crate::core::Core,
+    pub(crate) plugin: String,
+    pub(crate) who: &'a crate::ports::Identity,
+    pub(crate) request: &'a str,
+}
+
+impl<'a> Outbound<'a> {
+    pub fn who(&self) -> &crate::ports::Identity {
+        self.who
+    }
+    pub fn request_id(&self) -> &str {
+        self.request
+    }
+    pub fn plugin_id(&self) -> &str {
+        &self.plugin
+    }
+    pub fn now(&self) -> Millis {
+        self.core.inner.clock.now()
+    }
+    pub fn new_id(&self) -> String {
+        self.core.inner.ids.new_id()
+    }
+    /// The Settings the operator gave this plugin in the Profile (null when none).
+    pub fn settings(&self) -> Value {
+        self.core.inner.settings.get(&self.plugin).cloned().unwrap_or(Value::Null)
+    }
+    pub fn log(&self, level: crate::telemetry::Level, key: &str, fields: Value) {
+        let t = &self.core.inner.telemetry;
+        if t.enabled(level, &self.plugin) {
+            t.log(crate::telemetry::record(self.now(), level, &self.plugin, key, fields, None, Some(self.request)));
+        }
+    }
+    /// The network. Needs the capability `net`, granted in the Profile.
+    pub fn net(&self) -> Result<&dyn Net> {
+        self.core.inner.check_capability(&self.plugin, "net")?;
+        Ok(&*self.core.inner.net)
+    }
+    /// Call an Operation as the same Subject, with the same checks as from outside, in a transaction of its own.
+    pub fn call(&self, op: &str, input: Value) -> Result<Value> {
+        self.core.inner.check_capability(&self.plugin, "call")?;
+        self.core.call_as(self.who, op, input, None).map(|r| r.output)
     }
 }
