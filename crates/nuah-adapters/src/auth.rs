@@ -79,6 +79,10 @@ impl Auth for Password {
         let Some(acc) = db.get(ACCOUNTS, subject)?.filter(|a| !a.deleted && a.body["disabled"] != true) else { return Ok(None) };
         Ok(Some(identity_of(subject, &acc.body)))
     }
+    fn find(&self, db: &dyn DbRead, name: &str) -> Result<Option<Identity>> {
+        let Some(subject) = db.get(NAMES, &name_key(name))?.filter(|d| !d.deleted).and_then(|d| d.body["subject"].as_str().map(String::from)) else { return Ok(None) };
+        Ok(db.get(ACCOUNTS, &subject)?.filter(|a| !a.deleted && a.body["disabled"] != true).map(|a| identity_of(&subject, &a.body)))
+    }
 }
 
 pub struct AuthPassword;

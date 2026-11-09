@@ -107,6 +107,8 @@ function card(p, problems) {
   box.addEventListener('change', () => {
     if (box.checked) {
       if (!st.enabled.includes(p.id)) st.enabled.push(p.id);
+      // Enabling a plugin is the operator's yes to the capabilities it asks for (listed on its card).
+      if (p.requires.capabilities?.length) st.grants[p.id] = [...new Set([...(st.grants[p.id] || []), ...p.requires.capabilities])];
       // Bring back what was set aside when it was switched off.
       const kept = st.parked[p.id];
       if (kept) { if (kept.settings !== undefined) st.settings[p.id] = kept.settings; if (kept.grants !== undefined) st.grants[p.id] = kept.grants; delete st.parked[p.id]; }
@@ -125,7 +127,7 @@ function card(p, problems) {
   const needs = [
     ...(p.fills ? [`fills ${p.fills}`] : []), ...p.provides.map((x) => `provides ${x}`),
     ...p.defines.map((d) => `defines ${d.name}`),
-    ...p.requires.plugins.map((x) => `needs ${x}`), ...p.requires.ports.map((x) => `uses ${x}`), ...(p.requires.extension_points || []).map((x) => `uses ${x}`),
+    ...p.requires.plugins.map((x) => `needs ${x}`), ...(p.requires.capabilities || []).map((x) => `may ${x}`), ...p.requires.ports.map((x) => `uses ${x}`), ...(p.requires.extension_points || []).map((x) => `uses ${x}`),
   ];
   const hasSettings = p.settings_schema && Object.keys(p.settings_schema).length > 0 || st.settings[p.id] !== undefined;
   let box2 = null;

@@ -39,6 +39,12 @@ pub trait Auth: Send + Sync {
     /// Who does this credential belong to? `None` means nobody (unknown, expired). Sessions live in
     /// data the Adapter owns, so it reads through the handle it is given.
     fn authenticate(&self, db: &dyn DbRead, credential: &str, now: Millis) -> Result<Option<Identity>>;
+    /// Find a person by the name they sign in with, so another plugin can refer to them (share a project with
+    /// "bob") without reading the Adapter's data. The answer carries the stable `subject`. An Adapter with no
+    /// such names (a single-user one) answers `None`.
+    fn find(&self, _db: &dyn DbRead, _name: &str) -> Result<Option<Identity>> {
+        Ok(None)
+    }
     /// May an anonymous caller be treated as signed in without a credential (single-user setups)?
     fn implicit(&self) -> Option<Identity> {
         None

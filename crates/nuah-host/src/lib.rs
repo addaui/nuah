@@ -26,8 +26,9 @@ pub trait Product {
     fn name(&self) -> &str;
     /// Every plugin available, including the Projections (`nuah_http::Http`) with whatever routes the product adds.
     fn catalog(&self) -> Catalog;
-    /// What setup starts from when there is no Profile file yet: the product's defaults.
-    fn starting_point(&self) -> Profile;
+    /// What setup starts from when there is no Profile file yet: the product's defaults. `home` is the directory
+    /// of the identity file, for defaults that live next to it (a database file).
+    fn starting_point(&self, home: &std::path::Path) -> Profile;
     /// How a first run (no identity file) gets one: a web wizard, terminal prompts, whatever the product picks
     /// ([ADR 0039]). `None` means the product cannot set itself up, and `serve` without a file says so and stops.
     ///
@@ -219,7 +220,8 @@ pub fn apply_http_flags(profile: &mut Profile, f: HttpFlags) {
 }
 
 fn context(product: &impl Product, identity_file: PathBuf, listen: Option<String>, allow_hosts: Vec<String>, until_saved: bool) -> SetupContext {
-    SetupContext { product: product.name().into(), catalog: product.catalog(), starting_point: product.starting_point(), identity_file, listen, allow_hosts, until_saved }
+    let home = std::fs::canonicalize(identity_file.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(std::path::Path::new("."))).unwrap_or_else(|_| PathBuf::from("."));
+    SetupContext { product: product.name().into(), catalog: product.catalog(), starting_point: product.starting_point(&home), identity_file, listen, allow_hosts, until_saved }
 }
 
 fn read_profile(path: &std::path::Path) -> Profile {

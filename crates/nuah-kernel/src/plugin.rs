@@ -211,6 +211,10 @@ impl<'a> Tx<'a> {
     pub fn has_feature(&self, name: &str) -> bool {
         self.inner.features.has(name)
     }
+    /// Who signs in under this name, with the stable `subject` other plugins store ([`Auth::find`](crate::ports::Auth::find)).
+    pub fn find_person(&self, name: &str) -> Result<Option<crate::ports::Identity>> {
+        self.inner.auth.find(self.rd(), name)
+    }
     pub fn is_query(&self) -> bool {
         matches!(self.h, Handle::R(_))
     }

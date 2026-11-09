@@ -53,7 +53,7 @@ fn public_v4(a: Ipv4Addr) -> bool {
 
 fn refused() -> Error {
     // Always the same answer, so it says nothing about what is inside the network.
-    Error::new(Category::Invalid, "net.refused", "That address cannot be reached")
+    Error::reason(Category::Invalid, "net.refused", "That address cannot be reached")
 }
 
 /// The address must be a plain public web address: http or https, no credentials, port 80 or 443.
