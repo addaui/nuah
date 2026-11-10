@@ -8,7 +8,7 @@ use crate::resolver::{Distribution, Profile};
 use crate::ports::PORTS;
 use serde_json::{json, Map, Value};
 
-const PROFILE_KEYS: [&str; 9] = ["name", "contract", "plugins", "enabled", "bindings", "settings", "grants", "permissions", "telemetry"];
+const PROFILE_KEYS: [&str; 6] = ["name", "contract", "plugins", "bindings", "permissions", "telemetry"];
 
 /// Read a Profile strictly: an unknown key or a wrong shape is an error, so a typo does not
 /// silently switch a plugin off.
@@ -196,9 +196,10 @@ mod tests {
     #[test]
     fn strict_profiles() {
         assert!(profile_from_json(&json!({"name":"a","enabeld":[]})).unwrap_err().contains("enabeld"));
-        assert!(profile_from_json(&json!({"enabled":[]})).is_err());
-        assert!(profile_from_json(&json!({"name":"a","enabled":"x"})).is_err());
-        assert_eq!(profile_from_json(&json!({"name":"a","enabled":["x"]})).unwrap().enabled, vec!["x"]);
+        assert!(profile_from_json(&json!({"plugins":{}})).is_err());
+        assert!(profile_from_json(&json!({"name":"a","plugins":"x"})).is_err());
+        assert!(profile_from_json(&json!({"name":"a","enabled":["x"]})).unwrap_err().contains("enabled"));
+        assert_eq!(profile_from_json(&json!({"name":"a","plugins":{"@a/x":{}}})).unwrap().enabled, vec!["@a/x"]);
     }
 
     #[test]

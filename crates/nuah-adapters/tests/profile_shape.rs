@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-//! The identity file has one entry per plugin and plugin ids are scoped (ADR 0042); the old shape still reads.
+//! The identity file has one entry per plugin and plugin ids are scoped (ADR 0042).
 
 use nuah_adapters::{AdapterMemory, AuthLocal, PolicyRoles, StdClock, StdIds};
 use nuah_kernel::{setup, Catalog, Core, Distribution, Manifest, Plugin};
@@ -44,21 +44,13 @@ fn the_new_shape_has_one_entry_per_plugin_and_a_disabled_plugin_keeps_its_settin
 }
 
 #[test]
-fn the_old_shape_is_read_with_short_ids_and_the_old_capability_name() {
-    let old = json!({"name": "t", "enabled": ["db-memory", "auth-local", "policy-roles", "clock-system", "ids-random"],
-        "settings": {}, "grants": {"auth-local": ["host"]}, "telemetry": {"levels": {"auth-local": "debug"}}});
-    let d = dist(old);
-    // the grant of `host` is `shell` now, and the short ids are the catalog's scoped ones when the Resolver looks
-    assert_eq!(d.profile.grants["auth-local"], vec!["shell".to_string()]);
-    let problems = Core::check(&d);
-    assert!(problems.iter().all(|p| p.code != "unknown_plugin"), "{problems:?}");
-    let mut migrated = d.profile.clone();
-    nuah_kernel::migrate_ids(&mut migrated, &d.catalog);
-    assert!(migrated.enabled.iter().all(|i| i.starts_with("@nuah/")), "{:?}", migrated.enabled);
-    assert!(migrated.grants.contains_key("@nuah/auth-local"));
-    assert_eq!(migrated.telemetry.levels["@nuah/auth-local"], "debug");
-    let out = serde_json::to_value(&migrated).unwrap();
-    assert!(out["plugins"]["@nuah/db-memory"]["enabled"] == true);
+fn the_old_shape_and_the_old_capability_name_are_refused_with_the_key_named() {
+    let e = setup::profile_from_json(&json!({"name": "t", "enabled": ["db-memory"]})).unwrap_err();
+    assert!(e.contains("enabled"), "{e}");
+    let mut p = setup::profile_from_json(&json!({"name": "t", "plugins": {"@nuah/auth-local": {"grants": ["host"]}}})).unwrap();
+    p.enabled.push("@nuah/auth-local".into());
+    let problems = Core::check(&Distribution { name: "t".into(), catalog: catalog(), profile: p });
+    assert!(problems.iter().any(|p| p.message.contains("host")), "{problems:?}");
 }
 
 #[test]

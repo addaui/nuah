@@ -158,7 +158,7 @@ pub fn run(product: impl Product) -> ! {
             bootstrap.run(context(&product, profile, listen, allow_host, faces, false)).unwrap_or_else(|e| die(&e));
         }
         Cmd::Serve { profile, home, listen, allow_host, secure_cookie, log_level, faces } => {
-            let path = identity_path(&product, profile, home.clone());
+            let path = identity_path(profile, home.clone());
             if !path.exists() {
                 // No identity file: the product's bootstrap writes one, then this process goes on to run it.
                 let Some(bootstrap) = product.bootstrap() else {
@@ -230,7 +230,7 @@ pub fn run(product: impl Product) -> ! {
             }
         }
         Cmd::ResetPassword { name, profile, home } => {
-            let path = identity_path(&product, profile, home);
+            let path = identity_path(profile, home);
             if !path.exists() {
                 die(&format!("{} does not exist", path.display()));
             }
@@ -300,7 +300,7 @@ struct ServeFlags {
 /// Read the file, apply the flags, resolve and start a Core (no services). Also returns the contract the file
 /// was locked to when that differs from the contract now.
 fn start_core(product: &impl Product, path: &std::path::Path, f: &ServeFlags) -> Result<(Core, Option<String>), Vec<nuah_kernel::Problem>> {
-    let mut profile = read_profile(path, &product.catalog());
+    let mut profile = read_profile(path);
     // The lock is checked against the file as it was saved, before this run's command-line changes.
     let changed = profile.contract.clone().filter(|c| *c != Core::contract_for(&Distribution { name: product.name().to_string(), catalog: product.catalog(), profile: profile.clone() }));
     apply_http_flags(&mut profile, HttpFlags { listen: f.listen.clone(), faces_dir: f.faces.clone(), hosts: f.allow_host.clone(), secure_cookie: f.secure_cookie });
@@ -336,35 +336,15 @@ fn context(product: &impl Product, identity_file: PathBuf, listen: Option<String
     SetupContext { product: product.name().into(), catalog: product.catalog(), starting_point: product.starting_point(&home), identity_file, listen, allow_hosts, faces_dir: faces.unwrap_or_else(|| PathBuf::from("faces")), until_saved }
 }
 
-fn read_profile(path: &std::path::Path, catalog: &Catalog) -> Profile {
+fn read_profile(path: &std::path::Path) -> Profile {
     let text = std::fs::read_to_string(path).unwrap_or_else(|e| die(&format!("cannot read {}: {e}", path.display())));
     let v: Value = serde_json::from_str(&text).unwrap_or_else(|e| die(&format!("{} is not JSON: {e}", path.display())));
-    let mut p = nuah_kernel::setup::profile_from_json(&v).unwrap_or_else(|e| die(&e));
-    nuah_kernel::migrate_ids(&mut p, catalog);
-    p
+    nuah_kernel::setup::profile_from_json(&v).unwrap_or_else(|e| die(&format!("{}: {e}", path.display())))
 }
 
-/// The identity file: the one named with `--profile`, else `nuah.json` in `--home` (or the working directory). A directory
-/// that only has the old `<product>.json` gets it copied to `nuah.json` (and a notice), so the next save is in the new place ([ADR 0042]).
-///
-/// [ADR 0042]: https://docs.addaui.com/nuah/adr/0042-the-host-becomes-the-shell-plugins-have-scoped-ids-the-identity-file-is-nuah-json-with-one-entry-per-plugin-and-settings-render-as-forms/
-pub fn identity_path(product: &impl Product, profile: Option<PathBuf>, home: Option<PathBuf>) -> PathBuf {
-    if let Some(p) = profile {
-        return p;
-    }
-    let dir = home.unwrap_or_else(|| PathBuf::from("."));
-    let now = dir.join("nuah.json");
-    let old = dir.join(format!("{}.json", product.name()));
-    if !now.exists() && old.exists() {
-        match std::fs::copy(&old, &now) {
-            Ok(_) => eprintln!("notice: copied {} to {}; the identity file is {} from now on and {} is no longer read", old.display(), now.display(), now.display(), old.display()),
-            Err(e) => {
-                eprintln!("notice: {} is the old name of the identity file and could not be copied to {} ({e}); reading it as it is", old.display(), now.display());
-                return old;
-            }
-        }
-    }
-    now
+/// The identity file: the one named with `--profile`, else `nuah.json` in `--home` (or the working directory).
+pub fn identity_path(profile: Option<PathBuf>, home: Option<PathBuf>) -> PathBuf {
+    profile.unwrap_or_else(|| home.unwrap_or_else(|| PathBuf::from(".")).join("nuah.json"))
 }
 
 fn runtime() -> tokio::runtime::Runtime {

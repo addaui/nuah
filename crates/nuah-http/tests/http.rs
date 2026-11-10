@@ -110,7 +110,7 @@ fn readiness_says_whether_the_core_can_read_its_data() {
 
 fn start_with_http(http: Value) -> (Core, Services) {
     let mut p = Profile { name: "t".into(), ..Default::default() };
-    p.enabled = ["@nuah/db-memory", "@nuah/auth-local", "@nuah/policy-roles", "@nuah/clock-system", "@nuah/ids-random", "http"].iter().map(|s| s.to_string()).collect();
+    p.enabled = ["@nuah/db-memory", "@nuah/auth-local", "@nuah/policy-roles", "@nuah/clock-system", "@nuah/ids-random", "@nuah/http"].iter().map(|s| s.to_string()).collect();
     p.settings.insert("@nuah/http".into(), http);
     p.grants.insert("@nuah/http".into(), vec!["serve".into()]);
     let list: Vec<std::sync::Arc<dyn Plugin>> = vec![

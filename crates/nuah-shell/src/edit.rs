@@ -45,10 +45,7 @@ impl ProfileStore {
             Err(e) => Err(format!("cannot read {}: {e}", self.path.display())),
             Ok(text) => {
                 let v: Value = serde_json::from_str(&text).map_err(|e| format!("{} is not JSON: {e}", self.path.display()))?;
-                profile_from_json(&v).map(|mut p| {
-                    nuah_kernel::migrate_ids(&mut p, &self.catalog);
-                    Some(p)
-                })
+                profile_from_json(&v).map(Some)
             }
         }
     }
@@ -56,7 +53,6 @@ impl ProfileStore {
     /// A draft from JSON, with the secrets it did not retype put back from the stored Profile.
     pub fn draft(&self, body: &Value) -> Result<Profile, String> {
         let mut p = profile_from_json(body)?;
-        nuah_kernel::migrate_ids(&mut p, &self.catalog);
         let stored = self.stored().ok().flatten().unwrap_or_default();
         let dist = self.dist(p.clone());
         restore_profile(&mut p, &stored, &dist);

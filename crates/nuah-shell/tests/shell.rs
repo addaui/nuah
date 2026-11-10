@@ -119,33 +119,9 @@ fn a_locked_out_operator_can_set_a_password_from_the_command_line() {
     assert!(nuah_shell::reset_password(&core, "nobody", "a-new-password").unwrap_err().contains("no account"));
 }
 
-struct Tiny;
-impl nuah_shell::Product for Tiny {
-    fn name(&self) -> &str {
-        "tiny"
-    }
-    fn catalog(&self) -> Catalog {
-        catalog()
-    }
-    fn starting_point(&self, _home: &std::path::Path) -> Profile {
-        Profile::default()
-    }
-}
-
 #[test]
-fn the_identity_file_is_nuah_json_and_an_old_product_named_file_is_carried_over() {
+fn the_identity_file_is_nuah_json_unless_one_is_named() {
     let d = dir("identity");
-    // nothing there: the new name, whatever the product is called
-    assert_eq!(nuah_shell::identity_path(&Tiny, None, Some(d.clone())), d.join("nuah.json"));
-    // an explicit file wins
-    assert_eq!(nuah_shell::identity_path(&Tiny, Some("x.json".into()), Some(d.clone())), std::path::PathBuf::from("x.json"));
-    // only the old name: it is copied, the new name is used from now on, and the old file is left alone
-    std::fs::write(d.join("tiny.json"), "{\"name\":\"old\"}").unwrap();
-    assert_eq!(nuah_shell::identity_path(&Tiny, None, Some(d.clone())), d.join("nuah.json"));
-    assert_eq!(std::fs::read_to_string(d.join("nuah.json")).unwrap(), "{\"name\":\"old\"}");
-    assert!(d.join("tiny.json").exists());
-    // both exist: the new name wins and is not overwritten
-    std::fs::write(d.join("nuah.json"), "{\"name\":\"new\"}").unwrap();
-    assert_eq!(nuah_shell::identity_path(&Tiny, None, Some(d.clone())), d.join("nuah.json"));
-    assert_eq!(std::fs::read_to_string(d.join("nuah.json")).unwrap(), "{\"name\":\"new\"}");
+    assert_eq!(nuah_shell::identity_path(None, Some(d.clone())), d.join("nuah.json"));
+    assert_eq!(nuah_shell::identity_path(Some("x.json".into()), Some(d.clone())), std::path::PathBuf::from("x.json"));
 }

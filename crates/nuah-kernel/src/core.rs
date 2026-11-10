@@ -386,17 +386,12 @@ impl Inner {
             }
             let mut have = 0u32;
             let mut foreign = None;
-            // a plugin that gained a scope (ADR 0042) still owns what it recorded under its unscoped id
-            let old = id.split_once('/').map(|(_, n)| n).unwrap_or("");
-            let mut adopted_version = false;
             self.db.read(&mut |r| {
-                let rec = |k: String| r.get("_meta", &k).map(|d| d.filter(|d| !d.deleted));
-                let v = match rec(format!("version:{id}"))? { Some(d) => Some(d), None if !old.is_empty() => { let o = rec(format!("version:{old}"))?; adopted_version = o.is_some(); o } None => None };
-                have = v.and_then(|d| d.body["version"].as_u64()).unwrap_or(0) as u32;
+                have = r.get("_meta", &format!("version:{id}"))?.filter(|d| !d.deleted).and_then(|d| d.body["version"].as_u64()).unwrap_or(0) as u32;
                 for c in &data.collections {
                     if let Some(d) = r.get("_meta", &format!("collection:{c}"))?.filter(|d| !d.deleted) {
                         let owner = d.body["owner"].as_str().unwrap_or("");
-                        if owner != id && (old.is_empty() || owner != old) {
+                        if owner != id {
                             foreign = Some(format!("the collection {c} belongs to the plugin {owner}, not {id}"));
                         }
                     }
@@ -412,14 +407,6 @@ impl Inner {
             if have > 0 && have < data.version {
                 upgrading.push(format!("{id} v{have} to v{}", data.version));
             }
-            if adopted_version {
-                let t = &self.telemetry;
-                if t.enabled(Level::Info, "nuah.kernel") {
-                    t.log(crate::telemetry::record(self.clock.now(), Level::Info, "nuah.kernel", "data.version_adopted", json!({"plugin": id, "was": old, "version": have}), None, None));
-                }
-                let now = self.clock.now();
-                self.db.write(&mut |w| { w.put("_meta", &format!("version:{id}"), "kernel", json!({"version": have}), Expect::Any, now)?; Ok(()) })?;
-            }
             have_of.insert(id, have);
         }
         // before any migration of data that already exists, let the Adapter take a copy
@@ -432,15 +419,7 @@ impl Inner {
                 let now = self.clock.now();
                 for c in &a.manifest.data.collections {
                     let key = format!("collection:{c}");
-                    let old = id.split_once('/').map(|(_, n)| n).unwrap_or("");
                     match w.get("_meta", &key)?.filter(|d| !d.deleted) {
-                        Some(d) if !old.is_empty() && d.body["owner"].as_str() == Some(old) => {
-                            let t = &self.telemetry;
-                            if t.enabled(Level::Info, "nuah.kernel") {
-                                t.log(crate::telemetry::record(self.clock.now(), Level::Info, "nuah.kernel", "data.ownership_adopted", json!({"collection": c, "was": old, "plugin": id}), None, None));
-                            }
-                            w.put("_meta", &key, "kernel", json!({"owner": id}), Expect::Any, now)?;
-                        }
                         Some(d) if d.body["owner"].as_str() != Some(id.as_str()) => {
                             return Err(Error::internal(format!("the collection {c} belongs to the plugin {}, not {id}", d.body["owner"].as_str().unwrap_or(""))));
                         }

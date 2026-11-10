@@ -19,7 +19,7 @@ fn the_resolver_reports_every_problem_at_once() {
     let clock = FixedClock::at(0);
     let seen = Default::default();
     let mut p = profile(&["@nuah/db-memory", "@nuah/auth-local", "@nuah/policy-roles", "@nuah/policy-allow-all", "@nuah/clock-fixed", "@nuah/ids-sequential", "@test/notes", "@test/ghost", "@test/tell-a"]);
-    p.grants.get_mut("notes").unwrap().clear(); // capabilities not granted
+    p.grants.get_mut("@test/notes").unwrap().clear(); // capabilities not granted
     p.settings.insert("@nuah/db-memory".into(), json!({}));
     p.bindings.insert("db".into(), "@nuah/policy-roles".into()); // wrong adapter
     let dist = Distribution { name: "t".into(), catalog: catalog(&clock, &seen), profile: p };
@@ -58,7 +58,7 @@ fn names_must_be_inside_the_namespace_the_plugin_owns() {
 fn a_plugin_that_is_not_enabled_contributes_nothing() {
     let w = world();
     assert!(w.core.describe(&person("a", &["member"]))["operations"].get("wrapper.nothing").is_none());
-    assert!(!w.core.plugin_ids().contains(&"wrapper".to_string()));
+    assert!(!w.core.plugin_ids().contains(&"@test/wrapper".to_string()));
 }
 
 // ---- calls ---------------------------------------------------------------------------------------
@@ -164,7 +164,7 @@ fn calls_between_plugins_share_one_transaction() {
 
 #[test]
 fn before_hooks_may_refuse_and_around_hooks_wrap() {
-    let w = world_with(&["wrapper"]);
+    let w = world_with(&["@test/wrapper"]);
     let a = person("alice", &["member"]);
     let b = book(&w, &a);
     assert_eq!(call(&w, &a, "notes.add", json!({"book": b, "text": "spam"})).unwrap_err().category, Category::Invalid);
@@ -311,7 +311,7 @@ fn a_face_built_for_another_contract_is_told_so() {
 #[test]
 fn the_contract_hash_changes_when_the_operations_change() {
     let a = world();
-    let b = world_with(&["wrapper"]);
+    let b = world_with(&["@test/wrapper"]);
     assert_ne!(a.core.contract_hash(), b.core.contract_hash());
     assert_eq!(a.core.contract_hash(), world().core.contract_hash());
 }
@@ -354,7 +354,7 @@ fn serving_core(fail: bool, grant: bool) -> (std::result::Result<Core, Vec<Probl
     let mut cat = catalog(&clock, &seen);
     cat.0.push(std::sync::Arc::new(Serving { running: running.clone(), fail }));
     let mut p = profile(&["@nuah/db-memory", "@nuah/auth-local", "@nuah/policy-roles", "@nuah/clock-fixed", "@nuah/ids-sequential", "@test/notes", "@test/tell", "@test/tell-a", "@test/serving"]);
-    if grant { p.grants.insert("serving".into(), vec!["serve".into()]); }
+    if grant { p.grants.insert("@test/serving".into(), vec!["serve".into()]); }
     (Core::start(&Distribution { name: "t".into(), catalog: cat, profile: p }), running)
 }
 
@@ -503,7 +503,7 @@ fn outbound_world(wants_net: bool, grant_net: bool) -> std::result::Result<(Core
     let mut p = profile(&["@nuah/db-memory", "@nuah/auth-local", "@nuah/policy-roles", "@nuah/clock-system", "@nuah/ids-random", "@nuah/net-fake", "@test/fetchy"]);
     p.settings.clear();
     p.grants.clear();
-    p.grants.insert("fetchy".into(), if grant_net { vec!["call".into(), "net".into()] } else { vec!["call".into()] });
+    p.grants.insert("@test/fetchy".into(), if grant_net { vec!["call".into(), "net".into()] } else { vec!["call".into()] });
     let list: Vec<std::sync::Arc<dyn Plugin>> = vec![
         std::sync::Arc::new(AdapterMemory), std::sync::Arc::new(AuthLocal), std::sync::Arc::new(PolicyRoles), std::sync::Arc::new(StdClock), std::sync::Arc::new(StdIds),
         std::sync::Arc::new(FakeNetPlugin(asked.clone())), std::sync::Arc::new(Fetchy { wants_net }),

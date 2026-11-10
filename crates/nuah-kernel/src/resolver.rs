@@ -16,8 +16,8 @@ use std::sync::Arc;
 /// Settings of each plugin, the Capabilities granted to each, and changes to default Permission grants.
 ///
 /// In memory the three per-plugin parts are kept side by side; the file has one entry per plugin ([ADR 0042]):
-/// `"plugins": {"@nuah/db-postgres": {"enabled": true, "grants": [...], "settings": {...}}}`. The old shape
-/// (`enabled`, `settings`, `grants`) is still read.
+/// `"plugins": {"@nuah/db-postgres": {"enabled": true, "grants": [...], "settings": {...}}}`. That is the only shape read;
+/// an older key (`enabled`, `settings`, `grants` at the top) is an error that names it.
 ///
 /// [ADR 0042]: https://docs.addaui.com/nuah/adr/0042-the-host-becomes-the-shell-plugins-have-scoped-ids-the-identity-file-is-nuah-json-with-one-entry-per-plugin-and-settings-render-as-forms/
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -60,9 +60,9 @@ fn yes() -> bool {
     true
 }
 
-/// The file's shape. The three old keys are only read.
+/// The file's shape.
 #[derive(Serialize, Deserialize, Default)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 struct ProfileFile {
     name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -71,26 +71,13 @@ struct ProfileFile {
     bindings: BTreeMap<String, String>,
     permissions: BTreeMap<String, Vec<String>>,
     telemetry: crate::telemetry::TelemetrySettings,
-    #[serde(skip_serializing)]
-    enabled: Vec<String>,
-    #[serde(skip_serializing)]
-    settings: BTreeMap<String, Value>,
-    #[serde(skip_serializing)]
-    grants: BTreeMap<String, Vec<String>>,
-}
-
-/// The capability that was called `host` before [ADR 0042] is `shell`.
-fn capability_name(c: String) -> String {
-    if c == "host" { "shell".into() } else { c }
 }
 
 impl From<ProfileFile> for Profile {
     fn from(f: ProfileFile) -> Profile {
-        let mut enabled = f.enabled;
-        let mut settings = f.settings;
-        let mut grants = f.grants;
+        let (mut enabled, mut settings, mut grants) = (vec![], BTreeMap::new(), BTreeMap::new());
         for (id, e) in f.plugins {
-            if e.enabled && !enabled.contains(&id) {
+            if e.enabled {
                 enabled.push(id.clone());
             }
             if !e.settings.is_null() {
@@ -99,9 +86,6 @@ impl From<ProfileFile> for Profile {
             if !e.grants.is_empty() {
                 grants.insert(id, e.grants);
             }
-        }
-        for g in grants.values_mut() {
-            *g = std::mem::take(g).into_iter().map(capability_name).collect();
         }
         Profile { name: f.name, contract: f.contract, enabled, bindings: f.bindings, settings, grants, permissions: f.permissions, telemetry: f.telemetry }
     }
@@ -114,33 +98,8 @@ impl From<Profile> for ProfileFile {
             .into_iter()
             .map(|id| (id.clone(), EntryFile { enabled: p.enabled.contains(id), grants: p.grants.get(id).cloned().unwrap_or_default(), settings: p.settings.get(id).cloned().unwrap_or(Value::Null) }))
             .collect();
-        ProfileFile { name: p.name, contract: p.contract, plugins, bindings: p.bindings, permissions: p.permissions, telemetry: p.telemetry, ..Default::default() }
+        ProfileFile { name: p.name, contract: p.contract, plugins, bindings: p.bindings, permissions: p.permissions, telemetry: p.telemetry }
     }
-}
-
-/// Give every plugin id in the Profile its scoped form: an id without a scope is the one catalog plugin whose
-/// name part is the same (the shape of the file before [ADR 0042]). An id that matches none, or several, is left as it is
-/// for the Resolver to report.
-pub fn migrate_ids(p: &mut Profile, catalog: &Catalog) {
-    let ids: Vec<String> = catalog.0.iter().map(|pl| pl.manifest().id).collect();
-    let fix = |id: &String| -> String {
-        if id.starts_with('@') || ids.contains(id) {
-            return id.clone();
-        }
-        let suffix = format!("/{id}");
-        let mut found = ids.iter().filter(|c| c.ends_with(&suffix));
-        match (found.next(), found.next()) {
-            (Some(one), None) => one.clone(),
-            _ => id.clone(),
-        }
-    };
-    p.enabled = p.enabled.iter().map(&fix).collect();
-    p.settings = std::mem::take(&mut p.settings).into_iter().map(|(k, v)| (fix(&k), v)).collect();
-    p.grants = std::mem::take(&mut p.grants).into_iter().map(|(k, v)| (fix(&k), v)).collect();
-    for v in p.bindings.values_mut() {
-        *v = fix(v);
-    }
-    p.telemetry.levels = std::mem::take(&mut p.telemetry.levels).into_iter().map(|(k, v)| (fix(&k), v)).collect();
 }
 
 /// Every plugin available to be switched on.
@@ -224,9 +183,7 @@ pub fn resolve(dist: &Distribution) -> (Vec<Problem>, Plan) {
     let mut ps: Vec<Problem> = vec![];
     let mut plan = Plan::default();
     // References to the environment or a file are replaced by their value; the Profile itself holds no secret.
-    let mut migrated = dist.profile.clone();
-    migrate_ids(&mut migrated, &dist.catalog);
-    let resolved = crate::setup::resolve_profile_refs(&migrated, &mut ps);
+    let resolved = crate::setup::resolve_profile_refs(&dist.profile, &mut ps);
     let p = &resolved;
     for m in p.telemetry.problems() {
         ps.push(problem("bad_telemetry", &[], m));

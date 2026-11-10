@@ -217,7 +217,7 @@ pub struct World {
 
 pub fn profile(enabled: &[&str]) -> Profile {
     let mut p = Profile { name: "test".into(), enabled: enabled.iter().map(|s| s.to_string()).collect(), ..Default::default() };
-    p.grants.insert("notes".into(), vec!["emit".into(), "call".into()]);
+    p.grants.insert("@test/notes".into(), vec!["emit".into(), "call".into()]);
     p
 }
 
