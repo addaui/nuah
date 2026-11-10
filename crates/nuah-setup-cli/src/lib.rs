@@ -7,8 +7,8 @@
 //! [ADR 0039]: https://docs.addaui.com/nuah/adr/0039-accounts-belong-to-the-auth-plugin-and-live-in-the-database-faces-setup-and-console-are-plugins/
 //! [ADR 0041]: https://docs.addaui.com/nuah/adr/0041-the-console-edits-the-identity-file-through-a-host-capability-and-an-operator-can-recover-a-locked-out-instance/
 
-use nuah_host::edit::{first_account_plugin, first_account_problem, has_accounts, put_first_account, ProfileStore, MIN_PASSWORD};
-use nuah_host::{Bootstrap, SetupContext};
+use nuah_shell::edit::{first_account_plugin, first_account_problem, has_accounts, put_first_account, ProfileStore, MIN_PASSWORD};
+use nuah_shell::{Bootstrap, SetupContext};
 use serde_json::json;
 use std::io::{BufRead, IsTerminal, Write};
 use std::sync::Mutex;
@@ -117,10 +117,10 @@ impl Bootstrap for SetupCli {
         }
 
         // where the web server listens
-        if p.enabled.iter().any(|id| id == "http") {
-            let current = ctx.listen.clone().or_else(|| p.settings.get("http").and_then(|s| s["listen"].as_str()).map(String::from)).unwrap_or_else(|| "127.0.0.1:3000".into());
+        if p.enabled.iter().any(|id| id == "@nuah/http") {
+            let current = ctx.listen.clone().or_else(|| p.settings.get("@nuah/http").and_then(|s| s["listen"].as_str()).map(String::from)).unwrap_or_else(|| "127.0.0.1:3000".into());
             let listen = io.ask("Web server listens on", &current)?;
-            let s = p.settings.entry("http".into()).or_insert_with(|| json!({}));
+            let s = p.settings.entry("@nuah/http".into()).or_insert_with(|| json!({}));
             if let Some(o) = s.as_object_mut() {
                 o.insert("listen".into(), json!(listen));
             }

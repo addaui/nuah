@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nuah console</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top"><strong class="brand">Nuah console</strong><span id="who" class="muted"></span><span class="grow"></span><button id="out" hidden>Sign out</button></header>
+<main>
+  <section id="signin" hidden><h1>Sign in</h1><form id="form"><label>Name<input name="name" autocomplete="username"></label><label>Password<input name="password" type="password" autocomplete="current-password"></label><button class="primary">Sign in</button><span id="err" class="err" role="alert"></span></form></section>
+  <section id="app" hidden>
+    <nav id="tabs" role="tablist" aria-label="Console sections"></nav>
+
+    <div id="tab-overview" class="tab" role="tabpanel" hidden>
+      <div id="notice" class="banner warn" role="status" hidden></div>
+      <div id="summary" class="cards"></div>
+      <h2>Plugins</h2><div id="plugins"></div>
+      <h2>Extension points</h2><div id="points"></div>
+      <h2>Events</h2><div id="events" class="muted"></div>
+    </div>
+
+    <div id="tab-config" class="tab" role="tabpanel" hidden>
+      <div id="config-notice" class="banner warn" role="status" hidden></div>
+      <p class="muted" id="config-path"></p>
+      <div class="toolbar"><input id="config-find" type="search" placeholder="Find a plugin" aria-label="Find a plugin"><label class="inline"><input id="config-active" type="checkbox"> Only plugins that are on</label></div>
+      <div id="bindings"></div>
+      <div id="config"></div>
+      <div id="savebar" class="savebar" hidden>
+        <div><strong id="save-count"></strong><span id="save-problems" class="err"></span></div>
+        <div class="bar"><button id="config-discard">Discard</button><button id="config-save" class="primary">Review and save</button></div>
+      </div>
+      <div id="restartbar" class="banner ok" role="status" hidden><span id="restart-msg">Saved. The change takes effect when the instance restarts.</span> <button id="config-restart" class="primary">Restart now</button></div>
+    </div>
+
+    <div id="tab-accounts" class="tab" role="tabpanel" hidden>
+      <div class="bar"><h2 class="flush">Accounts</h2><span class="grow"></span><button id="newacct" class="primary">New account</button></div>
+      <div id="accounts"></div><div id="acct-err" class="err" role="alert"></div>
+    </div>
+
+    <div id="tab-ops" class="tab" role="tabpanel" hidden>
+      <div class="toolbar"><input id="find" type="search" placeholder="Filter operations" aria-label="Filter operations"></div>
+      <div id="ops"></div>
+    </div>
+
+    <div id="tab-live" class="tab" role="tabpanel" hidden>
+      <h2>Live <span id="live" class="dot"></span></h2><pre id="pulse"></pre>
+    </div>
+  </section>
+</main>
+<dialog id="dlg"><form method="dialog" id="dlg-form"><h2 id="dlg-title" class="flush"></h2><div id="dlg-body"></div><div class="bar end"><button value="cancel" id="dlg-cancel" type="button">Cancel</button><button value="ok" id="dlg-ok" class="primary">OK</button></div></form></dialog>
+<script src="form.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

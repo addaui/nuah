@@ -1,5 +1,5 @@
 [package]
-name = "nuah-host"
+name = "nuah-shell"
 edition.workspace = true
 version.workspace = true
 license.workspace = true

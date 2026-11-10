@@ -61,7 +61,7 @@ impl HeartbeatAdapter for Beat {
 struct BeatPlugin(Seen<String>);
 impl Plugin for BeatPlugin {
     fn manifest(&self) -> Manifest {
-        serde_json::from_value(json!({"id": "beat", "version": "1.0.0", "fills": "heartbeat"})).unwrap()
+        serde_json::from_value(json!({"id": "@test/beat", "version": "1.0.0", "fills": "heartbeat"})).unwrap()
     }
     fn fill(&self, _s: &Value) -> Result<Option<PortImpl>> {
         Ok(Some(PortImpl::Heartbeat(Arc::new(Beat(self.0.clone())))))
@@ -82,7 +82,7 @@ impl MetricAdapter for Push {
 struct PushPlugin(Seen<usize>);
 impl Plugin for PushPlugin {
     fn manifest(&self) -> Manifest {
-        serde_json::from_value(json!({"id": "push", "version": "1.0.0", "fills": "metric"})).unwrap()
+        serde_json::from_value(json!({"id": "@test/push", "version": "1.0.0", "fills": "metric"})).unwrap()
     }
     fn fill(&self, _s: &Value) -> Result<Option<PortImpl>> {
         Ok(Some(PortImpl::Metric(Arc::new(Push(self.0.clone())))))
@@ -98,7 +98,7 @@ fn rig(adapters: &[(&'static str, Duration)], tweak: impl FnOnce(&mut Profile), 
     let clock = FixedClock::at(1_000_000);
     let seen = Arc::new(Mutex::new(vec![]));
     let mut catalog = catalog(&clock, &seen);
-    let mut enabled = vec!["db-memory", "auth-local", "policy-roles", "clock-fixed", "ids-sequential", "notes", "tell", "tell-a"];
+    let mut enabled = vec!["@nuah/db-memory", "@nuah/auth-local", "@nuah/policy-roles", "@nuah/clock-fixed", "@nuah/ids-sequential", "@test/notes", "@test/tell", "@test/tell-a"];
     let mut logs = vec![];
     for (id, delay) in adapters {
         let s: Seen<Record> = Arc::new(Mutex::new(vec![]));
@@ -120,7 +120,7 @@ fn create_book(core: &Core, title: &str) -> Result<CallResponse> {
 
 #[test]
 fn every_enabled_log_adapter_receives_every_record_and_levels_filter() {
-    let r = rig(&[("log-a", Duration::ZERO), ("log-b", Duration::ZERO)], |p| p.telemetry.level = Some("debug".into()), vec![], &[]);
+    let r = rig(&[("@nuah/log-a", Duration::ZERO), ("@nuah/log-b", Duration::ZERO)], |p| p.telemetry.level = Some("debug".into()), vec![], &[]);
     create_book(&r.core, "one").unwrap();
     r.core.flush_telemetry(Duration::from_secs(2));
     for seen in &r.logs {
@@ -138,7 +138,7 @@ fn every_enabled_log_adapter_receives_every_record_and_levels_filter() {
 
 #[test]
 fn the_default_level_hides_chatty_records() {
-    let r = rig(&[("log-a", Duration::ZERO)], |_| {}, vec![], &[]);
+    let r = rig(&[("@nuah/log-a", Duration::ZERO)], |_| {}, vec![], &[]);
     create_book(&r.core, "one").unwrap();
     r.core.flush_telemetry(Duration::from_secs(2));
     assert!(r.logs[0].lock().iter().all(|x| x.level <= Level::Info));
@@ -147,7 +147,7 @@ fn the_default_level_hides_chatty_records() {
 
 #[test]
 fn a_refusal_is_logged_with_the_reference_the_caller_can_quote() {
-    let r = rig(&[("log-a", Duration::ZERO)], |p| p.telemetry.level = Some("debug".into()), vec![], &[]);
+    let r = rig(&[("@nuah/log-a", Duration::ZERO)], |p| p.telemetry.level = Some("debug".into()), vec![], &[]);
     let e = r.core.call_as(&person("ann", &["member"]), "notes.book.create", json!({"title": ""}), None).unwrap_err();
     assert_eq!(e.category, Category::Invalid);
     r.core.flush_telemetry(Duration::from_secs(2));
@@ -161,7 +161,7 @@ fn a_refusal_is_logged_with_the_reference_the_caller_can_quote() {
 
 #[test]
 fn a_stalled_adapter_never_slows_a_command_and_what_it_loses_is_counted() {
-    let r = rig(&[("log-slow", Duration::from_millis(150))], |p| {
+    let r = rig(&[("@nuah/log-slow", Duration::from_millis(150))], |p| {
         p.telemetry.level = Some("debug".into());
         p.telemetry.queue = Some(4);
     }, vec![], &[]);
@@ -170,7 +170,7 @@ fn a_stalled_adapter_never_slows_a_command_and_what_it_loses_is_counted() {
         create_book(&r.core, &format!("b{i}")).unwrap();
     }
     assert!(t.elapsed() < Duration::from_secs(2), "40 commands took {:?}: the Adapter held them up", t.elapsed());
-    let lost = r.core.telemetry_dropped().into_iter().find(|(n, _)| n == "log-slow").map(|x| x.1).unwrap_or(0);
+    let lost = r.core.telemetry_dropped().into_iter().find(|(n, _)| n == "@nuah/log-slow").map(|x| x.1).unwrap_or(0);
     assert!(lost > 0, "records the full queue refused are counted");
 }
 
@@ -193,9 +193,9 @@ fn a_port_that_feeds_every_adapter_cannot_be_bound_to_one() {
     let clock = FixedClock::at(1);
     let seen = Arc::new(Mutex::new(vec![]));
     let mut cat = catalog(&clock, &seen);
-    cat.0.push(Arc::new(Collect { id: "log-a", seen: Arc::new(Mutex::new(vec![])), delay: Duration::ZERO }));
-    let mut p = profile(&["db-memory", "auth-local", "policy-roles", "clock-fixed", "ids-sequential", "notes", "tell", "tell-a", "log-a"]);
-    p.bindings.insert("log".into(), "log-a".into());
+    cat.0.push(Arc::new(Collect { id: "@nuah/log-a", seen: Arc::new(Mutex::new(vec![])), delay: Duration::ZERO }));
+    let mut p = profile(&["@nuah/db-memory", "@nuah/auth-local", "@nuah/policy-roles", "@nuah/clock-fixed", "@nuah/ids-sequential", "@test/notes", "@test/tell", "@test/tell-a", "@nuah/log-a"]);
+    p.bindings.insert("log".into(), "@nuah/log-a".into());
     let problems = Core::check(&Distribution { name: "t".into(), catalog: cat, profile: p });
     assert!(problems.iter().any(|x| x.code == "port_many_bound"), "{problems:#?}");
 }
@@ -204,20 +204,20 @@ fn a_port_that_feeds_every_adapter_cannot_be_bound_to_one() {
 fn bad_telemetry_settings_are_problems() {
     let clock = FixedClock::at(1);
     let seen = Arc::new(Mutex::new(vec![]));
-    let mut p = profile(&["db-memory", "auth-local", "policy-roles", "clock-fixed", "ids-sequential", "notes", "tell", "tell-a"]);
+    let mut p = profile(&["@nuah/db-memory", "@nuah/auth-local", "@nuah/policy-roles", "@nuah/clock-fixed", "@nuah/ids-sequential", "@test/notes", "@test/tell", "@test/tell-a"]);
     p.telemetry.level = Some("loud".into());
     p.telemetry.trace_sample = Some(2.0);
     let problems = Core::check(&Distribution { name: "t".into(), catalog: catalog(&clock, &seen), profile: p });
     assert_eq!(problems.iter().filter(|x| x.code == "bad_telemetry").count(), 2, "{problems:#?}");
-    let v = setup::profile_from_json(&json!({"name": "x", "telemetry": {"level": "info", "levels": {"http": "debug"}}})).unwrap();
-    assert_eq!(v.telemetry.levels["http"], "debug");
+    let v = setup::profile_from_json(&json!({"name": "x", "telemetry": {"level": "info", "levels": {"@nuah/http": "debug"}}})).unwrap();
+    assert_eq!(v.telemetry.levels["@nuah/http"], "debug");
     assert!(setup::profile_from_json(&json!({"name": "x", "telemetry": {"lvl": "info"}})).is_err(), "typos are errors");
 }
 
 #[test]
 fn metrics_and_heartbeats_are_pushed_on_their_interval_and_stop_flushes() {
     let (beats, pushes): (Seen<String>, Seen<usize>) = (Arc::new(Mutex::new(vec![])), Arc::new(Mutex::new(vec![])));
-    let r = rig(&[], |_| {}, vec![Arc::new(BeatPlugin(beats.clone())), Arc::new(PushPlugin(pushes.clone()))], &["beat", "push"]);
+    let r = rig(&[], |_| {}, vec![Arc::new(BeatPlugin(beats.clone())), Arc::new(PushPlugin(pushes.clone()))], &["@test/beat", "@test/push"]);
     let services = r.core.start_services().unwrap();
     create_book(&r.core, "one").unwrap();
     let t = Instant::now();
@@ -289,11 +289,11 @@ fn a_secret_can_be_a_reference_to_the_environment_or_a_file() {
     let seen = Arc::new(Mutex::new(vec![]));
     let mut cat = catalog(&clock, &seen);
     cat.0.push(Arc::new(LogFile));
-    let mut p = profile(&["db-memory", "auth-local", "policy-roles", "clock-fixed", "ids-sequential", "notes", "tell", "tell-a", "log-file"]);
-    p.settings.insert("log-file".into(), json!({"path": {"$env": "NUAH_SURELY_NOT_SET_9f3"}}));
+    let mut p = profile(&["@nuah/db-memory", "@nuah/auth-local", "@nuah/policy-roles", "@nuah/clock-fixed", "@nuah/ids-sequential", "@test/notes", "@test/tell", "@test/tell-a", "@nuah/log-file"]);
+    p.settings.insert("@nuah/log-file".into(), json!({"path": {"$env": "NUAH_SURELY_NOT_SET_9f3"}}));
     let problems = Core::check(&Distribution { name: "t".into(), catalog: cat.clone(), profile: p.clone() });
-    assert!(problems.iter().any(|x| x.code == "bad_secret_ref" && x.plugins == ["log-file"]), "{problems:#?}");
-    p.settings.insert("log-file".into(), json!({"path": {"$file": f.display().to_string()}}));
+    assert!(problems.iter().any(|x| x.code == "bad_secret_ref" && x.plugins == ["@nuah/log-file"]), "{problems:#?}");
+    p.settings.insert("@nuah/log-file".into(), json!({"path": {"$file": f.display().to_string()}}));
     assert!(Core::check(&Distribution { name: "t".into(), catalog: cat, profile: p }).is_empty(), "a reference passes the settings schema once resolved");
     // a reference stays visible in the wizard; only real secrets are hidden
     assert_eq!(setup::redact(&json!({"$env": "X"}), &json!({"x-secret": true})), json!({"$env": "X"}));
@@ -302,7 +302,7 @@ fn a_secret_can_be_a_reference_to_the_environment_or_a_file() {
 
 #[test]
 fn the_services_stopping_twice_says_so_once() {
-    let r = rig(&[("log-a", Duration::ZERO)], |_| {}, vec![], &[]);
+    let r = rig(&[("@nuah/log-a", Duration::ZERO)], |_| {}, vec![], &[]);
     let s = r.core.start_services().unwrap();
     s.stop();
     r.core.flush_telemetry(Duration::from_secs(1));
@@ -333,7 +333,7 @@ impl MetricAdapter for SlowInterval {
 struct SlowIntervalPlugin(Seen<usize>, u64, &'static str);
 impl Plugin for SlowIntervalPlugin {
     fn manifest(&self) -> Manifest {
-        serde_json::from_value(json!({"id": self.2, "version": "1.0.0", "fills": "metric"})).unwrap()
+        serde_json::from_value(json!({"id": format!("@test/{}", self.2), "version": "1.0.0", "fills": "metric"})).unwrap()
     }
     fn fill(&self, _s: &Value) -> Result<Option<PortImpl>> {
         Ok(Some(PortImpl::Metric(Arc::new(SlowInterval(self.0.clone(), self.1, self.2)))))
@@ -343,7 +343,7 @@ impl Plugin for SlowIntervalPlugin {
 #[test]
 fn each_metric_adapter_has_its_own_interval() {
     let (fast, slow): (Seen<usize>, Seen<usize>) = (Arc::new(Mutex::new(vec![])), Arc::new(Mutex::new(vec![])));
-    let r = rig(&[], |_| {}, vec![Arc::new(SlowIntervalPlugin(fast.clone(), 1, "fast")), Arc::new(SlowIntervalPlugin(slow.clone(), 3600, "slow"))], &["fast", "slow"]);
+    let r = rig(&[], |_| {}, vec![Arc::new(SlowIntervalPlugin(fast.clone(), 1, "fast")), Arc::new(SlowIntervalPlugin(slow.clone(), 3600, "slow"))], &["@test/fast", "@test/slow"]);
     let services = r.core.start_services().unwrap();
     let t = Instant::now();
     while fast.lock().is_empty() && t.elapsed() < Duration::from_secs(6) {
@@ -360,8 +360,8 @@ fn setup_does_not_insist_on_a_reference_that_only_resolves_where_the_core_runs()
     let seen = Arc::new(Mutex::new(vec![]));
     let mut cat = catalog(&clock, &seen);
     cat.0.push(Arc::new(LogFile));
-    let mut p = profile(&["db-memory", "auth-local", "policy-roles", "clock-fixed", "ids-sequential", "notes", "tell", "tell-a", "log-file"]);
-    p.settings.insert("log-file".into(), json!({"path": {"$env": "NUAH_SURELY_NOT_SET_9f3"}}));
+    let mut p = profile(&["@nuah/db-memory", "@nuah/auth-local", "@nuah/policy-roles", "@nuah/clock-fixed", "@nuah/ids-sequential", "@test/notes", "@test/tell", "@test/tell-a", "@nuah/log-file"]);
+    p.settings.insert("@nuah/log-file".into(), json!({"path": {"$env": "NUAH_SURELY_NOT_SET_9f3"}}));
     let d = Distribution { name: "t".into(), catalog: cat, profile: p };
     assert!(!Core::check(&d).is_empty(), "starting still fails");
     assert!(Core::check_for_setup(&d).is_empty(), "saving a Profile in setup does not");
@@ -382,7 +382,7 @@ fn the_log_file_is_private() {
 struct Chatty;
 impl Plugin for Chatty {
     fn manifest(&self) -> Manifest {
-        serde_json::from_value(json!({"id": "chatty", "version": "1.0.0", "namespaces": ["chatty"],
+        serde_json::from_value(json!({"id": "@test/chatty", "version": "1.0.0", "namespaces": ["chatty"],
             "operations": {"chatty.say": {"kind": "query", "input": {"type": "object"}}}})).unwrap()
     }
     fn bind(&self, b: &mut Bindings) {
@@ -396,12 +396,12 @@ impl Plugin for Chatty {
 
 #[test]
 fn a_plugin_logs_and_counts_under_its_own_name() {
-    let r = rig(&[("log-a", Duration::ZERO)], |_| {}, vec![Arc::new(Chatty)], &["chatty"]);
+    let r = rig(&[("@nuah/log-a", Duration::ZERO)], |_| {}, vec![Arc::new(Chatty)], &["@test/chatty"]);
     r.core.call_as(&person("ann", &["member"]), "chatty.say", json!({}), None).unwrap();
     r.core.flush_telemetry(Duration::from_secs(2));
     let got = r.logs[0].lock();
     let rec = got.iter().find(|x| x.key == "chatty.said").expect("the plugin's record arrives");
-    assert_eq!(rec.target, "chatty", "the target is the plugin id");
+    assert_eq!(rec.target, "@test/chatty", "the target is the plugin id");
     assert!(rec.request.is_some(), "and it carries the request id");
     assert!(r.core.metrics_snapshot().series.iter().any(|s| s.name == "chatty_said_total" && s.value == 1.0));
 }

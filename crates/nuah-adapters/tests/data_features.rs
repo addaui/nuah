@@ -12,7 +12,7 @@ struct Feat(Value);
 impl Plugin for Feat {
     fn manifest(&self) -> Manifest {
         let mut m = json!({
-            "id": "feat", "version": "1.0.0", "namespaces": ["feat"],
+            "id": "@test/feat", "version": "1.0.0", "namespaces": ["feat"],
             "permissions": {"feat.write": {"default": ["member"]}},
             "operations": {
                 "feat.put": {"kind": "command", "permission": "feat.write", "input": {"type": "object", "required": ["id", "body"]}},
@@ -53,7 +53,7 @@ impl Db for Bare {
 struct AdapterBare;
 impl Plugin for AdapterBare {
     fn manifest(&self) -> Manifest {
-        serde_json::from_value(json!({"id": "db-bare", "version": "1", "name": "Bare", "description": "Only the required contract", "fills": "db"})).unwrap()
+        serde_json::from_value(json!({"id": "@nuah/db-bare", "version": "1", "name": "Bare", "description": "Only the required contract", "fills": "db"})).unwrap()
     }
     fn fill(&self, _s: &Value) -> Result<Option<PortImpl>> {
         Ok(Some(PortImpl::Db(Arc::new(Bare(MemoryDb::new())))))
@@ -66,7 +66,7 @@ fn start(db: &str, data: Value) -> std::result::Result<Core, Vec<Problem>> {
     let mut cat = catalog(&clock, &seen);
     cat.0.push(Arc::new(Feat(data)));
     cat.0.push(Arc::new(AdapterBare));
-    let mut p = profile(&[db, "auth-local", "policy-roles", "clock-fixed", "ids-sequential", "feat"]);
+    let mut p = profile(&[db, "@nuah/auth-local", "@nuah/policy-roles", "@nuah/clock-fixed", "@nuah/ids-sequential", "@test/feat"]);
     p.grants.clear();
     Core::start(&Distribution { name: "t".into(), catalog: cat, profile: p })
 }
@@ -78,10 +78,10 @@ fn put(c: &Core, id: &str, body: Value) -> Result<Value> {
 #[test]
 fn a_required_feature_the_adapter_lacks_stops_the_start_and_names_everything() {
     let data = json!({"collections": ["feat.docs"], "requires": ["index.unique"]});
-    assert!(start("db-memory", data.clone()).is_ok());
-    let p = start("db-bare", data).err().expect("must not start");
+    assert!(start("@nuah/db-memory", data.clone()).is_ok());
+    let p = start("@nuah/db-bare", data).err().expect("must not start");
     assert_eq!(p[0].code, "unsupported");
-    assert_eq!(p[0].plugins, ["feat"]);
+    assert_eq!(p[0].plugins, ["@test/feat"]);
     for word in ["feat", "index.unique", "bare"] {
         assert!(p[0].message.contains(word), "{}", p[0].message);
     }
@@ -90,7 +90,7 @@ fn a_required_feature_the_adapter_lacks_stops_the_start_and_names_everything() {
 #[test]
 fn a_preferred_feature_may_be_missing_and_the_plugin_can_ask() {
     let data = json!({"collections": ["feat.docs"], "prefers": ["backup.snapshot"]});
-    for (db, want_unique) in [("db-memory", true), ("db-bare", false)] {
+    for (db, want_unique) in [("@nuah/db-memory", true), ("@nuah/db-bare", false)] {
         let c = start(db, data.clone()).expect("a preference never stops the start");
         let r = c.call_as(&person("a", &["member"]), "feat.has", json!({"name": "index.unique"}), None).unwrap().output;
         assert_eq!(r["has"], want_unique, "{db}");
@@ -100,7 +100,7 @@ fn a_preferred_feature_may_be_missing_and_the_plugin_can_ask() {
 
 #[test]
 fn a_unique_index_is_a_conflict_with_a_reason() {
-    let c = start("db-memory", json!({"collections": ["feat.docs"], "indexes": [{"collection": "feat.docs", "field": "email", "unique": true}]})).unwrap();
+    let c = start("@nuah/db-memory", json!({"collections": ["feat.docs"], "indexes": [{"collection": "feat.docs", "field": "email", "unique": true}]})).unwrap();
     put(&c, "a", json!({"email": "x"})).unwrap();
     let e = put(&c, "b", json!({"email": "x"})).unwrap_err();
     assert_eq!((e.category, e.reason.as_deref()), (Category::Conflict, Some("kernel.unique")));
@@ -112,23 +112,23 @@ fn a_unique_index_is_a_conflict_with_a_reason() {
 #[test]
 fn a_unique_or_composite_index_needs_the_feature() {
     for ix in [json!({"collection": "feat.docs", "field": "e", "unique": true}), json!({"collection": "feat.docs", "fields": ["a", "b"]})] {
-        let p = start("db-bare", json!({"collections": ["feat.docs"], "indexes": [ix]})).err().expect("must not start");
+        let p = start("@nuah/db-bare", json!({"collections": ["feat.docs"], "indexes": [ix]})).err().expect("must not start");
         assert_eq!(p[0].code, "unsupported");
     }
     // a plain index is only a hint, so any Adapter takes it
-    assert!(start("db-bare", json!({"collections": ["feat.docs"], "indexes": [{"collection": "feat.docs", "field": "e"}]})).is_ok());
+    assert!(start("@nuah/db-bare", json!({"collections": ["feat.docs"], "indexes": [{"collection": "feat.docs", "field": "e"}]})).is_ok());
 }
 
 #[test]
 fn an_index_on_a_collection_the_plugin_does_not_own_is_refused() {
-    let p = start("db-memory", json!({"collections": ["feat.docs"], "indexes": [{"collection": "other.docs", "field": "e"}]})).err().unwrap();
+    let p = start("@nuah/db-memory", json!({"collections": ["feat.docs"], "indexes": [{"collection": "other.docs", "field": "e"}]})).err().unwrap();
     assert_eq!(p[0].code, "storage");
 }
 
 #[test]
 fn the_kernel_checks_a_declared_collection_schema_on_every_put() {
     let schema = json!({"type": "object", "required": ["title"], "properties": {"title": {"type": "string", "minLength": 1}, "n": {"type": "integer"}}, "additionalProperties": false});
-    let c = start("db-memory", json!({"collections": ["feat.docs"], "schemas": {"feat.docs": schema}})).unwrap();
+    let c = start("@nuah/db-memory", json!({"collections": ["feat.docs"], "schemas": {"feat.docs": schema}})).unwrap();
     put(&c, "ok", json!({"title": "t", "n": 1})).unwrap();
     for bad in [json!({}), json!({"title": ""}), json!({"title": "t", "n": "x"}), json!({"title": "t", "extra": 1})] {
         let e = put(&c, "bad", bad.clone()).unwrap_err();
@@ -163,7 +163,7 @@ impl Db for Counting {
 struct AdapterCounting(Arc<MemoryDb>, Arc<std::sync::atomic::AtomicUsize>);
 impl Plugin for AdapterCounting {
     fn manifest(&self) -> Manifest {
-        serde_json::from_value(json!({"id": "db-counting", "version": "1", "name": "Counting", "description": "Counts", "fills": "db"})).unwrap()
+        serde_json::from_value(json!({"id": "@nuah/db-counting", "version": "1", "name": "Counting", "description": "Counts", "fills": "db"})).unwrap()
     }
     fn fill(&self, _s: &Value) -> Result<Option<PortImpl>> {
         Ok(Some(PortImpl::Db(Arc::new(Counting(self.0.clone(), self.1.clone())))))
@@ -179,7 +179,7 @@ fn the_adapter_is_told_before_data_that_exists_is_migrated_and_never_for_a_new_d
         let mut cat = catalog(&clock, &seen);
         cat.0.push(Arc::new(Feat(json!({"collections": ["feat.docs"], "version": version}))));
         cat.0.push(Arc::new(AdapterCounting(mem.clone(), calls.clone())));
-        let mut p = profile(&["db-counting", "auth-local", "policy-roles", "clock-fixed", "ids-sequential", "feat"]);
+        let mut p = profile(&["@nuah/db-counting", "@nuah/auth-local", "@nuah/policy-roles", "@nuah/clock-fixed", "@nuah/ids-sequential", "@test/feat"]);
         p.grants.clear();
         Core::start(&Distribution { name: "t".into(), catalog: cat, profile: p }).unwrap();
         calls.load(std::sync::atomic::Ordering::SeqCst)
@@ -201,9 +201,9 @@ fn sqlite_writes_a_copy_before_migrating_when_asked() {
         let mut cat = catalog(&clock, &seen);
         cat.0.push(Arc::new(Feat(json!({"collections": ["feat.docs"], "version": version}))));
         cat.0.push(Arc::new(AdapterSqlite));
-        let mut p = profile(&["db-sqlite", "auth-local", "policy-roles", "clock-fixed", "ids-sequential", "feat"]);
+        let mut p = profile(&["@nuah/db-sqlite", "@nuah/auth-local", "@nuah/policy-roles", "@nuah/clock-fixed", "@nuah/ids-sequential", "@test/feat"]);
         p.grants.clear();
-        p.settings.insert("db-sqlite".into(), json!({"path": path.to_str().unwrap(), "backup_dir": backups.to_str().unwrap()}));
+        p.settings.insert("@nuah/db-sqlite".into(), json!({"path": path.to_str().unwrap(), "backup_dir": backups.to_str().unwrap()}));
         Core::start(&Distribution { name: "t".into(), catalog: cat, profile: p }).unwrap();
     };
     boot(1);
@@ -214,7 +214,7 @@ fn sqlite_writes_a_copy_before_migrating_when_asked() {
     assert!(files[0].starts_with("before-migration-"));
     let copy = SqliteDb::open(backups.join(&files[0]).to_str().unwrap()).unwrap();
     copy.read(&mut |r| {
-        assert_eq!(r.get("_meta", "version:feat")?.unwrap().body["version"], 1, "the copy is from before the migration");
+        assert_eq!(r.get("_meta", "version:@test/feat")?.unwrap().body["version"], 1, "the copy is from before the migration");
         Ok(())
     })
     .unwrap();
@@ -225,7 +225,7 @@ fn sqlite_writes_a_copy_before_migrating_when_asked() {
 struct Pair(&'static str, u32, Value);
 impl Plugin for Pair {
     fn manifest(&self) -> Manifest {
-        let mut m = json!({"id": self.0, "version": "1", "namespaces": [self.0]});
+        let mut m = json!({"id": format!("@test/{}", self.0), "version": "1", "namespaces": [self.0]});
         let mut d = self.2.clone();
         d["version"] = json!(self.1);
         m["data"] = d;
@@ -244,7 +244,7 @@ fn a_refused_start_writes_nothing() {
         cat.0.push(Arc::new(Pair("aaa", 1, json!({"collections": ["aaa.docs"]}))));
         cat.0.push(Arc::new(Pair("zzz", 1, second)));
         cat.0.push(Arc::new(AdapterCounting(mem.clone(), calls.clone())));
-        let mut p = profile(&["db-counting", "auth-local", "policy-roles", "clock-fixed", "ids-sequential", "aaa", "zzz"]);
+        let mut p = profile(&["@nuah/db-counting", "@nuah/auth-local", "@nuah/policy-roles", "@nuah/clock-fixed", "@nuah/ids-sequential", "@test/aaa", "@test/zzz"]);
         p.grants.clear();
         Core::start(&Distribution { name: "t".into(), catalog: cat, profile: p })
     };

@@ -1,31 +1,31 @@
 // SPDX-License-Identifier: Apache-2.0
 //! First-run setup as a web wizard ([ADR 0014], [ADR 0039]): a [`Bootstrap`] a product picks when its
-//! distribution has a browser. It serves the wizard Face from `<faces dir>/startup-setup-web` (default
-//! `./faces/startup-setup-web`), guarded by a one-time code printed on the terminal.
+//! distribution has a browser. It serves the wizard Face from `<faces dir>/nuah/setup-web` (default
+//! `./faces/nuah/setup-web`; `--faces` or `NUAH_FACES` moves the directory), guarded by a one-time code printed on the terminal.
 //!
 //! [ADR 0014]: https://docs.addaui.com/nuah/adr/0014-setup-wizard-is-a-separate-mode-with-a-setup-code-and-no-secrets/
 //! [ADR 0039]: https://docs.addaui.com/nuah/adr/0039-accounts-belong-to-the-auth-plugin-and-live-in-the-database-faces-setup-and-console-are-plugins/
 
 mod wizard;
 
-use nuah_host::edit::ProfileStore;
-use nuah_host::{wait_for_stop, Bootstrap, SetupContext};
+use nuah_shell::edit::ProfileStore;
+use nuah_shell::{wait_for_stop, Bootstrap, SetupContext};
 use std::path::PathBuf;
 
 pub use wizard::{setup_router, SetupConfig};
 
 pub struct SetupWeb {
-    faces_dir: PathBuf,
+    faces_dir: Option<PathBuf>,
 }
 
 impl SetupWeb {
-    /// The wizard Face is in `./faces/startup-setup-web`.
+    /// The wizard Face is where the shell says the Faces are (`./faces/nuah/setup-web` by default).
     pub fn new() -> Self {
-        SetupWeb { faces_dir: "faces".into() }
+        SetupWeb { faces_dir: None }
     }
-    /// The wizard Face is in `<dir>/startup-setup-web`.
+    /// The wizard Face is in `<dir>/nuah/setup-web`, whatever the shell says.
     pub fn with_faces_dir(dir: impl Into<PathBuf>) -> Self {
-        SetupWeb { faces_dir: dir.into() }
+        SetupWeb { faces_dir: Some(dir.into()) }
     }
 }
 
@@ -54,11 +54,11 @@ async fn serve(me: &SetupWeb, ctx: SetupContext) -> Result<(), String> {
     if ctx.until_saved {
         server.hosts.extend(ctx.allow_hosts.iter().filter(|h| !h.is_empty()).map(|h| h.to_lowercase()));
     }
-    let face = me.faces_dir.join("startup-setup-web");
+    let face = me.faces_dir.clone().unwrap_or_else(|| ctx.faces_dir.clone()).join("nuah").join("setup-web");
     if face.is_dir() {
         server.faces.push(("/faces/setup".to_string(), face));
     } else {
-        return Err(format!("the wizard Face is not at {}; put the startup-setup-web Face there", face.display()));
+        return Err(format!("the wizard Face is not at {}; put the setup-web Face there, or point --faces / NUAH_FACES at the directory that has it", face.display()));
     }
     let store = std::sync::Arc::new(ProfileStore::new(&ctx.product, ctx.catalog, ctx.starting_point, ctx.identity_file));
     let saved = store.saved.clone();

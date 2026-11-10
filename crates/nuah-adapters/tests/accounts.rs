@@ -10,8 +10,8 @@ use std::sync::Arc;
 
 fn core() -> Core {
     let mut p = Profile { name: "t".into(), ..Default::default() };
-    p.enabled = ["db-memory", "auth-password", "policy-roles", "clock-system", "ids-random"].iter().map(|s| s.to_string()).collect();
-    p.settings.insert("auth-password".into(), json!({"accounts": [{"name": "Root", "password_hash": AuthPassword::hash_password("first-password"), "roles": ["admin"]}]}));
+    p.enabled = ["@nuah/db-memory", "@nuah/auth-password", "@nuah/policy-roles", "@nuah/clock-system", "@nuah/ids-random"].iter().map(|s| s.to_string()).collect();
+    p.settings.insert("@nuah/auth-password".into(), json!({"accounts": [{"name": "Root", "password_hash": AuthPassword::hash_password("first-password"), "roles": ["admin"]}]}));
     let list: Vec<Arc<dyn Plugin>> = vec![Arc::new(AdapterMemory), Arc::new(AuthPassword), Arc::new(PolicyRoles), Arc::new(StdClock), Arc::new(StdIds)];
     Core::start(&Distribution { name: "t".into(), catalog: Catalog(list), profile: p }).unwrap_or_else(|e| panic!("{e:?}"))
 }

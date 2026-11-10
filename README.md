@@ -13,7 +13,7 @@ cargo test --workspace
 - `crates/nuah-kernel`: the kernel
 - `crates/nuah-adapters`: adapters for the ports
 - `crates/nuah-http`: HTTP projection (plugin)
-- `crates/nuah-host`: the program that runs a product
+- `crates/nuah-shell`: the program that runs a product
 - `faces/console`, `faces/setup`: generic faces
 
 ## License

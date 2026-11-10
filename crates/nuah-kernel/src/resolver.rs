@@ -14,14 +14,20 @@ use std::sync::Arc;
 
 /// One set of choices for a Distribution: which plugins are on, which Adapter fills each Port, the
 /// Settings of each plugin, the Capabilities granted to each, and changes to default Permission grants.
+///
+/// In memory the three per-plugin parts are kept side by side; the file has one entry per plugin ([ADR 0042]):
+/// `"plugins": {"@nuah/db-postgres": {"enabled": true, "grants": [...], "settings": {...}}}`. The old shape
+/// (`enabled`, `settings`, `grants`) is still read.
+///
+/// [ADR 0042]: https://docs.addaui.com/nuah/adr/0042-the-host-becomes-the-shell-plugins-have-scoped-ids-the-identity-file-is-nuah-json-with-one-entry-per-plugin-and-settings-render-as-forms/
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(from = "ProfileFile", into = "ProfileFile")]
 pub struct Profile {
     pub name: String,
     /// The contract hash this file was last saved against (like a lockfile). A different hash at start
-    /// means a plugin upgrade changed the API under this file; the host warns.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// means a plugin upgrade changed the API under this file; the shell warns.
     pub contract: Option<String>,
+    /// The plugins that are on. A plugin that has settings or grants but is not here is switched off and keeps them.
     pub enabled: Vec<String>,
     /// Port -> Adapter plugin id. Optional when exactly one enabled Adapter fills the Port.
     pub bindings: BTreeMap<String, String>,
@@ -36,6 +42,105 @@ pub struct Profile {
     ///
     /// [ADR 0032]: https://docs.addaui.com/nuah/adr/0032-telemetry-is-four-optional-fan-out-ports-the-core-decides-what-to-record-adapters-decide-how-it-looks-and-where-it-goes/
     pub telemetry: crate::telemetry::TelemetrySettings,
+}
+
+/// One plugin's part of the file.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EntryFile {
+    #[serde(default = "yes")]
+    enabled: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    grants: Vec<String>,
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    settings: Value,
+}
+
+fn yes() -> bool {
+    true
+}
+
+/// The file's shape. The three old keys are only read.
+#[derive(Serialize, Deserialize, Default)]
+#[serde(default)]
+struct ProfileFile {
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    contract: Option<String>,
+    plugins: BTreeMap<String, EntryFile>,
+    bindings: BTreeMap<String, String>,
+    permissions: BTreeMap<String, Vec<String>>,
+    telemetry: crate::telemetry::TelemetrySettings,
+    #[serde(skip_serializing)]
+    enabled: Vec<String>,
+    #[serde(skip_serializing)]
+    settings: BTreeMap<String, Value>,
+    #[serde(skip_serializing)]
+    grants: BTreeMap<String, Vec<String>>,
+}
+
+/// The capability that was called `host` before [ADR 0042] is `shell`.
+fn capability_name(c: String) -> String {
+    if c == "host" { "shell".into() } else { c }
+}
+
+impl From<ProfileFile> for Profile {
+    fn from(f: ProfileFile) -> Profile {
+        let mut enabled = f.enabled;
+        let mut settings = f.settings;
+        let mut grants = f.grants;
+        for (id, e) in f.plugins {
+            if e.enabled && !enabled.contains(&id) {
+                enabled.push(id.clone());
+            }
+            if !e.settings.is_null() {
+                settings.insert(id.clone(), e.settings);
+            }
+            if !e.grants.is_empty() {
+                grants.insert(id, e.grants);
+            }
+        }
+        for g in grants.values_mut() {
+            *g = std::mem::take(g).into_iter().map(capability_name).collect();
+        }
+        Profile { name: f.name, contract: f.contract, enabled, bindings: f.bindings, settings, grants, permissions: f.permissions, telemetry: f.telemetry }
+    }
+}
+
+impl From<Profile> for ProfileFile {
+    fn from(p: Profile) -> ProfileFile {
+        let ids: std::collections::BTreeSet<&String> = p.enabled.iter().chain(p.settings.keys()).chain(p.grants.keys()).collect();
+        let plugins = ids
+            .into_iter()
+            .map(|id| (id.clone(), EntryFile { enabled: p.enabled.contains(id), grants: p.grants.get(id).cloned().unwrap_or_default(), settings: p.settings.get(id).cloned().unwrap_or(Value::Null) }))
+            .collect();
+        ProfileFile { name: p.name, contract: p.contract, plugins, bindings: p.bindings, permissions: p.permissions, telemetry: p.telemetry, ..Default::default() }
+    }
+}
+
+/// Give every plugin id in the Profile its scoped form: an id without a scope is the one catalog plugin whose
+/// name part is the same (the shape of the file before [ADR 0042]). An id that matches none, or several, is left as it is
+/// for the Resolver to report.
+pub fn migrate_ids(p: &mut Profile, catalog: &Catalog) {
+    let ids: Vec<String> = catalog.0.iter().map(|pl| pl.manifest().id).collect();
+    let fix = |id: &String| -> String {
+        if id.starts_with('@') || ids.contains(id) {
+            return id.clone();
+        }
+        let suffix = format!("/{id}");
+        let mut found = ids.iter().filter(|c| c.ends_with(&suffix));
+        match (found.next(), found.next()) {
+            (Some(one), None) => one.clone(),
+            _ => id.clone(),
+        }
+    };
+    p.enabled = p.enabled.iter().map(&fix).collect();
+    p.settings = std::mem::take(&mut p.settings).into_iter().map(|(k, v)| (fix(&k), v)).collect();
+    p.grants = std::mem::take(&mut p.grants).into_iter().map(|(k, v)| (fix(&k), v)).collect();
+    for v in p.bindings.values_mut() {
+        *v = fix(v);
+    }
+    p.telemetry.levels = std::mem::take(&mut p.telemetry.levels).into_iter().map(|(k, v)| (fix(&k), v)).collect();
 }
 
 /// Every plugin available to be switched on.
@@ -110,7 +215,7 @@ pub struct Plan {
 }
 
 /// `serve`: the plugin runs a long-lived service (a Projection, for one). See ADR 0031. `net`: an outbound Operation may use the `net` Port (ADR 0040).
-const CAPABILITIES: [&str; 5] = ["emit", "call", "serve", "net", "host"];
+const CAPABILITIES: [&str; 5] = ["emit", "call", "serve", "net", "shell"];
 
 /// The hash of the operation and schema set, so a Face can tell it was built for a different Core.
 pub const ENVELOPE_VERSION: u32 = 1;
@@ -119,7 +224,9 @@ pub fn resolve(dist: &Distribution) -> (Vec<Problem>, Plan) {
     let mut ps: Vec<Problem> = vec![];
     let mut plan = Plan::default();
     // References to the environment or a file are replaced by their value; the Profile itself holds no secret.
-    let resolved = crate::setup::resolve_profile_refs(&dist.profile, &mut ps);
+    let mut migrated = dist.profile.clone();
+    migrate_ids(&mut migrated, &dist.catalog);
+    let resolved = crate::setup::resolve_profile_refs(&migrated, &mut ps);
     let p = &resolved;
     for m in p.telemetry.problems() {
         ps.push(problem("bad_telemetry", &[], m));
@@ -130,6 +237,9 @@ pub fn resolve(dist: &Distribution) -> (Vec<Problem>, Plan) {
     let mut catalog: BTreeMap<String, Arc<dyn Plugin>> = BTreeMap::new();
     for pl in &dist.catalog.0 {
         let id = pl.manifest().id;
+        if split_id(&id).is_none() {
+            ps.push(problem("bad_plugin_id", &[&id], format!("the plugin id {id} must look like @scope/name (lower case letters, digits and hyphens)")));
+        }
         if catalog.insert(id.clone(), pl.clone()).is_some() {
             ps.push(problem("duplicate_plugin", &[&id], format!("two plugins in the catalog are called {id}")));
         }
@@ -149,11 +259,6 @@ pub fn resolve(dist: &Distribution) -> (Vec<Problem>, Plan) {
                 normalize(&mut m);
                 enabled.push((id.clone(), pl.clone(), m));
             }
-        }
-    }
-    for id in p.settings.keys().chain(p.grants.keys()) {
-        if !seen.contains(id) {
-            ps.push(problem("settings_for_disabled_plugin", &[id], format!("the profile configures {id}, which is not enabled")));
         }
     }
     let ids: BTreeSet<&str> = enabled.iter().map(|(i, _, _)| i.as_str()).collect();
@@ -284,6 +389,9 @@ pub fn resolve(dist: &Distribution) -> (Vec<Problem>, Plan) {
             }
         }
         for dep in &m.requires.plugins {
+            if split_id(id).is_some_and(|(scope, _)| scope == "nuah") && split_id(dep).is_some_and(|(scope, _)| scope != "nuah") {
+                ps.push(problem("platform_needs_product", &[id, dep], format!("{id} is part of the platform and cannot require {dep}, which belongs to another scope")));
+            }
             if !ids.contains(dep.as_str()) {
                 ps.push(problem("missing_dependency", &[id, dep], format!("{id} needs {dep}, which is not enabled")));
             }

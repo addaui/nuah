@@ -97,7 +97,7 @@ pub struct ConsoleLog {
 
 impl LogAdapter for ConsoleLog {
     fn name(&self) -> &str {
-        "log-console"
+        "@nuah/log-console"
     }
     fn min_level(&self) -> Level {
         self.min
@@ -120,7 +120,7 @@ pub struct LogConsole;
 impl Plugin for LogConsole {
     fn manifest(&self) -> Manifest {
         serde_json::from_value(json!({
-            "id": "log-console", "version": "0.1.0", "name": "Console log", "fills": "log",
+            "id": "@nuah/log-console", "version": "0.1.0", "name": "Console log", "fills": "log",
             "description": "Writes log records to the terminal: readable and coloured on a terminal, one JSON object per line otherwise",
             "settings_schema": {"type": "object", "additionalProperties": false, "properties": {
                 "level": {"type": "string", "enum": ["error", "warn", "info", "debug", "trace"], "x-tier": "operator", "x-apply": "restart", "description": "Records chattier than this are not written here"},
@@ -200,7 +200,7 @@ impl FileLog {
 
 impl LogAdapter for FileLog {
     fn name(&self) -> &str {
-        "log-file"
+        "@nuah/log-file"
     }
     fn min_level(&self) -> Level {
         self.min
@@ -224,7 +224,7 @@ pub struct LogFile;
 impl Plugin for LogFile {
     fn manifest(&self) -> Manifest {
         serde_json::from_value(json!({
-            "id": "log-file", "version": "0.1.0", "name": "File log", "fills": "log",
+            "id": "@nuah/log-file", "version": "0.1.0", "name": "File log", "fills": "log",
             "description": "Appends log records to a file as JSON lines, and rotates it when it grows",
             "settings_schema": {"type": "object", "additionalProperties": false, "required": ["path"], "properties": {
                 "path": {"type": "string", "minLength": 1, "x-tier": "bootstrap", "x-apply": "restart"},

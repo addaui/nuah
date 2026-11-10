@@ -2,7 +2,7 @@
 //! The terminal setup writes the same identity file the web wizard does (ADR 0041).
 
 use nuah_adapters::*;
-use nuah_host::{Bootstrap, SetupContext};
+use nuah_shell::{Bootstrap, SetupContext};
 use nuah_kernel::*;
 use nuah_setup_cli::SetupCli;
 use serde_json::{json, Value};
@@ -16,9 +16,9 @@ fn catalog() -> Catalog {
 
 fn start(file: &std::path::Path) -> SetupContext {
     let mut p = Profile { name: "t".into(), ..Default::default() };
-    p.enabled = ["db-memory", "auth-password", "policy-roles", "clock-system", "ids-random", "http"].iter().map(|s| s.to_string()).collect();
-    p.grants.insert("http".into(), vec!["serve".into()]);
-    SetupContext { product: "t".into(), catalog: catalog(), starting_point: p, identity_file: file.to_path_buf(), listen: None, allow_hosts: vec![], until_saved: true }
+    p.enabled = ["@nuah/db-memory", "@nuah/auth-password", "@nuah/policy-roles", "@nuah/clock-system", "@nuah/ids-random", "@nuah/http"].iter().map(|s| s.to_string()).collect();
+    p.grants.insert("@nuah/http".into(), vec!["serve".into()]);
+    SetupContext { product: "t".into(), catalog: catalog(), starting_point: p, identity_file: file.to_path_buf(), listen: None, allow_hosts: vec![], faces_dir: "faces".into(), until_saved: true }
 }
 
 fn run(file: &std::path::Path, answers: &str) -> std::result::Result<String, String> {
@@ -51,8 +51,8 @@ fn the_terminal_asks_for_the_first_administrator_and_writes_a_profile_that_resol
     // keep the plugins; listen elsewhere; a short password is refused; the two entries must match
     run(&file, "\n127.0.0.1:4100\nada\nshort\nlong-enough-1\nnot-the-same\nlong-enough-1\nlong-enough-1\n").unwrap();
     let saved: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
-    assert_eq!(saved["settings"]["http"]["listen"], "127.0.0.1:4100");
-    let acc = &saved["settings"]["auth-password"]["accounts"][0];
+    assert_eq!(saved["plugins"]["@nuah/http"]["settings"]["listen"], "127.0.0.1:4100");
+    let acc = &saved["plugins"]["@nuah/auth-password"]["settings"]["accounts"][0];
     assert_eq!(acc["name"], "ada");
     assert_eq!(acc["roles"], json!(["admin"]));
     assert!(acc["password_hash"].as_str().unwrap().starts_with("$argon2"), "the password is stored hashed");

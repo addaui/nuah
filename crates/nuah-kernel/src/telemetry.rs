@@ -80,7 +80,7 @@ impl ErrorInfo {
 pub struct Record {
     pub time: Millis,
     pub level: Level,
-    /// The plugin that wrote it, or `nuah.kernel`, `nuah.host`.
+    /// The plugin that wrote it, or `nuah.kernel`, `nuah.shell`.
     pub target: String,
     pub key: String,
     #[serde(default, skip_serializing_if = "Value::is_null")]

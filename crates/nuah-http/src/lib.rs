@@ -41,7 +41,7 @@ pub struct Config {
     pub secure_cookie: bool,
     /// Static Faces to host: (URL prefix such as `/faces/web`, directory).
     pub faces: Vec<(String, std::path::PathBuf)>,
-    /// Where the Faces of plugins are: `<faces_dir>/<plugin id>`, for each enabled plugin that publishes one and has no entry in `faces`.
+    /// Where the Faces of plugins are: `<faces_dir>/<scope>/<name>` (`faces/nuah/console` for `@nuah/console`), for each enabled plugin that publishes one and has no entry in `faces`.
     pub faces_dir: std::path::PathBuf,
     /// The Face `/` shows, by name (`web` for `/faces/web`), without redirecting. Default: `web` when it is hosted, else the first.
     pub root: Option<String>,
@@ -554,11 +554,11 @@ pub fn router(core: Core, cfg: Config) -> Router {
 /// The Link, the static Faces and a product's extra routes, behind the guard. `shutdown` ends Pulse streams
 /// when it turns true so the server can stop.
 pub fn router_with(core: Core, mut cfg: Config, extra: &[RouteFn], shutdown: tokio::sync::watch::Receiver<bool>) -> Router {
-    // A plugin that publishes a Face is hosted from `<faces_dir>/<plugin id>` unless the Profile gave it a directory.
+    // A plugin that publishes a Face is hosted from `<faces_dir>/<scope>/<name>` unless the Profile gave it a directory.
     for (name, plugin) in core.faces() {
         let prefix = format!("/faces/{name}");
         if !cfg.faces.iter().any(|(p, _)| *p == prefix) {
-            cfg.faces.push((prefix, cfg.faces_dir.join(plugin)));
+            cfg.faces.push((prefix, cfg.faces_dir.join(plugin.trim_start_matches('@'))));
         }
     }
     let cfg = Arc::new(cfg);

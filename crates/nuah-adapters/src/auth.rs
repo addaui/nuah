@@ -14,7 +14,7 @@ use std::sync::Arc;
 struct Local(Identity);
 impl Auth for Local {
     fn name(&self) -> &str {
-        "auth-local"
+        "@nuah/auth-local"
     }
     fn authenticate(&self, _db: &dyn DbRead, credential: &str, _now: Millis) -> Result<Option<Identity>> {
         Ok(if credential == "local" { Some(self.0.clone()) } else { None })
@@ -28,7 +28,7 @@ pub struct AuthLocal;
 impl Plugin for AuthLocal {
     fn manifest(&self) -> Manifest {
         serde_json::from_value(json!({
-            "id":"auth-local","version":"0.2.0","name":"Local sign-in","description":"One person, always signed in as admin. Only for a Core that nobody else can reach.","fills":"auth",
+            "id":"@nuah/auth-local","version":"0.2.0","name":"Local sign-in","description":"One person, always signed in as admin. Only for a Core that nobody else can reach.","fills":"auth",
             "settings_schema":{"type":"object","properties":{"name":{"type":"string","minLength":1}},"additionalProperties":false}
         })).unwrap()
     }
@@ -67,7 +67,7 @@ fn identity_of(subject: &str, body: &Value) -> Identity {
 struct Password;
 impl Auth for Password {
     fn name(&self) -> &str {
-        "auth-password"
+        "@nuah/auth-password"
     }
     fn authenticate(&self, db: &dyn DbRead, credential: &str, now: Millis) -> Result<Option<Identity>> {
         let Some(d) = db.get(SESSIONS, &token_hash(credential))?.filter(|d| !d.deleted) else { return Ok(None) };
@@ -127,14 +127,14 @@ impl Plugin for AuthPassword {
         let name_in = json!({"type":"string","minLength":1,"maxLength":200});
         let pw_in = json!({"type":"string","minLength":8,"maxLength":1000});
         serde_json::from_value(json!({
-            "id": "auth-password", "version": "0.3.0", "name": "Password sign-in",
+            "id": "@nuah/auth-password", "version": "0.3.0", "name": "Password sign-in",
             "description": "Accounts with passwords, kept in the database; sign-in gives an expiring session",
             "fills": "auth", "namespaces": ["auth"],
             "requires": {"ports": ["db", "clock", "ids"]},
             "data": {"collections": [SESSIONS, ACCOUNTS, NAMES], "version": 1, "indexes": [{"collection": ACCOUNTS, "field": "disabled"}]},
             "permissions": {"auth.manage": {"description": "Create accounts, change their roles and passwords, disable them", "default": ["admin"]}},
             "settings_schema": {"type":"object","properties":{
-                "session_hours": {"type":"integer","minimum":1,"maximum":720},
+                "session_hours": {"type":"integer","minimum":1,"maximum":720,"title":"Session length (hours)","description":"How long someone stays signed in without signing in again.","default":24},
                 "accounts": {"x-secret":true,"x-first-account":"password-hash","description":"Accounts to create the first time the data is set up; after that they are managed in the database","type":"array","items":{"type":"object","required":["name","password_hash"],
                     "properties":{"name":{"type":"string","minLength":1},"display":{"type":"string"},
                     "password_hash":{"type":"string","minLength":1},"roles":{"type":"array","items":{"type":"string"}}},

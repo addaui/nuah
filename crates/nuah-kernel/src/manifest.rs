@@ -319,7 +319,22 @@ pub struct Manifest {
     pub face: Option<String>,
 }
 
+/// Split a plugin id `@scope/name` ([ADR 0042]) into its scope and name; `None` when it is not one. Both parts are
+/// lower case letters, digits and hyphens, and start with a letter.
+///
+/// [ADR 0042]: https://docs.addaui.com/nuah/adr/0042-the-host-becomes-the-shell-plugins-have-scoped-ids-the-identity-file-is-nuah-json-with-one-entry-per-plugin-and-settings-render-as-forms/
+pub fn split_id(id: &str) -> Option<(&str, &str)> {
+    let (scope, name) = id.strip_prefix('@')?.split_once('/')?;
+    let ok = |s: &str| s.chars().next().is_some_and(|c| c.is_ascii_lowercase()) && s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+    (ok(scope) && ok(name)).then_some((scope, name))
+}
+
 impl Manifest {
+    /// The owner part of the id (`nuah` for `@nuah/http`); empty when the id is not scoped.
+    pub fn scope(&self) -> &str {
+        split_id(&self.id).map_or("", |(s, _)| s)
+    }
+
     pub fn parse(src: &str) -> Result<Manifest, String> {
         serde_json::from_str(src).map_err(|e| format!("manifest does not parse: {e}"))
     }

@@ -43,18 +43,18 @@ impl Service for Running {
 impl Plugin for Http {
     fn manifest(&self) -> Manifest {
         serde_json::from_value(json!({
-            "id": "http", "version": "0.3.0", "name": "HTTP projection",
+            "id": "@nuah/http", "version": "0.3.0", "name": "HTTP projection",
             "description": "Serves the Link (Operations, describe, Pulse) over HTTP and server-sent events, and static Faces",
             "namespaces": ["http"],
             "requires": {"capabilities": ["serve"]},
             "settings_schema": {"type": "object", "additionalProperties": false, "properties": {
-                "listen": {"type": "string", "minLength": 3, "x-tier": "bootstrap", "x-apply": "service"},
-                "hosts": {"type": "array", "items": {"type": "string"}, "x-tier": "operator", "x-apply": "service"},
-                "secure_cookie": {"type": "boolean", "x-tier": "operator", "x-apply": "service"},
+                "listen": {"type": "string", "minLength": 3, "title": "Listen address", "description": "Where the web server listens: 127.0.0.1:3000 for this machine only, 0.0.0.0:3000 for every network.", "default": "127.0.0.1:3000", "x-ref": false, "x-tier": "bootstrap", "x-apply": "service"},
+                "hosts": {"type": "array", "items": {"type": "string"}, "title": "Allowed host names", "description": "Names people use to reach this instance (behind a reverse proxy), one per line, for example madar.example.com.", "x-tier": "operator", "x-apply": "service"},
+                "secure_cookie": {"type": "boolean", "title": "Secure cookie", "description": "Turn on when a proxy serves this over HTTPS, so the session cookie is only sent over HTTPS.", "x-tier": "operator", "x-apply": "service"},
                 "root": {"type": "string", "description": "Which Face `/` shows, by name (for example web). Default: web, else the first.", "x-tier": "operator", "x-apply": "service"},
-                "faces_dir": {"type": "string", "description": "Where plugins' Faces are: a plugin that publishes the Face named X is served from <faces_dir>/<its id>. Default: faces", "x-tier": "operator", "x-apply": "service"},
+                "faces_dir": {"type": "string", "description": "Where plugins' Faces are: a plugin that publishes the Face named X is served from <faces_dir>/<scope>/<name> of its id. Default: faces (or NUAH_FACES)", "x-tier": "operator", "x-apply": "service"},
                 "faces": {"type": "object", "additionalProperties": {"type": "string"}, "x-tier": "operator", "x-apply": "service"},
-                "worker_threads": {"type": "integer", "minimum": 0, "maximum": 1024, "x-tier": "operator", "x-apply": "service"},
+                "worker_threads": {"type": "integer", "minimum": 0, "maximum": 1024, "title": "Worker threads", "description": "0 uses every core.", "x-tier": "operator", "x-apply": "service"},
                 "sign_in_failures_per_name": {"type": "integer", "minimum": 1, "x-tier": "operator", "x-apply": "service"},
                 "sign_in_failures_overall": {"type": "integer", "minimum": 1, "x-tier": "operator", "x-apply": "service"},
                 "throttle_window_secs": {"type": "integer", "minimum": 1, "x-tier": "operator", "x-apply": "service"},
@@ -96,7 +96,7 @@ impl Plugin for Http {
                     });
                     // Streams close on the signal; anything still open after a few seconds is cut.
                     tokio::select! {
-                        r = serving => { if let Err(e) = r { core.log(Level::Error, "http", "http.stopped", json!({"error": e.to_string()})); } }
+                        r = serving => { if let Err(e) = r { core.log(Level::Error, "@nuah/http", "http.stopped", json!({"error": e.to_string()})); } }
                         _ = async { let _ = stop_rx.wait_for(|down| *down).await; tokio::time::sleep(Duration::from_secs(5)).await } => {}
                     }
                 });
@@ -104,7 +104,7 @@ impl Plugin for Http {
             .map_err(|e| Error::internal(format!("cannot start the http thread: {e}")))?;
         match ready_rx.recv() {
             Ok(Ok(addr)) => {
-                log.log(Level::Info, "http", "http.listening", json!({"addr": addr.to_string()}));
+                log.log(Level::Info, "@nuah/http", "http.listening", json!({"addr": addr.to_string()}));
                 Ok(Some(Box::new(Running { stop: stop_tx, thread })))
             }
             Ok(Err(msg)) => {

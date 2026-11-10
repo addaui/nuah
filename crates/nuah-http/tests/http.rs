@@ -10,7 +10,7 @@ use std::time::Duration;
 struct Echo;
 impl Plugin for Echo {
     fn manifest(&self) -> Manifest {
-        serde_json::from_value(json!({"id":"echo","version":"1","namespaces":["echo"],
+        serde_json::from_value(json!({"id":"@test/echo","version":"1","namespaces":["echo"],
             "operations":{"echo.say":{"kind":"query","input":{"type":"object","properties":{"text":{"type":"string"}}}}}})).unwrap()
     }
     fn bind(&self, b: &mut Bindings) {
@@ -25,10 +25,10 @@ fn free_port() -> u16 {
 fn start(port: u16) -> (Core, Services) {
     let hash = AuthPassword::hash_password("pw");
     let mut p = Profile { name: "t".into(), ..Default::default() };
-    p.enabled = ["db-memory", "auth-password", "policy-roles", "clock-system", "ids-random", "echo", "http"].iter().map(|s| s.to_string()).collect();
-    p.settings.insert("auth-password".into(), json!({"accounts": [{"name": "alice", "password_hash": hash, "roles": ["member"]}]}));
-    p.settings.insert("http".into(), json!({"listen": format!("127.0.0.1:{port}")}));
-    p.grants.insert("http".into(), vec!["serve".into()]);
+    p.enabled = ["@nuah/db-memory", "@nuah/auth-password", "@nuah/policy-roles", "@nuah/clock-system", "@nuah/ids-random", "@test/echo", "@nuah/http"].iter().map(|s| s.to_string()).collect();
+    p.settings.insert("@nuah/auth-password".into(), json!({"accounts": [{"name": "alice", "password_hash": hash, "roles": ["member"]}]}));
+    p.settings.insert("@nuah/http".into(), json!({"listen": format!("127.0.0.1:{port}")}));
+    p.grants.insert("@nuah/http".into(), vec!["serve".into()]);
     let mut catalog = vec![];
     let list: Vec<std::sync::Arc<dyn Plugin>> = vec![
         std::sync::Arc::new(AdapterMemory), std::sync::Arc::new(AuthPassword), std::sync::Arc::new(PolicyRoles), std::sync::Arc::new(StdClock), std::sync::Arc::new(StdIds),
@@ -110,9 +110,9 @@ fn readiness_says_whether_the_core_can_read_its_data() {
 
 fn start_with_http(http: Value) -> (Core, Services) {
     let mut p = Profile { name: "t".into(), ..Default::default() };
-    p.enabled = ["db-memory", "auth-local", "policy-roles", "clock-system", "ids-random", "http"].iter().map(|s| s.to_string()).collect();
-    p.settings.insert("http".into(), http);
-    p.grants.insert("http".into(), vec!["serve".into()]);
+    p.enabled = ["@nuah/db-memory", "@nuah/auth-local", "@nuah/policy-roles", "@nuah/clock-system", "@nuah/ids-random", "http"].iter().map(|s| s.to_string()).collect();
+    p.settings.insert("@nuah/http".into(), http);
+    p.grants.insert("@nuah/http".into(), vec!["serve".into()]);
     let list: Vec<std::sync::Arc<dyn Plugin>> = vec![
         std::sync::Arc::new(AdapterMemory), std::sync::Arc::new(AuthLocal), std::sync::Arc::new(PolicyRoles), std::sync::Arc::new(StdClock), std::sync::Arc::new(StdIds), std::sync::Arc::new(Http::new()),
     ];
@@ -159,20 +159,20 @@ impl Plugin for FacePlugin {
 #[test]
 fn a_plugin_that_publishes_a_face_is_hosted_from_the_faces_dir_under_its_id() {
     let base = std::env::temp_dir().join(format!("nuah-faces-{}", std::process::id()));
-    for (id, marker) in [("my-site", "SITE"), ("my-admin", "ADMIN")] {
+    for (id, marker) in [("test/my-site", "SITE"), ("test/my-admin", "ADMIN")] {
         std::fs::create_dir_all(base.join(id)).unwrap();
         std::fs::write(base.join(id).join("index.html"), marker).unwrap();
     }
     let other = face_dir("elsewhere", "ELSEWHERE");
     let port = free_port();
     let mut p = Profile { name: "t".into(), ..Default::default() };
-    p.enabled = ["db-memory", "auth-local", "policy-roles", "clock-system", "ids-random", "http", "my-site", "my-admin"].iter().map(|s| s.to_string()).collect();
+    p.enabled = ["@nuah/db-memory", "@nuah/auth-local", "@nuah/policy-roles", "@nuah/clock-system", "@nuah/ids-random", "@nuah/http", "@test/my-site", "@test/my-admin"].iter().map(|s| s.to_string()).collect();
     // the admin Face is moved by the Profile; the site keeps the default place
-    p.settings.insert("http".into(), json!({"listen": format!("127.0.0.1:{port}"), "faces_dir": base.to_string_lossy(), "faces": {"/faces/console": other}}));
-    p.grants.insert("http".into(), vec!["serve".into()]);
+    p.settings.insert("@nuah/http".into(), json!({"listen": format!("127.0.0.1:{port}"), "faces_dir": base.to_string_lossy(), "faces": {"/faces/console": other}}));
+    p.grants.insert("@nuah/http".into(), vec!["serve".into()]);
     let list: Vec<std::sync::Arc<dyn Plugin>> = vec![
         std::sync::Arc::new(AdapterMemory), std::sync::Arc::new(AuthLocal), std::sync::Arc::new(PolicyRoles), std::sync::Arc::new(StdClock), std::sync::Arc::new(StdIds),
-        std::sync::Arc::new(Http::new()), std::sync::Arc::new(FacePlugin("my-site", "web")), std::sync::Arc::new(FacePlugin("my-admin", "console")),
+        std::sync::Arc::new(Http::new()), std::sync::Arc::new(FacePlugin("@test/my-site", "web")), std::sync::Arc::new(FacePlugin("@test/my-admin", "console")),
     ];
     let core = Core::start(&Distribution { name: "t".into(), catalog: Catalog(list), profile: p }).unwrap_or_else(|e| panic!("{e:?}"));
     let services = core.start_services().unwrap();

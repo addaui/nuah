@@ -10,7 +10,7 @@ use std::sync::Arc;
 struct AllowAll;
 impl Policy for AllowAll {
     fn name(&self) -> &str {
-        "policy-allow-all"
+        "@nuah/policy-allow-all"
     }
     fn allows(&self, _who: &Identity, permission: &str, grant: Option<&Grant>, _t: &PermissionTable) -> bool {
         // Roles do not matter here; what the resource grants does ([ADR 0018]). Without a resource, everything.
@@ -23,7 +23,7 @@ impl Policy for AllowAll {
 struct Roles;
 impl Policy for Roles {
     fn name(&self) -> &str {
-        "policy-roles"
+        "@nuah/policy-roles"
     }
     fn allows(&self, who: &Identity, permission: &str, grant: Option<&Grant>, table: &PermissionTable) -> bool {
         let by_role = table.get(permission).is_some_and(|roles| roles.iter().any(|r| who.has_role(r)));
@@ -35,7 +35,7 @@ impl Policy for Roles {
 pub struct PolicyAllowAll;
 impl Plugin for PolicyAllowAll {
     fn manifest(&self) -> Manifest {
-        serde_json::from_value(json!({"id":"policy-allow-all","version":"0.2.0","name":"Allow everything","description":"Single-user setups: every Subject may do whatever the resource lets them","fills":"policy"})).unwrap()
+        serde_json::from_value(json!({"id":"@nuah/policy-allow-all","version":"0.2.0","name":"Allow everything","description":"Single-user setups: every Subject may do whatever the resource lets them","fills":"policy"})).unwrap()
     }
     fn fill(&self, _s: &Value) -> Result<Option<PortImpl>> {
         Ok(Some(PortImpl::Policy(Arc::new(AllowAll))))
@@ -45,7 +45,7 @@ impl Plugin for PolicyAllowAll {
 pub struct PolicyRoles;
 impl Plugin for PolicyRoles {
     fn manifest(&self) -> Manifest {
-        serde_json::from_value(json!({"id":"policy-roles","version":"0.2.0","name":"Roles","description":"A Permission is held by the Roles the manifests and the Profile name, and also needs what the resource grants","fills":"policy"})).unwrap()
+        serde_json::from_value(json!({"id":"@nuah/policy-roles","version":"0.2.0","name":"Roles","description":"A Permission is held by the Roles the manifests and the Profile name, and also needs what the resource grants","fills":"policy"})).unwrap()
     }
     fn fill(&self, _s: &Value) -> Result<Option<PortImpl>> {
         Ok(Some(PortImpl::Policy(Arc::new(Roles))))

@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en" dir="ltr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Nuah setup</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="bar">
+    <div class="brand">Nuah setup</div>
+    <span class="spacer"></span>
+    <span id="path" class="muted"></span>
+  </header>
+  <main>
+    <ol id="steps" class="steps" aria-label="Setup steps"></ol>
+    <section id="page" aria-live="polite"></section>
+    <nav class="nav">
+      <button id="back" type="button">Back</button>
+      <span id="stepmsg" class="err" role="alert"></span>
+      <span class="spacer"></span>
+      <button id="next" class="primary" type="button">Next</button>
+    </nav>
+  </main>
+  <div id="gate" class="gate" hidden>
+    <form id="gate-form">
+      <h1>Setup code</h1>
+      <p>The server printed a code in its terminal when it started. Type it here to continue.</p>
+      <input id="code" autocomplete="off" spellcheck="false" aria-label="Setup code">
+      <p id="gate-msg" class="muted" role="alert"></p>
+      <button class="primary" type="submit">Continue</button>
+    </form>
+  </div>
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  <script src="form.js"></script>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

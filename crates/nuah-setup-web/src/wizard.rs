@@ -18,9 +18,9 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use nuah_host::edit::{first_account_plugin, first_account_problem, has_accounts, put_first_account, ProfileStore};
+use nuah_shell::edit::{first_account_plugin, first_account_problem, has_accounts, put_first_account, ProfileStore};
 use nuah_kernel::setup::redact_profile;
-use nuah_kernel::{Core, HostServices, Problem, Profile};
+use nuah_kernel::{Core, ShellServices, Problem, Profile};
 use serde_json::{json, Value};
 use std::sync::Arc;
 

@@ -19,8 +19,8 @@ fn m(v: Value) -> Manifest {
 impl Plugin for Notes {
     fn manifest(&self) -> Manifest {
         m(json!({
-            "id": "notes", "version": "1.0.0", "namespaces": ["notes"],
-            "requires": {"capabilities": ["emit", "call"], "extension_points": ["tell.channel"], "plugins": ["tell"]},
+            "id": "@test/notes", "version": "1.0.0", "namespaces": ["notes"],
+            "requires": {"capabilities": ["emit", "call"], "extension_points": ["tell.channel"], "plugins": ["@test/tell"]},
             "data": {"collections": ["notes.books", "notes.notes"], "reads": [], "version": 2,
                      "indexes": [{"collection": "notes.notes", "field": "book"}]},
             "permissions": {
@@ -166,7 +166,7 @@ impl Plugin for Notes {
 pub struct Tell;
 impl Plugin for Tell {
     fn manifest(&self) -> Manifest {
-        m(json!({"id": "tell", "version": "1.0.0", "namespaces": ["tell"],
+        m(json!({"id": "@test/tell", "version": "1.0.0", "namespaces": ["tell"],
             "defines": {"extension_points": {"tell.channel": {"policy": "many", "input": {"type":"object","required":["text"],"properties":{"text":{"type":"string"}}}}}}}))
     }
 }
@@ -175,7 +175,7 @@ pub struct TellA {
 }
 impl Plugin for TellA {
     fn manifest(&self) -> Manifest {
-        m(json!({"id": if self.fail { "tell-bad" } else { "tell-a" }, "version": "1.0.0", "requires": {"plugins": ["tell"]}, "provides": [{"extension_point": "tell.channel"}]}))
+        m(json!({"id": if self.fail { "@test/tell-bad" } else { "@test/tell-a" }, "version": "1.0.0", "requires": {"plugins": ["@test/tell"]}, "provides": [{"extension_point": "tell.channel"}]}))
     }
     fn bind(&self, b: &mut Bindings) {
         let fail = self.fail;
@@ -187,7 +187,7 @@ impl Plugin for TellA {
 pub struct Wrapper;
 impl Plugin for Wrapper {
     fn manifest(&self) -> Manifest {
-        m(json!({"id": "wrapper", "version": "1.0.0", "namespaces": ["wrapper"],
+        m(json!({"id": "@test/wrapper", "version": "1.0.0", "namespaces": ["wrapper"],
             "hooks": [
                 {"stage": "around", "on": "notes.add", "order": 0, "handler": "wrapper.shout"},
                 {"stage": "before", "on": "notes.add", "order": 5, "handler": "wrapper.first"}
@@ -233,7 +233,7 @@ pub fn catalog(clock: &Arc<FixedClock>, seen: &Arc<Mutex<Vec<String>>>) -> Catal
 pub fn world_with(extra: &[&str]) -> World {
     let clock = FixedClock::at(1_000_000);
     let seen = Arc::new(Mutex::new(vec![]));
-    let mut enabled = vec!["db-memory", "auth-local", "policy-roles", "clock-fixed", "ids-sequential", "notes", "tell", "tell-a"];
+    let mut enabled = vec!["@nuah/db-memory", "@nuah/auth-local", "@nuah/policy-roles", "@nuah/clock-fixed", "@nuah/ids-sequential", "@test/notes", "@test/tell", "@test/tell-a"];
     enabled.extend_from_slice(extra);
     let dist = Distribution { name: "test".into(), catalog: catalog(&clock, &seen), profile: profile(&enabled) };
     let core = Core::start(&dist).unwrap_or_else(|p| panic!("start failed: {p:#?}"));

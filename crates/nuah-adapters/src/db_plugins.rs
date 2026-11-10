@@ -9,7 +9,7 @@ use std::sync::Arc;
 pub struct AdapterMemory;
 impl Plugin for AdapterMemory {
     fn manifest(&self) -> Manifest {
-        serde_json::from_value(json!({"id":"db-memory","version":"0.2.0","name":"Memory database","description":"Keeps data in memory; gone when the Core stops","fills":"db"})).unwrap()
+        serde_json::from_value(json!({"id":"@nuah/db-memory","version":"0.2.0","name":"Memory database","description":"Keeps data in memory; gone when the Core stops","fills":"db"})).unwrap()
     }
     fn fill(&self, _s: &Value) -> Result<Option<PortImpl>> {
         Ok(Some(PortImpl::Db(Arc::new(MemoryDb::new()))))
@@ -20,8 +20,8 @@ pub struct AdapterSqlite;
 impl Plugin for AdapterSqlite {
     fn manifest(&self) -> Manifest {
         serde_json::from_value(json!({
-            "id":"db-sqlite","version":"0.2.0","name":"SQLite database","description":"Keeps data in one SQLite file","fills":"db",
-            "settings_schema":{"type":"object","properties":{"path":{"type":"string","minLength":1,"x-tier":"bootstrap","x-apply":"restart"},"readers":{"type":"integer","minimum":0,"maximum":128,"x-tier":"bootstrap","x-apply":"restart"},"backup_dir":{"type":"string","minLength":1,"x-tier":"bootstrap","x-apply":"restart"}},"additionalProperties":false}
+            "id":"@nuah/db-sqlite","version":"0.2.0","name":"SQLite database","description":"Keeps data in one SQLite file","fills":"db",
+            "settings_schema":{"type":"object","properties":{"path":{"type":"string","minLength":1,"title":"Database file","description":"The SQLite file. It is created when missing.","examples":["nuah.db"],"x-tier":"bootstrap","x-apply":"restart"},"readers":{"type":"integer","minimum":0,"maximum":128,"title":"Reader connections","description":"How many connections read at the same time.","x-tier":"bootstrap","x-apply":"restart"},"backup_dir":{"type":"string","minLength":1,"title":"Backup folder","description":"A copy of the database is written here before a migration changes it.","x-tier":"bootstrap","x-apply":"restart"}},"additionalProperties":false}
         })).unwrap()
     }
     fn fill(&self, s: &Value) -> Result<Option<PortImpl>> {
@@ -39,11 +39,11 @@ pub struct AdapterPostgres;
 impl Plugin for AdapterPostgres {
     fn manifest(&self) -> Manifest {
         serde_json::from_value(json!({
-            "id":"db-postgres","version":"0.1.0","name":"PostgreSQL database","description":"Keeps data in PostgreSQL; one Nuah process per database","fills":"db",
+            "id":"@nuah/db-postgres","version":"0.1.0","name":"PostgreSQL database","description":"Keeps data in PostgreSQL; one Nuah process per database","fills":"db",
             "settings_schema":{"type":"object","required":["url"],"properties":{
-                "url":{"type":"string","minLength":1,"x-tier":"bootstrap","x-apply":"restart"},
-                "schema":{"type":"string","minLength":1,"maxLength":48,"x-tier":"bootstrap","x-apply":"restart"},
-                "readers":{"type":"integer","minimum":0,"maximum":128,"x-tier":"bootstrap","x-apply":"restart"}},"additionalProperties":false}
+                "url":{"type":"string","minLength":1,"title":"Connection URL","description":"Where PostgreSQL is, with the user and password: postgres://user:password@host:5432/database. Better kept in an environment variable.","examples":["postgres://nuah:secret@localhost:5432/nuah"],"x-secret":true,"x-tier":"bootstrap","x-apply":"restart"},
+                "schema":{"type":"string","minLength":1,"maxLength":48,"title":"Schema","description":"The PostgreSQL schema this instance keeps its tables in. Leave empty for the default.","x-tier":"bootstrap","x-apply":"restart"},
+                "readers":{"type":"integer","minimum":0,"maximum":128,"title":"Reader connections","description":"How many connections read at the same time (default 4).","default":4,"x-tier":"bootstrap","x-apply":"restart"}},"additionalProperties":false}
         })).unwrap()
     }
     fn fill(&self, s: &Value) -> Result<Option<PortImpl>> {

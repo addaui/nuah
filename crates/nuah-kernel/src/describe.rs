@@ -29,7 +29,7 @@ impl Core {
         let mut plugins = vec![];
         for (id, a) in &inner.plan.active {
             let m = &a.manifest;
-            plugins.push(json!({"id": id, "name": m.name, "version": m.version, "kind": m.kind(), "quality": m.quality, "runtime": m.runtime, "description": m.description, "state": "active"}));
+            plugins.push(json!({"id": id, "scope": m.scope(), "name": m.name, "version": m.version, "kind": m.kind(), "quality": m.quality, "runtime": m.runtime, "description": m.description, "state": "active"}));
         }
         for (id, reason) in &inner.plan.inactive {
             plugins.push(json!({"id": id, "state": "inactive", "reason": reason}));

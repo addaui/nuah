@@ -65,14 +65,14 @@ macro_rules! adapter {
     };
 }
 
-adapter!(StdClock, "clock-system", "clock", "The system clock", |_s| PortImpl::Clock(Arc::new(SystemClock)));
-adapter!(StdIds, "ids-random", "ids", "Random ids", |_s| PortImpl::Ids(Arc::new(RandomIds)));
+adapter!(StdClock, "@nuah/clock-system", "clock", "The system clock", |_s| PortImpl::Clock(Arc::new(SystemClock)));
+adapter!(StdIds, "@nuah/ids-random", "ids", "Random ids", |_s| PortImpl::Ids(Arc::new(RandomIds)));
 
 /// Test adapters hand out shared handles so a test can move time and see ids.
 pub struct TestClock(pub Arc<FixedClock>);
 impl Plugin for TestClock {
     fn manifest(&self) -> Manifest {
-        simple_adapter("clock-fixed", "clock", "A clock that only moves when told to")
+        simple_adapter("@nuah/clock-fixed", "clock", "A clock that only moves when told to")
     }
     fn fill(&self, _s: &Value) -> Result<Option<PortImpl>> {
         Ok(Some(PortImpl::Clock(self.0.clone())))
@@ -81,7 +81,7 @@ impl Plugin for TestClock {
 pub struct TestIds;
 impl Plugin for TestIds {
     fn manifest(&self) -> Manifest {
-        simple_adapter("ids-sequential", "ids", "Predictable ids")
+        simple_adapter("@nuah/ids-sequential", "ids", "Predictable ids")
     }
     fn fill(&self, _s: &Value) -> Result<Option<PortImpl>> {
         Ok(Some(PortImpl::Ids(Arc::new(SequentialIds::default()))))

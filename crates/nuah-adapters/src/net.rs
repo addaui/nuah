@@ -110,7 +110,7 @@ struct Public {
 
 impl Net for Public {
     fn name(&self) -> &str {
-        "net-public"
+        "@nuah/net-public"
     }
     fn fetch(&self, req: &NetRequest) -> Result<NetResponse> {
         let url = check_url(&req.url, self.allow_private)?;
@@ -150,7 +150,7 @@ pub struct NetPublic {
 impl Plugin for NetPublic {
     fn manifest(&self) -> Manifest {
         serde_json::from_value(json!({
-            "id": "net-public", "version": "0.1.0", "name": "Public web access",
+            "id": "@nuah/net-public", "version": "0.1.0", "name": "Public web access",
             "description": "Outbound http and https to public addresses only: no private network, no credentials in the address, standard ports, at most 3 redirects",
             "fills": "net"
         }))

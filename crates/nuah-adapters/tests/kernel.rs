@@ -18,10 +18,10 @@ fn book(w: &World, who: &Identity) -> String {
 fn the_resolver_reports_every_problem_at_once() {
     let clock = FixedClock::at(0);
     let seen = Default::default();
-    let mut p = profile(&["db-memory", "auth-local", "policy-roles", "policy-allow-all", "clock-fixed", "ids-sequential", "notes", "ghost", "tell-a"]);
+    let mut p = profile(&["@nuah/db-memory", "@nuah/auth-local", "@nuah/policy-roles", "@nuah/policy-allow-all", "@nuah/clock-fixed", "@nuah/ids-sequential", "@test/notes", "@test/ghost", "@test/tell-a"]);
     p.grants.get_mut("notes").unwrap().clear(); // capabilities not granted
-    p.settings.insert("db-memory".into(), json!({}));
-    p.bindings.insert("db".into(), "policy-roles".into()); // wrong adapter
+    p.settings.insert("@nuah/db-memory".into(), json!({}));
+    p.bindings.insert("db".into(), "@nuah/policy-roles".into()); // wrong adapter
     let dist = Distribution { name: "t".into(), catalog: catalog(&clock, &seen), profile: p };
     let codes: Vec<String> = Core::check(&dist).into_iter().map(|p| p.code).collect();
     for want in ["unknown_plugin", "port_ambiguous", "bad_binding", "capability_not_granted", "missing_dependency"] {
@@ -34,7 +34,7 @@ fn names_must_be_inside_the_namespace_the_plugin_owns() {
     struct Bad;
     impl Plugin for Bad {
         fn manifest(&self) -> Manifest {
-            serde_json::from_value(json!({"id":"bad","version":"1","namespaces":["bad"],
+            serde_json::from_value(json!({"id":"@test/bad","version":"1","namespaces":["bad"],
                 "operations":{"notes.steal":{"kind":"query"},"bad.ok":{"kind":"query"}},"events":{"other.thing":{}}})).unwrap()
         }
         fn bind(&self, b: &mut Bindings) {
@@ -47,7 +47,7 @@ fn names_must_be_inside_the_namespace_the_plugin_owns() {
     let seen = Default::default();
     let mut cat = catalog(&clock, &seen);
     cat.0.push(std::sync::Arc::new(Bad));
-    let dist = Distribution { name: "t".into(), catalog: cat, profile: profile(&["db-memory", "auth-local", "policy-roles", "clock-fixed", "ids-sequential", "bad"]) };
+    let dist = Distribution { name: "t".into(), catalog: cat, profile: profile(&["@nuah/db-memory", "@nuah/auth-local", "@nuah/policy-roles", "@nuah/clock-fixed", "@nuah/ids-sequential", "@test/bad"]) };
     let ps = Core::check(&dist);
     let find = |code: &str| ps.iter().filter(|p| p.code == code).count();
     assert_eq!(find("name_outside_namespace"), 2, "{ps:#?}");
@@ -289,12 +289,12 @@ fn listeners_catch_up_after_the_commit_and_keep_their_place() {
 
 #[test]
 fn a_many_extension_point_isolates_each_provider() {
-    let w = world_with(&["tell-bad"]);
+    let w = world_with(&["@test/tell-bad"]);
     let out = call(&w, &person("alice", &["member"]), "notes.tell_all", json!({"text": "hey"})).unwrap();
     let rows = out.as_array().unwrap();
     assert_eq!(rows.len(), 2);
-    assert!(rows.iter().any(|r| r["provider"] == "tell-a" && r["ok"] == true));
-    assert!(rows.iter().any(|r| r["provider"] == "tell-bad" && r["ok"] == false));
+    assert!(rows.iter().any(|r| r["provider"] == "@test/tell-a" && r["ok"] == true));
+    assert!(rows.iter().any(|r| r["provider"] == "@test/tell-bad" && r["ok"] == false));
 }
 
 // ---- the contract ------------------------------------------------------------------------------------
@@ -323,8 +323,8 @@ fn describe_tells_a_face_what_exists_and_what_it_may_do() {
     assert_eq!(d["operations"]["notes.book.create"]["allowed"], false, "a viewer cannot create");
     assert_eq!(d["permissions"]["notes.read"]["held"], true);
     assert!(d["events"]["notes.added"].is_object());
-    assert!(d["plugins"].as_array().unwrap().iter().any(|p| p["id"] == "notes" && p["kind"] == "feature"));
-    assert!(d["plugins"].as_array().unwrap().iter().any(|p| p["id"] == "tell-a" && p["kind"] == "provider"));
+    assert!(d["plugins"].as_array().unwrap().iter().any(|p| p["id"] == "@test/notes" && p["kind"] == "feature"));
+    assert!(d["plugins"].as_array().unwrap().iter().any(|p| p["id"] == "@test/tell-a" && p["kind"] == "provider"));
     assert!(w.core.describe_public()["operations"].as_object().unwrap().is_empty() || true);
 }
 
@@ -337,7 +337,7 @@ impl Service for Stopper {
 }
 impl Plugin for Serving {
     fn manifest(&self) -> Manifest {
-        serde_json::from_value(json!({"id":"serving","version":"1","namespaces":["serving"],"requires":{"capabilities":["serve"]}})).unwrap()
+        serde_json::from_value(json!({"id":"@test/serving","version":"1","namespaces":["serving"],"requires":{"capabilities":["serve"]}})).unwrap()
     }
     fn serve(&self, ctx: ServiceContext) -> Result<Option<Box<dyn Service>>> {
         if self.fail { return Err(Error::internal("no port")); }
@@ -353,7 +353,7 @@ fn serving_core(fail: bool, grant: bool) -> (std::result::Result<Core, Vec<Probl
     let seen = Default::default();
     let mut cat = catalog(&clock, &seen);
     cat.0.push(std::sync::Arc::new(Serving { running: running.clone(), fail }));
-    let mut p = profile(&["db-memory", "auth-local", "policy-roles", "clock-fixed", "ids-sequential", "notes", "tell", "tell-a", "serving"]);
+    let mut p = profile(&["@nuah/db-memory", "@nuah/auth-local", "@nuah/policy-roles", "@nuah/clock-fixed", "@nuah/ids-sequential", "@test/notes", "@test/tell", "@test/tell-a", "@test/serving"]);
     if grant { p.grants.insert("serving".into(), vec!["serve".into()]); }
     (Core::start(&Distribution { name: "t".into(), catalog: cat, profile: p }), running)
 }
@@ -370,7 +370,7 @@ fn services_start_with_the_core_and_stop_with_it() {
     let (core, running) = serving_core(false, true);
     let core = core.unwrap();
     let services = core.start_services().unwrap();
-    assert_eq!(services.running(), vec!["serving"]);
+    assert_eq!(services.running(), vec!["@test/serving"]);
     assert_eq!(running.load(std::sync::atomic::Ordering::SeqCst), 1);
     services.stop();
     assert_eq!(running.load(std::sync::atomic::Ordering::SeqCst), 0);
@@ -407,7 +407,7 @@ fn hello(extra: Value) -> std::sync::Arc<dyn Plugin> {
     struct Hello(Value);
     impl Plugin for Hello {
         fn manifest(&self) -> Manifest {
-            let mut m = json!({"id":"hello","version":"1","namespaces":["hello"],"operations":{"hello.say":{"kind":"query","public":true}}});
+            let mut m = json!({"id":"@test/hello","version":"1","namespaces":["hello"],"operations":{"hello.say":{"kind":"query","public":true}}});
             for (k, v) in self.0.as_object().unwrap() {
                 m[k] = v.clone();
             }
@@ -422,7 +422,7 @@ fn hello(extra: Value) -> std::sync::Arc<dyn Plugin> {
 
 #[test]
 fn a_distribution_with_no_database_starts_when_no_plugin_needs_one() {
-    let mut p = profile(&["hello"]);
+    let mut p = profile(&["@test/hello"]);
     p.settings.clear();
     p.grants.clear();
     let dist = Distribution { name: "t".into(), catalog: Catalog(vec![hello(json!({}))]), profile: p };
@@ -433,7 +433,7 @@ fn a_distribution_with_no_database_starts_when_no_plugin_needs_one() {
 
 #[test]
 fn a_plugin_that_owns_data_makes_the_database_needed_and_the_problem_names_it() {
-    let dist = Distribution { name: "t".into(), catalog: Catalog(vec![hello(json!({"data":{"collections":["hello.things"],"version":1}}))]), profile: profile(&["hello"]) };
+    let dist = Distribution { name: "t".into(), catalog: Catalog(vec![hello(json!({"data":{"collections":["hello.things"],"version":1}}))]), profile: profile(&["@test/hello"]) };
     let problems = Core::check(&dist);
     let p = problems.iter().find(|p| p.code == "port_unfilled").expect("db is needed");
     assert!(p.message.contains("hello") && p.message.contains("db"), "{}", p.message);
@@ -445,7 +445,7 @@ struct FakeNet(std::sync::Arc<parking_lot::Mutex<Vec<String>>>);
 struct FakeNetPlugin(std::sync::Arc<parking_lot::Mutex<Vec<String>>>);
 impl Net for FakeNet {
     fn name(&self) -> &str {
-        "net-fake"
+        "@nuah/net-fake"
     }
     fn fetch(&self, r: &NetRequest) -> Result<NetResponse> {
         self.0.lock().push(r.url.clone());
@@ -454,7 +454,7 @@ impl Net for FakeNet {
 }
 impl Plugin for FakeNetPlugin {
     fn manifest(&self) -> Manifest {
-        serde_json::from_value(json!({"id":"net-fake","version":"1","fills":"net"})).unwrap()
+        serde_json::from_value(json!({"id":"@nuah/net-fake","version":"1","fills":"net"})).unwrap()
     }
     fn fill(&self, _: &Value) -> Result<Option<PortImpl>> {
         Ok(Some(PortImpl::Net(std::sync::Arc::new(FakeNet(self.0.clone())))))
@@ -469,7 +469,7 @@ impl Plugin for Fetchy {
     fn manifest(&self) -> Manifest {
         let caps = if self.wants_net { json!(["call", "net"]) } else { json!(["call"]) };
         serde_json::from_value(json!({
-            "id": "fetchy", "version": "1", "namespaces": ["fetchy"],
+            "id": "@test/fetchy", "version": "1", "namespaces": ["fetchy"],
             "requires": {"capabilities": caps},
             "data": {"collections": ["fetchy.seen"], "version": 1},
             "permissions": {"fetchy.use": {"default": ["member"]}},
@@ -500,7 +500,7 @@ impl Plugin for Fetchy {
 
 fn outbound_world(wants_net: bool, grant_net: bool) -> std::result::Result<(Core, std::sync::Arc<parking_lot::Mutex<Vec<String>>>), Vec<Problem>> {
     let asked = std::sync::Arc::new(parking_lot::Mutex::new(vec![]));
-    let mut p = profile(&["db-memory", "auth-local", "policy-roles", "clock-system", "ids-random", "net-fake", "fetchy"]);
+    let mut p = profile(&["@nuah/db-memory", "@nuah/auth-local", "@nuah/policy-roles", "@nuah/clock-system", "@nuah/ids-random", "@nuah/net-fake", "@test/fetchy"]);
     p.settings.clear();
     p.grants.clear();
     p.grants.insert("fetchy".into(), if grant_net { vec!["call".into(), "net".into()] } else { vec!["call".into()] });

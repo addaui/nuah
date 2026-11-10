@@ -6,7 +6,7 @@
 
 use nuah_adapters::AuthPassword;
 use nuah_kernel::setup::{catalog_info, profile_from_json, restore_profile};
-use nuah_kernel::{Catalog, Core, Distribution, HostServices, Problem, Profile};
+use nuah_kernel::{Catalog, Core, Distribution, ShellServices, Problem, Profile};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -17,14 +17,21 @@ pub struct ProfileStore {
     /// What a draft starts from when there is no file yet.
     pub starting_point: Profile,
     pub path: PathBuf,
-    /// Told when a save has been written (setup waits on it) or a restart is asked for (the host loop waits on it).
+    /// Told when a save has been written (setup waits on it) or a restart is asked for (the shell loop waits on it).
     pub saved: Arc<tokio::sync::Notify>,
     pub restart: Arc<tokio::sync::Notify>,
+    /// What the console should tell the operator after a restart that went back to the earlier file.
+    notice: std::sync::Mutex<Option<String>>,
 }
 
 impl ProfileStore {
     pub fn new(product: &str, catalog: Catalog, starting_point: Profile, path: PathBuf) -> Self {
-        ProfileStore { product: product.into(), catalog, starting_point, path, saved: Arc::new(tokio::sync::Notify::new()), restart: Arc::new(tokio::sync::Notify::new()) }
+        ProfileStore { product: product.into(), catalog, starting_point, path, saved: Arc::new(tokio::sync::Notify::new()), restart: Arc::new(tokio::sync::Notify::new()), notice: std::sync::Mutex::new(None) }
+    }
+
+    /// Remember a message for the next `state` (the shell sets it when a saved file did not start).
+    pub fn set_notice(&self, text: Option<String>) {
+        *self.notice.lock().unwrap_or_else(|e| e.into_inner()) = text;
     }
 
     pub fn dist(&self, profile: Profile) -> Distribution {
@@ -38,7 +45,10 @@ impl ProfileStore {
             Err(e) => Err(format!("cannot read {}: {e}", self.path.display())),
             Ok(text) => {
                 let v: Value = serde_json::from_str(&text).map_err(|e| format!("{} is not JSON: {e}", self.path.display()))?;
-                profile_from_json(&v).map(Some)
+                profile_from_json(&v).map(|mut p| {
+                    nuah_kernel::migrate_ids(&mut p, &self.catalog);
+                    Some(p)
+                })
             }
         }
     }
@@ -46,6 +56,7 @@ impl ProfileStore {
     /// A draft from JSON, with the secrets it did not retype put back from the stored Profile.
     pub fn draft(&self, body: &Value) -> Result<Profile, String> {
         let mut p = profile_from_json(body)?;
+        nuah_kernel::migrate_ids(&mut p, &self.catalog);
         let stored = self.stored().ok().flatten().unwrap_or_default();
         let dist = self.dist(p.clone());
         restore_profile(&mut p, &stored, &dist);
@@ -70,7 +81,7 @@ impl ProfileStore {
     }
 }
 
-impl HostServices for ProfileStore {
+impl ShellServices for ProfileStore {
     fn state(&self) -> Result<Value, String> {
         let (profile, load_error, exists) = match self.stored() {
             Ok(Some(p)) => (p, None, true),
@@ -83,6 +94,7 @@ impl HostServices for ProfileStore {
         body["path"] = json!(self.path.display().to_string());
         body["file_exists"] = json!(exists);
         body["load_error"] = json!(load_error);
+        body["notice"] = json!(self.notice.lock().unwrap_or_else(|e| e.into_inner()).clone());
         Ok(body)
     }
     fn check(&self, draft: &Value) -> Result<Vec<Problem>, String> {
@@ -92,6 +104,7 @@ impl HostServices for ProfileStore {
         self.commit(self.draft(draft)?, vec![])
     }
     fn restart(&self) {
+        self.set_notice(None);
         self.restart.notify_one();
     }
 }

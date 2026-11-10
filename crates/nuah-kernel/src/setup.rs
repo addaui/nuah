@@ -8,7 +8,7 @@ use crate::resolver::{Distribution, Profile};
 use crate::ports::PORTS;
 use serde_json::{json, Map, Value};
 
-const PROFILE_KEYS: [&str; 8] = ["name", "contract", "enabled", "bindings", "settings", "grants", "permissions", "telemetry"];
+const PROFILE_KEYS: [&str; 9] = ["name", "contract", "plugins", "enabled", "bindings", "settings", "grants", "permissions", "telemetry"];
 
 /// Read a Profile strictly: an unknown key or a wrong shape is an error, so a typo does not
 /// silently switch a plugin off.
@@ -102,7 +102,9 @@ pub fn redact(value: &Value, schema: &Value) -> Value {
     if is_ref(value) {
         return value.clone();
     }
-    if is_secret(schema) {
+    // Nothing is there to hide when the value is empty, and a form needs to see "no accounts yet".
+    let empty = matches!(value, Value::Null) || value.as_array().is_some_and(|a| a.is_empty());
+    if is_secret(schema) && !empty {
         return marker();
     }
     match value {
@@ -143,8 +145,9 @@ pub fn restore(draft: &Value, stored: &Value, schema: &Value) -> Value {
 /// Redact all settings of a Profile with their plugins' schemas.
 pub fn redact_profile(dist: &Distribution) -> Value {
     let mut p = serde_json::to_value(&dist.profile).unwrap_or(Value::Null);
-    if let Some(settings) = p.get_mut("settings").and_then(|s| s.as_object_mut()) {
-        for (id, v) in settings.iter_mut() {
+    if let Some(entries) = p.get_mut("plugins").and_then(|s| s.as_object_mut()) {
+        for (id, entry) in entries.iter_mut() {
+            let Some(v) = entry.get_mut("settings") else { continue };
             if let Some(pl) = dist.catalog.0.iter().find(|pl| pl.manifest().id == *id) {
                 *v = redact(v, &pl.manifest().settings_schema);
             }
@@ -171,7 +174,7 @@ pub fn catalog_info(dist: &Distribution) -> Value {
         .map(|pl| {
             let m = pl.manifest();
             json!({
-                "id": m.id, "version": m.version, "name": m.name, "description": m.description,
+                "id": m.id, "scope": m.scope(), "version": m.version, "name": m.name, "description": m.description,
                 "kind": m.kind(), "quality": m.quality, "runtime": m.runtime,
                 "fills": m.fills,
                 "defines": m.defines.extension_points.iter().map(|(n, d)| json!({"name": n, "policy": d.policy})).collect::<Vec<_>>(),
