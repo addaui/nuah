@@ -8,6 +8,7 @@
 
 mod wizard;
 
+use nuah_host::edit::ProfileStore;
 use nuah_host::{wait_for_stop, Bootstrap, SetupContext};
 use std::path::PathBuf;
 
@@ -49,8 +50,7 @@ async fn serve(me: &SetupWeb, ctx: SetupContext) -> Result<(), String> {
         return Err("setup listens on loopback only (127.0.0.1 or [::1])".into());
     }
     let code = uuid::Uuid::new_v4().simple().to_string()[..12].to_string();
-    let saved = std::sync::Arc::new(tokio::sync::Notify::new());
-    let mut server = nuah_http::Config::default();
+        let mut server = nuah_http::Config::default();
     if ctx.until_saved {
         server.hosts.extend(ctx.allow_hosts.iter().filter(|h| !h.is_empty()).map(|h| h.to_lowercase()));
     }
@@ -60,7 +60,9 @@ async fn serve(me: &SetupWeb, ctx: SetupContext) -> Result<(), String> {
     } else {
         return Err(format!("the wizard Face is not at {}; put the startup-setup-web Face there", face.display()));
     }
-    let cfg = SetupConfig { distribution: ctx.product.clone(), catalog: ctx.catalog, starting_point: ctx.starting_point, profile_path: ctx.identity_file, code: code.clone(), server, saved: saved.clone() };
+    let store = std::sync::Arc::new(ProfileStore::new(&ctx.product, ctx.catalog, ctx.starting_point, ctx.identity_file));
+    let saved = store.saved.clone();
+    let cfg = SetupConfig { store, code: code.clone(), server };
     let listener = tokio::net::TcpListener::bind(addr).await.map_err(|e| format!("cannot listen on {listen}: {e}"))?;
     eprintln!("setup on http://{listen}/\nsetup code: {code}   (type it into the wizard; it changes every start)");
     let until_saved = ctx.until_saved;

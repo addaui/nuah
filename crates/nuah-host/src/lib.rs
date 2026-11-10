@@ -7,10 +7,13 @@
 //!                                                  directory); with no file, the product's bootstrap runs first and writes it
 //!   <product> serve --profile profile.json         run another Profile file
 //!   <product> serve --db a.db --accounts b.json    the shortcut: the product's server Profile
+//!   <product> reset-password <name>               set a new password (read on stdin) for a locked-out account
 //!   <product> hash-password                        read a password on stdin, print its stored form
 //!   <product> setup --profile profile.json         change a Profile with the product's bootstrap
 //!
 //! [ADR 0031]: https://docs.addaui.com/nuah/adr/0031-products-add-to-nuah-and-never-edit-it-ports-declare-cardinality-projections-are-plugins/
+
+pub mod edit;
 
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use nuah_adapters::AuthPassword;
@@ -99,6 +102,17 @@ enum Cmd {
         #[arg(long, env = "NUAH_LOG_LEVEL")]
         log_level: Option<String>,
     },
+    /// Set a new password for an account, for an operator locked out of the instance: reads the password on
+    /// stdin, starts the Core without its services and calls the auth plugin's `auth.account.set_password`.
+    /// Run it with the instance stopped (one process per database, ADR 0036).
+    ResetPassword {
+        /// The account's login name.
+        name: String,
+        #[arg(long, env = "NUAH_PROFILE")]
+        profile: Option<PathBuf>,
+        #[arg(long, env = "NUAH_HOME")]
+        home: Option<PathBuf>,
+    },
     /// Exit 0 if a running host answers on /healthz (for container health checks; no curl needed).
     Healthcheck {
         #[arg(long, env = "NUAH_LISTEN", default_value = "127.0.0.1:3000")]
@@ -146,42 +160,83 @@ pub fn run(product: impl Product) -> ! {
                 eprintln!("no {} found: starting setup", path.display());
                 bootstrap.run(context(&product, path.clone(), listen.clone(), allow_host.clone(), true)).unwrap_or_else(|e| die(&e));
             }
-            let mut profile = read_profile(&path);
-            let source = path.display().to_string();
-            // The lock is checked against the file as it was saved, before this run's command-line changes.
-            let file_changed = profile.contract.clone().filter(|c| *c != Core::contract_for(&Distribution { name: product.name().to_string(), catalog: product.catalog(), profile: profile.clone() }));
-            apply_http_flags(&mut profile, HttpFlags { listen, hosts: allow_host, secure_cookie });
-            if let Some(level) = log_level {
-                profile.telemetry.level = Some(level);
+            let flags = ServeFlags { listen, allow_host, secure_cookie, log_level };
+            let store = std::sync::Arc::new(edit::ProfileStore::new(product.name(), product.catalog(), product.starting_point(&home_of(&path)), path.clone()));
+            let mut restarted = false;
+            loop {
+                let (core, file_changed) = match start_core(&product, &path, &flags) {
+                    Ok(x) => x,
+                    Err(problems) if restarted => {
+                        // A saved change did not start: put the file as it was back, once, and run that.
+                        for p in &problems {
+                            eprintln!("{}: {}", p.code, p.message);
+                        }
+                        let bak = path.with_extension("json.bak");
+                        if std::fs::copy(&bak, &path).is_err() {
+                            die("the saved profile does not resolve, and there is no earlier file to go back to");
+                        }
+                        eprintln!("the saved profile does not resolve: went back to the earlier file");
+                        restarted = false;
+                        continue;
+                    }
+                    Err(problems) => {
+                        for p in &problems {
+                            eprintln!("{}: {}", p.code, p.message);
+                        }
+                        die("the profile does not resolve")
+                    }
+                };
+                let source = path.display().to_string();
+                let writable = std::fs::OpenOptions::new().append(true).open(&source).is_ok();
+                core.log(Level::Info, "nuah.host", "host.identity", json!({"source": source, "writable": writable}));
+                if let Some(locked) = file_changed {
+                    core.log(Level::Warn, "nuah.host", "host.contract_changed", json!({"locked": locked, "now": core.contract_hash(), "hint": "a plugin upgrade changed the API this file was saved against"}));
+                }
+                core.attach_host(store.clone());
+                let services = core.start_services().unwrap_or_else(|e| die(&e.message));
+                core.log(Level::Info, "nuah.host", "host.running", json!({"product": product.name(), "contract": core.contract_hash(), "services": services.running()}));
+                let for_panics = core.clone();
+                let previous = std::panic::take_hook();
+                std::panic::set_hook(Box::new(move |info| {
+                    // Queued, never waited for: a panicking thread must not stall on a slow log. The message can hold data, so only the place is recorded.
+                    for_panics.log(Level::Error, "nuah.host", "host.panic", json!({"where": info.location().map(|l| l.to_string())}));
+                    previous(info);
+                }));
+                let again = runtime().block_on(async {
+                    tokio::select! {
+                        _ = wait_for_stop() => false,
+                        _ = store.restart.notified() => {
+                            // The answer to the request that asked for the restart is on its way out.
+                            tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+                            true
+                        }
+                    }
+                });
+                core.log(Level::Info, "nuah.host", if again { "host.restarting" } else { "host.stopping" }, json!({}));
+                services.stop();
+                let _ = std::panic::take_hook();
+                if !again {
+                    break;
+                }
+                restarted = true;
             }
-            let listen_at = profile.settings["http"]["listen"].as_str().unwrap_or("127.0.0.1:3000").to_string();
-            if profile.enabled.iter().any(|p| p == "auth-local") && profile.enabled.iter().any(|p| p == "http") && !listen_at.parse::<std::net::SocketAddr>().is_ok_and(|a| a.ip().is_loopback()) {
-                die("the profile uses auth-local (everyone is admin); listen on 127.0.0.1 or use auth-password");
+        }
+        Cmd::ResetPassword { name, profile, home } => {
+            let path = profile.unwrap_or_else(|| home.unwrap_or_else(|| PathBuf::from(".")).join(format!("{}.json", product.name())));
+            if !path.exists() {
+                die(&format!("{} does not exist", path.display()));
             }
-            let dist = Distribution { name: product.name().to_string(), catalog: product.catalog(), profile };
-            let core = Core::start(&dist).unwrap_or_else(|problems| {
+            let mut pw = String::new();
+            std::io::stdin().read_to_string(&mut pw).expect("read stdin");
+            let pw = pw.trim_end_matches(['\r', '\n']);
+            let core = start_core(&product, &path, &ServeFlags::default()).unwrap_or_else(|problems| {
                 for p in &problems {
                     eprintln!("{}: {}", p.code, p.message);
                 }
                 die("the profile does not resolve")
-            });
-            let writable = std::fs::OpenOptions::new().append(true).open(&source).is_ok();
-            core.log(Level::Info, "nuah.host", "host.identity", json!({"source": source, "writable": writable}));
-            if let Some(locked) = file_changed {
-                core.log(Level::Warn, "nuah.host", "host.contract_changed", json!({"locked": locked, "now": core.contract_hash(), "hint": "a plugin upgrade changed the API this file was saved against"}));
-            }
-            let services = core.start_services().unwrap_or_else(|e| die(&e.message));
-            core.log(Level::Info, "nuah.host", "host.running", json!({"product": product.name(), "contract": core.contract_hash(), "services": services.running()}));
-            let for_panics = core.clone();
-            let previous = std::panic::take_hook();
-            std::panic::set_hook(Box::new(move |info| {
-                // Queued, never waited for: a panicking thread must not stall on a slow log. The message can hold data, so only the place is recorded.
-                for_panics.log(Level::Error, "nuah.host", "host.panic", json!({"where": info.location().map(|l| l.to_string())}));
-                previous(info);
-            }));
-            runtime().block_on(wait_for_stop());
-            core.log(Level::Info, "nuah.host", "host.stopping", json!({}));
-            services.stop();
+            }).0;
+            reset_password(&core, &name, pw).unwrap_or_else(|e| die(&e));
+            eprintln!("password changed for {name}");
         }
     }
     std::process::exit(0)
@@ -219,8 +274,51 @@ pub fn apply_http_flags(profile: &mut Profile, f: HttpFlags) {
     }
 }
 
+/// What the command line says about a run, applied to the Profile each time the Core is (re)started.
+#[derive(Default)]
+struct ServeFlags {
+    listen: Option<String>,
+    allow_host: Vec<String>,
+    secure_cookie: bool,
+    log_level: Option<String>,
+}
+
+/// Read the file, apply the flags, resolve and start a Core (no services). Also returns the contract the file
+/// was locked to when that differs from the contract now.
+fn start_core(product: &impl Product, path: &std::path::Path, f: &ServeFlags) -> Result<(Core, Option<String>), Vec<nuah_kernel::Problem>> {
+    let mut profile = read_profile(path);
+    // The lock is checked against the file as it was saved, before this run's command-line changes.
+    let changed = profile.contract.clone().filter(|c| *c != Core::contract_for(&Distribution { name: product.name().to_string(), catalog: product.catalog(), profile: profile.clone() }));
+    apply_http_flags(&mut profile, HttpFlags { listen: f.listen.clone(), hosts: f.allow_host.clone(), secure_cookie: f.secure_cookie });
+    if let Some(level) = &f.log_level {
+        profile.telemetry.level = Some(level.clone());
+    }
+    let listen_at = profile.settings["http"]["listen"].as_str().unwrap_or("127.0.0.1:3000").to_string();
+    if profile.enabled.iter().any(|p| p == "auth-local") && profile.enabled.iter().any(|p| p == "http") && !listen_at.parse::<std::net::SocketAddr>().is_ok_and(|a| a.ip().is_loopback()) {
+        // a Problem, not a stop, so a restart after a console save can go back to the earlier file
+        return Err(vec![nuah_kernel::Problem { code: "auth_local_off_loopback".into(), plugins: vec!["auth-local".into()], message: "the profile uses auth-local (everyone is admin); listen on 127.0.0.1 or use auth-password".into() }]);
+    }
+    Core::start(&Distribution { name: product.name().to_string(), catalog: product.catalog(), profile }).map(|c| (c, changed))
+}
+
+fn home_of(identity_file: &std::path::Path) -> PathBuf {
+    std::fs::canonicalize(identity_file.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(std::path::Path::new("."))).unwrap_or_else(|_| PathBuf::from("."))
+}
+
+/// Find the account by login name and give it a new password, as a built-in administrator.
+pub fn reset_password(core: &Core, name: &str, password: &str) -> Result<(), String> {
+    let admin = nuah_kernel::Identity::new("host-recovery", "Recovery", &["admin"]);
+    let list = core.call_as(&admin, "auth.account.list", json!({}), None).map_err(|e| match e.category {
+        nuah_kernel::Category::NotFound | nuah_kernel::Category::Unsupported => "this instance's auth plugin has no account management (auth.account.*)".to_string(),
+        _ => e.message,
+    })?;
+    let want = name.trim().to_lowercase();
+    let subject = list.output["accounts"].as_array().into_iter().flatten().find(|a| a["name"].as_str().is_some_and(|n| n.to_lowercase() == want)).and_then(|a| a["subject"].as_str()).map(String::from).ok_or_else(|| format!("no account named {name}"))?;
+    core.call_as(&admin, "auth.account.set_password", json!({"subject": subject, "password": password}), None).map(|_| ()).map_err(|e| e.message)
+}
+
 fn context(product: &impl Product, identity_file: PathBuf, listen: Option<String>, allow_hosts: Vec<String>, until_saved: bool) -> SetupContext {
-    let home = std::fs::canonicalize(identity_file.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(std::path::Path::new("."))).unwrap_or_else(|_| PathBuf::from("."));
+    let home = home_of(&identity_file);
     SetupContext { product: product.name().into(), catalog: product.catalog(), starting_point: product.starting_point(&home), identity_file, listen, allow_hosts, until_saved }
 }
 

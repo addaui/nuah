@@ -27,6 +27,7 @@ pub(crate) struct Inner {
     pub(crate) wake: watch::Sender<u64>,
     pub(crate) profile_name: String,
     pub(crate) telemetry: crate::telemetry::Telemetry,
+    pub(crate) host: std::sync::RwLock<Option<Arc<dyn crate::plugin::HostServices>>>,
 }
 
 /// A running Core. Cheap to clone.
@@ -52,6 +53,13 @@ impl Core {
     /// The contract hash this Distribution would have, without starting anything (for the lock in a saved Profile).
     pub fn contract_for(dist: &Distribution) -> String {
         resolve(dist).1.hash
+    }
+
+    /// The program that runs this Core offers its services to plugins that were granted `host` ([ADR 0041]).
+    ///
+    /// [ADR 0041]: https://docs.addaui.com/nuah/adr/0041-the-console-edits-the-identity-file-through-a-host-capability-and-an-operator-can-recover-a-locked-out-instance/
+    pub fn attach_host(&self, host: Arc<dyn crate::plugin::HostServices>) {
+        *self.inner.host.write().unwrap_or_else(|e| e.into_inner()) = Some(host);
     }
 
     /// Resolve, open the Adapters, record who owns which collection, migrate data, and be ready.
@@ -112,7 +120,7 @@ impl Core {
         let (wake, _) = watch::channel(0u64);
         let settings = plan.settings.clone();
         let features = db.features();
-        let inner = Arc::new(Inner { db, features, auth, policy, clock, ids, net, plan, settings, wake, profile_name: dist.profile.name.clone(), telemetry });
+        let inner = Arc::new(Inner { db, features, auth, policy, clock, ids, net, plan, settings, wake, profile_name: dist.profile.name.clone(), telemetry, host: std::sync::RwLock::new(None) });
         if inner.plan.ports.contains_key("db") {
             if let Err(e) = inner.prepare_storage() {
                 let code = if e.category == Category::Unsupported { "unsupported" } else { "storage" };

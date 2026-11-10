@@ -1,0 +1,17 @@
+[package]
+name = "nuah-setup-cli"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "First-run setup in the terminal: a bootstrap for a product's host that writes the identity file."
+
+[dependencies]
+nuah-kernel = { path = "../nuah-kernel" }
+nuah-host = { path = "../nuah-host" }
+rpassword = "7.4.0"
+serde_json = "1.0.154"
+
+[dev-dependencies]
+nuah-adapters = { path = "../nuah-adapters" }
+nuah-http = { path = "../nuah-http" }

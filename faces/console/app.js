@@ -36,6 +36,7 @@ async function load() {
   $("points").replaceChildren(...(pts.length ? pts.map(([n, p]) => h("div", {}, h("strong", {}, n), ` [${p.policy}] `, h("span", { class: "muted" }, "filled by: " + (p.providers.join(", ") || "nobody")))) : [h("span", { class: "muted" }, "none")]));
   $("events").textContent = Object.keys(D.events || {}).join(", ");
   renderOps(); connect();
+  accounts(); config();
 }
 
 const typesOf = (s) => (Array.isArray(s.type) ? s.type : s.type ? [s.type] : []);
@@ -106,3 +107,84 @@ $("form").addEventListener("submit", async (e) => {
   catch (x) { $("err").textContent = x.message || "Sign-in failed"; }
 });
 load();
+
+
+// ---- Accounts: shown when the auth plugin offers account management (auth.account.*) ----
+const allowed = (op) => D.operations[op] && D.operations[op].allowed !== false;
+async function accounts() {
+  const box = $("accounts-box");
+  box.hidden = !allowed("auth.account.list");
+  if (box.hidden) return;
+  let list = [];
+  try { list = (await call("auth.account.list", {})).output.accounts; } catch (e) { $("accounts").textContent = e.message || "Cannot list accounts"; return; }
+  const act = (fn) => async () => { $("acct-err").textContent = ""; try { await fn(); } catch (e) { $("acct-err").textContent = e.message || String(e); } accounts(); };
+  $("accounts").replaceChildren(h("table", {}, h("tbody", {}, list.map((a) => h("tr", { class: a.disabled ? "off" : "" },
+    h("td", {}, h("strong", {}, a.name), a.display && a.display !== a.name ? " (" + a.display + ")" : ""),
+    h("td", {}, (a.roles || []).join(", ")),
+    h("td", {}, a.disabled ? "disabled" : ""),
+    h("td", {},
+      h("button", { onclick: act(async () => { const n = prompt("New name for " + a.name, a.name); if (n && n !== a.name) await call("auth.account.update", { subject: a.subject, name: n }); }) }, "Rename"),
+      h("button", { onclick: act(async () => { const r = prompt("Roles for " + a.name + " (comma separated)", (a.roles || []).join(", ")); if (r != null) await call("auth.account.update", { subject: a.subject, roles: r.split(",").map((x) => x.trim()).filter(Boolean) }); }) }, "Roles"),
+      h("button", { onclick: act(async () => { const p = prompt("New password for " + a.name + " (8+ characters)"); if (p) await call("auth.account.set_password", { subject: a.subject, password: p }); }) }, "Password"),
+      h("button", { onclick: act(async () => { await call("auth.account.update", { subject: a.subject, disabled: !a.disabled }); }) }, a.disabled ? "Enable" : "Disable")))))));
+}
+$("newacct").addEventListener("submit", async (e) => {
+  e.preventDefault(); $("acct-err").textContent = "";
+  const f = e.target;
+  try {
+    await call("auth.account.create", { name: f.name.value, password: f.password.value, roles: f.roles.value.split(",").map((x) => x.trim()).filter(Boolean) });
+    f.name.value = ""; f.password.value = "";
+  } catch (x) { $("acct-err").textContent = x.message || String(x); }
+  accounts();
+});
+
+// ---- Configuration: the identity file, when the operator let the console change it (capability host) ----
+let C = null;
+async function config() {
+  const box = $("config-box");
+  box.hidden = !allowed("console.profile.get");
+  if (box.hidden) return;
+  $("config-msg").textContent = ""; $("config-restart").hidden = true;
+  try { C = (await call("console.profile.get", {})).output; } catch (e) { $("config").textContent = e.message || "Cannot read the configuration"; return; }
+  $("config-path").textContent = C.path + (C.problems.length ? " - problems: " + C.problems.map((p) => p.message).join(" ") : "");
+  const on = new Set(C.profile.enabled || []);
+  $("config").replaceChildren(...C.plugins.map((p) => {
+    const box = h("input", { type: "checkbox", "data-plugin": p.id, ...(on.has(p.id) ? { checked: true } : {}) });
+    const area = h("textarea", { rows: 4, "data-settings": p.id, "aria-label": "Settings of " + p.id }, JSON.stringify((C.profile.settings || {})[p.id] ?? {}, null, 2));
+    const grants = (C.profile.grants || {})[p.id];
+    return h("details", {}, h("summary", {}, box, " ", h("strong", {}, p.id), " ", h("span", { class: "muted" }, p.version + " " + (p.description || ""))),
+      grants && grants.length ? h("div", { class: "muted" }, "granted: " + grants.join(", ")) : null,
+      p.settings_schema && p.settings_schema.properties ? h("div", { class: "muted" }, "settings: " + Object.keys(p.settings_schema.properties).join(", ")) : null, area);
+  }));
+}
+function draftProfile() {
+  const p = structuredClone(C.profile);
+  p.enabled = [...document.querySelectorAll("[data-plugin]")].filter((b) => b.checked).map((b) => b.dataset.plugin);
+  p.settings = {}; p.grants = p.grants || {};
+  for (const a of document.querySelectorAll("[data-settings]")) {
+    const id = a.dataset.settings;
+    if (!p.enabled.includes(id)) { delete p.grants[id]; continue; }
+    const v = JSON.parse(a.value.trim() || "{}");
+    if (v !== null && !(typeof v === "object" && !Array.isArray(v) && Object.keys(v).length === 0)) p.settings[id] = v;
+    const need = (C.plugins.find((x) => x.id === id).requires.capabilities) || [];
+    if (need.length) p.grants[id] = [...new Set([...(p.grants[id] || []), ...need])];
+  }
+  return p;
+}
+$("config-save").addEventListener("click", async () => {
+  const msg = $("config-msg"); msg.className = ""; msg.textContent = "";
+  try {
+    await call("console.profile.save", { profile: draftProfile() });
+    msg.textContent = "Saved. The change takes effect when the instance restarts."; $("config-restart").hidden = false;
+  } catch (e) { msg.className = "err"; msg.textContent = e.message || String(e); }
+});
+$("config-restart").addEventListener("click", async () => {
+  const msg = $("config-msg");
+  try { await call("console.restart", {}); } catch (e) { msg.className = "err"; msg.textContent = e.message || String(e); return; }
+  msg.textContent = "Restarting...";
+  for (let i = 0; i < 60; i++) {
+    await new Promise((r) => setTimeout(r, 500));
+    try { if ((await fetch("/healthz", { cache: "no-store" })).ok && i > 1) { location.reload(); return; } } catch {}
+  }
+  msg.className = "err"; msg.textContent = "The instance did not come back. Check its log; the previous file is kept as a .bak next to it.";
+});

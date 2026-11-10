@@ -392,6 +392,22 @@ pub struct Outbound<'a> {
     pub(crate) request: &'a str,
 }
 
+/// What the program running the Core offers to plugins ([ADR 0041]): the state of the identity file and the
+/// power to change it. Reached only from an outbound Operation, by a plugin granted `host`. The kernel knows
+/// nothing about files; the host implements this.
+///
+/// [ADR 0041]: https://docs.addaui.com/nuah/adr/0041-the-console-edits-the-identity-file-through-a-host-capability-and-an-operator-can-recover-a-locked-out-instance/
+pub trait HostServices: Send + Sync {
+    /// The catalog and the stored Profile (secrets hidden), and the Problems of the stored Profile.
+    fn state(&self) -> std::result::Result<Value, String>;
+    /// The Problems of a draft Profile (secrets the draft did not retype are kept from the stored one).
+    fn check(&self, draft: &Value) -> std::result::Result<Vec<crate::resolver::Problem>, String>;
+    /// Save the draft if it has no Problems; otherwise return them and write nothing. Empty means saved.
+    fn save(&self, draft: &Value) -> std::result::Result<Vec<crate::resolver::Problem>, String>;
+    /// Stop the services, read the identity file again and start a new Core. Returns at once.
+    fn restart(&self);
+}
+
 impl<'a> Outbound<'a> {
     pub fn who(&self) -> &crate::ports::Identity {
         self.who
@@ -422,6 +438,11 @@ impl<'a> Outbound<'a> {
     pub fn net(&self) -> Result<&dyn Net> {
         self.core.inner.check_capability(&self.plugin, "net")?;
         Ok(&*self.core.inner.net)
+    }
+    /// The host program's services. Needs the capability `host`, granted in the Profile.
+    pub fn host(&self) -> Result<Arc<dyn HostServices>> {
+        self.core.inner.check_capability(&self.plugin, "host")?;
+        self.core.inner.host.read().unwrap_or_else(|e| e.into_inner()).clone().ok_or_else(|| Error::unsupported("host", "none"))
     }
     /// Call an Operation as the same Subject, with the same checks as from outside, in a transaction of its own.
     pub fn call(&self, op: &str, input: Value) -> Result<Value> {

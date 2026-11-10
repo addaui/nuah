@@ -18,46 +18,24 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use nuah_kernel::setup::{catalog_info, profile_from_json, redact_profile, restore_profile};
-use nuah_kernel::{Catalog, Core, Distribution, Profile};
+use nuah_host::edit::{first_account_plugin, first_account_problem, has_accounts, put_first_account, ProfileStore};
+use nuah_kernel::setup::redact_profile;
+use nuah_kernel::{Core, HostServices, Problem, Profile};
 use serde_json::{json, Value};
-use std::path::PathBuf;
 use std::sync::Arc;
 
 pub struct SetupConfig {
-    pub distribution: String,
-    pub catalog: Catalog,
-    /// What the wizard starts from when there is no file yet.
-    pub starting_point: Profile,
-    pub profile_path: PathBuf,
+    /// The identity file and the catalog it is checked against; `saved` is told when a Profile has been written,
+    /// so a host that started setup because no file existed can go on to serve it.
+    pub store: Arc<ProfileStore>,
     /// The one-time code the operator types into the wizard.
     pub code: String,
     /// `/faces/setup` and so on; the server config's hosts apply.
     pub server: Config,
-    /// Told once a Profile has been saved, so a host that started setup because no file existed can go on to serve it.
-    pub saved: Arc<tokio::sync::Notify>,
 }
 
 #[derive(Clone)]
 struct Setup(Arc<SetupConfig>);
-
-impl Setup {
-    fn dist(&self, profile: Profile) -> Distribution {
-        Distribution { name: self.0.distribution.clone(), catalog: self.0.catalog.clone(), profile }
-    }
-
-    /// The Profile on disk, or why it could not be read.
-    fn stored(&self) -> Result<Option<Profile>, String> {
-        match std::fs::read_to_string(&self.0.profile_path) {
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(format!("cannot read {}: {e}", self.0.profile_path.display())),
-            Ok(text) => {
-                let v: Value = serde_json::from_str(&text).map_err(|e| format!("{} is not JSON: {e}", self.0.profile_path.display()))?;
-                profile_from_json(&v).map(Some)
-            }
-        }
-    }
-}
 
 /// Equal-time comparison, so the code cannot be guessed from response timing.
 fn same(a: &str, b: &str) -> bool {
@@ -72,57 +50,28 @@ async fn need_code(State(s): State<Setup>, req: Request, next: Next) -> Response
 }
 
 async fn state(State(s): State<Setup>) -> Response {
-    let (profile, load_error, exists) = match s.stored() {
-        Ok(Some(p)) => (p, None, true),
-        Ok(None) => (s.0.starting_point.clone(), None, false),
-        Err(e) => (s.0.starting_point.clone(), Some(e), true),
-    };
-    let dist = s.dist(profile);
-    let mut body = catalog_info(&dist);
-    body["problems"] = json!(Core::check_for_setup(&dist));
-    body["path"] = json!(s.0.profile_path.display().to_string());
-    body["file_exists"] = json!(exists);
-    body["load_error"] = json!(load_error);
-    Json(body).into_response()
-}
-
-/// The enabled plugin that keeps accounts and wants a first one made at setup (`x-first-account` on its
-/// `accounts` setting names how the password is stored; `password-hash` is the one understood here).
-fn first_account_plugin(s: &Setup, p: &Profile) -> Option<String> {
-    s.0.catalog.0.iter().map(|pl| pl.manifest()).find(|m| p.enabled.contains(&m.id) && m.settings_schema["properties"]["accounts"]["x-first-account"] == "password-hash").map(|m| m.id)
-}
-
-fn has_accounts(p: &Profile, plugin: &str) -> bool {
-    match &p.settings.get(plugin).map(|v| &v["accounts"]) {
-        Some(Value::Array(a)) => !a.is_empty(),
-        Some(Value::Null) | None => false,
-        Some(_) => true, // a hidden secret that stands for accounts already saved
+    match s.0.store.state() {
+        Ok(body) => Json(body).into_response(),
+        Err(e) => refuse(StatusCode::INTERNAL_SERVER_ERROR, "internal", "setup.state_failed", &e),
     }
 }
 
 /// Read a draft from the body and put back the secrets it did not retype. `first_account` (name, password) is
 /// not part of a Profile: it becomes the first administrator in the settings of the plugin that keeps accounts,
 /// as a password hash, when `hash` is true.
-fn draft(s: &Setup, body: &Value, hash: bool) -> Result<(Profile, Vec<nuah_kernel::Problem>), Response> {
+fn draft(s: &Setup, body: &Value, hash: bool) -> Result<(Profile, Vec<Problem>), Response> {
     let mut body = body.clone();
     let first = body.as_object_mut().and_then(|o| o.remove("first_account"));
-    let mut p = profile_from_json(&body).map_err(|m| refuse(StatusCode::BAD_REQUEST, "invalid", "setup.bad_profile", &m))?;
-    let stored = s.stored().ok().flatten().unwrap_or_default();
-    let dist = s.dist(p.clone());
-    restore_profile(&mut p, &stored, &dist);
+    let mut p = s.0.store.draft(&body).map_err(|m| refuse(StatusCode::BAD_REQUEST, "invalid", "setup.bad_profile", &m))?;
     let mut problems = vec![];
-    if let Some(plugin) = first_account_plugin(s, &p) {
-        let name = first.as_ref().and_then(|f| f["name"].as_str()).unwrap_or("").trim().to_string();
+    if let Some(plugin) = first_account_plugin(&s.0.store.catalog, &p) {
+        let name = first.as_ref().and_then(|f| f["name"].as_str()).unwrap_or("").to_string();
         let password = first.as_ref().and_then(|f| f["password"].as_str()).unwrap_or("").to_string();
         if !has_accounts(&p, &plugin) {
-            if name.is_empty() || password.chars().count() < 8 {
-                problems.push(nuah_kernel::Problem { code: "first_account_missing".into(), plugins: vec![plugin.clone()], message: "Choose a name and a password of at least 8 characters for the first administrator.".into() });
-            } else if hash {
-                let acc = json!([{"name": name, "display": name, "password_hash": nuah_adapters::AuthPassword::hash_password(&password), "roles": ["admin"]}]);
-                let slot = p.settings.entry(plugin).or_insert_with(|| json!({}));
-                if let Some(o) = slot.as_object_mut() {
-                    o.insert("accounts".into(), acc);
-                }
+            match first_account_problem(&plugin, &name, &password) {
+                Some(problem) => problems.push(problem),
+                None if hash => put_first_account(&mut p, &plugin, &name, &password),
+                None => {}
             }
         }
     }
@@ -133,52 +82,23 @@ async fn check(State(s): State<Setup>, Json(body): Json<Value>) -> Response {
     match draft(&s, &body, false) {
         Err(r) => r,
         Ok((p, mut problems)) => {
-            problems.extend(Core::check_for_setup(&s.dist(p)));
+            problems.extend(Core::check_for_setup(&s.0.store.dist(p)));
             Json(json!({"problems": problems})).into_response()
         }
     }
 }
 
 async fn save(State(s): State<Setup>, Json(body): Json<Value>) -> Response {
-    let (mut p, mut problems) = match draft(&s, &body, true) {
+    let (p, problems) = match draft(&s, &body, true) {
         Err(r) => return r,
         Ok(x) => x,
     };
-    let dist = s.dist(p.clone());
-    p.contract = Some(Core::contract_for(&dist));
-    problems.extend(Core::check_for_setup(&dist));
-    if !problems.is_empty() {
-        return (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"ok": false, "problems": problems}))).into_response();
+    let shown = redact_profile(&s.0.store.dist(p.clone()));
+    match s.0.store.commit(p, problems) {
+        Ok(problems) if problems.is_empty() => Json(json!({"ok": true, "saved": s.0.store.path.display().to_string(), "profile": shown})).into_response(),
+        Ok(problems) => (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"ok": false, "problems": problems}))).into_response(),
+        Err(e) => refuse(StatusCode::INTERNAL_SERVER_ERROR, "internal", "setup.write_failed", &e),
     }
-    match write_profile(&s.0.profile_path, &p) {
-        Ok(()) => {
-            s.0.saved.notify_one();
-            Json(json!({"ok": true, "saved": s.0.profile_path.display().to_string(), "profile": redact_profile(&dist)})).into_response()
-        }
-        Err(e) => refuse(StatusCode::INTERNAL_SERVER_ERROR, "internal", "setup.write_failed", &format!("Could not write the file: {e}")),
-    }
-}
-
-/// Write to a sibling file and rename, so a crash never leaves half a Profile. A new file is
-/// private to the owner; an existing one keeps its permissions.
-fn write_profile(path: &std::path::Path, p: &Profile) -> std::io::Result<()> {
-    use std::io::Write;
-    let tmp = path.with_extension("json.tmp");
-    let mut opts = std::fs::OpenOptions::new();
-    opts.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
-    }
-    let mut f = opts.open(&tmp)?;
-    if let Ok(meta) = std::fs::metadata(path) {
-        let _ = f.set_permissions(meta.permissions());
-    }
-    f.write_all(serde_json::to_string_pretty(p).expect("a Profile serialises").as_bytes())?;
-    f.write_all(b"\n")?;
-    f.sync_all()?;
-    std::fs::rename(&tmp, path)
 }
 
 pub fn setup_router(cfg: SetupConfig) -> Router {

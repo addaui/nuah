@@ -14,3 +14,7 @@ label { display:block; margin:8px 0 2px; font-size:12px; color:var(--muted); } l
 pre { background:var(--surface); border:1px solid var(--line); border-radius:8px; padding:8px; overflow:auto; max-height:70vh; white-space:pre-wrap; margin:6px 0 0; }
 pre.error { color:var(--danger); } .err { color:var(--danger); } .dot { display:inline-block; width:9px; height:9px; border-radius:50%; background:var(--muted); } .dot[data-s=live] { background:#2f9e60; }
 #signin { max-width:340px; margin:10vh auto; } #form { display:flex; flex-direction:column; gap:8px; }
+
+table { border-collapse: collapse; width: 100%; } td { padding: 4px 8px; border-bottom: 1px solid var(--line, #8884); } tr.off { opacity: .55; }
+.bar { display: flex; gap: 8px; align-items: center; margin-top: 8px; } #newacct { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+#config textarea { width: 100%; font-family: monospace; }
