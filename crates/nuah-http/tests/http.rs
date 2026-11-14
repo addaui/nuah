@@ -180,3 +180,42 @@ fn a_plugin_that_publishes_a_face_is_hosted_from_the_faces_dir_under_its_id() {
     assert_eq!(get_text(&format!("http://127.0.0.1:{port}/faces/console/")).1, "ELSEWHERE");
     services.stop();
 }
+
+struct ConnectPlugin(&'static str, Vec<&'static str>);
+impl Plugin for ConnectPlugin {
+    fn manifest(&self) -> Manifest {
+        serde_json::from_value(json!({"id": self.0, "version": "1", "runtime": "data", "connect": self.1})).unwrap()
+    }
+}
+
+#[test]
+fn the_browser_may_call_only_the_sites_enabled_plugins_ask_for() {
+    let port = free_port();
+    let mut p = Profile { name: "t".into(), ..Default::default() };
+    p.enabled = ["@nuah/db-memory", "@nuah/auth-local", "@nuah/policy-roles", "@nuah/clock-system", "@nuah/ids-random", "@nuah/http", "@test/gifs"].iter().map(|s| s.to_string()).collect();
+    p.settings.insert("@nuah/http".into(), json!({"listen": format!("127.0.0.1:{port}")}));
+    p.grants.insert("@nuah/http".into(), vec!["serve".into()]);
+    // a path, a wildcard and plain http are refused; a valid origin is allowed once
+    let list: Vec<std::sync::Arc<dyn Plugin>> = vec![
+        std::sync::Arc::new(AdapterMemory), std::sync::Arc::new(AuthLocal), std::sync::Arc::new(PolicyRoles), std::sync::Arc::new(StdClock), std::sync::Arc::new(StdIds),
+        std::sync::Arc::new(Http::new()),
+        std::sync::Arc::new(ConnectPlugin("@test/gifs", vec!["https://api.example.com", "https://api.example.com", "https://evil.example.com/path", "https://*.example.com", "http://plain.example.com", "https://x"])),
+    ];
+    let core = Core::start(&Distribution { name: "t".into(), catalog: Catalog(list), profile: p }).unwrap_or_else(|e| panic!("{e:?}"));
+    assert_eq!(core.connect_origins(), vec!["https://api.example.com".to_string()]);
+    let services = core.start_services().unwrap();
+    let r = agent().get(&format!("http://127.0.0.1:{port}/healthz")).call().unwrap();
+    let csp = r.headers().get("content-security-policy").unwrap().to_str().unwrap().to_string();
+    assert!(csp.contains("connect-src 'self' https://api.example.com;"), "{csp}");
+    assert!(!csp.contains("evil") && !csp.contains('*'));
+    services.stop();
+}
+
+#[test]
+fn without_a_plugin_asking_the_browser_calls_only_this_server() {
+    let port = free_port();
+    let (_core, services) = start_with_http(json!({"listen": format!("127.0.0.1:{port}")}));
+    let r = agent().get(&format!("http://127.0.0.1:{port}/healthz")).call().unwrap();
+    assert!(r.headers().get("content-security-policy").unwrap().to_str().unwrap().contains("connect-src 'self';"));
+    services.stop();
+}

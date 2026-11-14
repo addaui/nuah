@@ -317,6 +317,22 @@ pub struct Manifest {
     /// Faces finds its files in `<faces dir>/<plugin id>` unless the Profile names another directory.
     #[serde(default)]
     pub face: Option<String>,
+    /// Sites a Face may call straight from the browser because a feature of this plugin needs them (a provider whose terms forbid a
+    /// proxy), as origins: `https://api.example.com`. A projection that sets a browser security policy allows exactly these and no
+    /// other; see [`valid_connect_origin`].
+    #[serde(default)]
+    pub connect: Vec<String>,
+}
+
+/// An origin a plugin may ask the browser to allow: `https://` and a host name (a port is fine), no path, query, user, wildcard or space.
+pub fn valid_connect_origin(o: &str) -> bool {
+    let Some(host) = o.strip_prefix("https://") else { return false };
+    !host.is_empty()
+        && host.len() <= 100
+        && host.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == ':')
+        && !host.starts_with('.')
+        && !host.starts_with('-')
+        && host.contains('.')
 }
 
 /// Split a plugin id `@scope/name` ([ADR 0042]) into its scope and name; `None` when it is not one. Both parts are

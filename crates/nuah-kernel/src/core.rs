@@ -211,6 +211,14 @@ impl Core {
         self.inner.plan.active.iter().filter_map(|(id, a)| a.manifest.face.clone().map(|f| (f, id.clone()))).collect()
     }
 
+    /// The origins the enabled plugins ask the browser to allow a Face to call (sorted, each once). One that is not a valid origin is left out.
+    pub fn connect_origins(&self) -> Vec<String> {
+        let mut out: Vec<String> = self.inner.plan.active.values().flat_map(|a| a.manifest.connect.iter().cloned()).filter(|o| crate::manifest::valid_connect_origin(o)).collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+
     pub fn plugin_ids(&self) -> Vec<String> {
         self.inner.plan.active.keys().cloned().collect()
     }
