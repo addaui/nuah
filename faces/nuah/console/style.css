@@ -37,3 +37,8 @@ dialog { border:1px solid var(--line); border-radius:10px; background:var(--surf
 dialog .diff { font-family:ui-monospace,monospace; font-size:12px; white-space:pre-wrap; background:var(--bg); border-radius:6px; padding:6px 8px; max-height:30vh; overflow:auto; margin:4px 0 10px; } dialog .field { margin:10px 0; } dialog .field input { width:100%; }
 @media (max-width:700px) { .settings,.needs,.msg,.plugin .desc { margin-left:0; } }
 button.link.small { font-size:12px; }
+
+.class-head{margin:22px 0 4px;font-size:15px}
+.scope h3{margin:10px 0 6px;font-size:13px;color:var(--muted,#6b7280)}
+.chip.platform{background:#e9ecf2;color:#34405a}
+.chip.feature{background:#dff3e8;color:#1f6b45}

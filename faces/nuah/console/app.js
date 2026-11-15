@@ -195,6 +195,8 @@ $("newacct").addEventListener("click", async () => {
 let C = null;          // what the server sent: the catalog and the stored profile
 let P = {};            // per plugin: { enabled, form }
 let checkTimer = 0, checkSeq = 0, problems = [];
+// The Core works out the class from the Manifest (ADR 0080); a console talking to an older Core has none and shows everything as platform.
+const classOf = (p) => (p.class && p.class.class) || "platform";
 const entryOf = (id) => (C.profile.plugins || {})[id];
 
 async function config() {
@@ -253,7 +255,7 @@ function choices() {
 }
 
 function drawConfig() {
-  const q = $("config-find").value.trim().toLowerCase(), onlyOn = $("config-active").checked;
+  const q = $("config-find").value.trim().toLowerCase(), onlyOn = $("config-active").checked, kind = $("config-class").value;
   // Never rebuild the cards under someone who is typing in one of them.
   const keepFocus = document.activeElement && $("config").contains(document.activeElement) && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
   const ch = choices(), d = draft();
@@ -267,9 +269,21 @@ function drawConfig() {
     for (const p of C.plugins) {
       if (q && !(p.id + " " + (p.name || "") + " " + (p.description || "")).toLowerCase().includes(q)) continue;
       if (onlyOn && !P[p.id].enabled) continue;
-      const s = p.scope || scopeOf(p.id); (groups.get(s) || groups.set(s, []).get(s)).push(p);
+      const cls = classOf(p);
+      if (kind !== "all" && cls !== kind) continue;
+      const s = p.scope || scopeOf(p.id), key = cls + "/" + s; (groups.get(key) || groups.set(key, []).get(key)).push(p);
     }
-    $("config").replaceChildren(...[...groups].map(([scope, list]) => h("div", { class: "scope" }, h("h2", {}, "@" + scope), list.map(card))));
+    // The line the operator draws (ADR 0080): platform plugins first, then the features an Owner may also switch from the product.
+    const order = (key) => (key.startsWith("platform/") ? 0 : 1);
+    const heads = { platform: "Platform: makes the system run, for the operator", feature: "Features: what people see and do, also switchable from the product's settings" };
+    let last = "";
+    const out = [];
+    for (const [key, list] of [...groups].sort((a, b) => order(a[0]) - order(b[0]) || a[0].localeCompare(b[0]))) {
+      const cls = key.split("/")[0];
+      if (cls !== last) { out.push(h("h2", { class: "class-head" }, heads[cls])); last = cls; }
+      out.push(h("div", { class: "scope" }, h("h3", {}, "@" + key.split("/")[1]), list.map(card)));
+    }
+    $("config").replaceChildren(...out);
   } else for (const el of $("config").querySelectorAll(".plugin")) markCard(el);
   bar();
 }
@@ -290,7 +304,7 @@ function card(p) {
   const draw = () => { body.replaceChildren(); if (st.enabled && (schemaHasFields(p) || st.settings)) { if (!st.form) st.form = SettingsForm.build(p.settings_schema || {}, st.settings, touch); body.append(st.form.el); } };
   body = h("div", {});
   const el = h("div", { class: "plugin", "data-id": p.id },
-    h("div", { class: "head" }, h("label", { class: "switch" }, sw, h("i", {})), h("span", { class: "name" }, nameOf(p.id)), h("span", { class: "chip" }, p.kind + " " + p.version), p.quality && p.quality !== "reference" ? h("span", { class: "chip" }, p.quality) : null),
+    h("div", { class: "head" }, h("label", { class: "switch" }, sw, h("i", {})), h("span", { class: "name" }, nameOf(p.id)), h("span", { class: "chip " + classOf(p), title: (p.class && p.class.reasons || []).join("; ") || "Only adds what people see and do" }, classOf(p)), h("span", { class: "chip" }, p.kind + " " + p.version), p.quality && p.quality !== "reference" ? h("span", { class: "chip" }, p.quality) : null),
     p.description ? h("div", { class: "desc" }, p.description) : null, needs.length ? h("div", { class: "needs" }, needs.join(" · ")) : null,
     h("div", { class: "msgs" }), body);
   draw(); markCard(el);
@@ -319,6 +333,7 @@ async function verify() {
 }
 $("config-find").addEventListener("input", () => C && drawConfig());
 $("config-active").addEventListener("change", () => C && drawConfig());
+$("config-class").addEventListener("change", () => C && drawConfig());
 $("config-discard").addEventListener("click", () => { if (!dirty() || confirm("Throw away the changes you have not saved?")) config(); });
 $("config-save").addEventListener("click", async () => {
   const list = changes();
