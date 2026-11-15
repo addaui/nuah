@@ -24,6 +24,13 @@ pub fn is_public(ip: IpAddr) -> bool {
                 return public_v4(v4);
             }
             let s = a.segments();
+            // 6to4 (2002::/16) carries an IPv4 address in bits 16 to 47, and Teredo (2001:0::/32) tunnels to one: either can reach a private host
+            if s[0] == 0x2002 {
+                return public_v4(Ipv4Addr::new((s[1] >> 8) as u8, s[1] as u8, (s[2] >> 8) as u8, s[2] as u8));
+            }
+            if s[0] == 0x2001 && s[1] == 0 {
+                return false;
+            }
             !(a.is_unspecified()
                 || a.is_loopback()
                 || a.is_multicast()
@@ -163,6 +170,16 @@ impl Plugin for NetPublic {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn tunnelled_ipv6_addresses_that_reach_private_hosts_are_refused() {
+        let ip = |s: &str| s.parse::<IpAddr>().unwrap();
+        assert!(!is_public(ip("2002:c0a8:0101::1")), "6to4 of 192.168.1.1");
+        assert!(!is_public(ip("2002:7f00:0001::1")), "6to4 of 127.0.0.1");
+        assert!(is_public(ip("2002:0808:0808::1")), "6to4 of 8.8.8.8 is a public host");
+        assert!(!is_public(ip("2001:0:4136:e378:8000:63bf:3fff:fdd2")), "Teredo");
+        assert!(is_public(ip("2606:4700:4700::1111")));
+    }
+
     use super::*;
 
     #[test]
