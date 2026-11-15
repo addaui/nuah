@@ -38,6 +38,90 @@ impl Plugin for AuthLocal {
     }
 }
 
+/// Open: the app has no sign-in (ADR 0076). Anyone who reaches the Core is the Owner; the Admin role is added by signing in with the instance's admin
+/// password, which keeps the same subject, so what the Owner made stays theirs while the console is open. An unknown or expired session is the Owner, never nobody.
+struct Open { owner_name: String }
+const ADMIN_SESSIONS: &str = "auth.admin_sessions";
+const OWNER: &str = "owner";
+
+impl Open {
+    fn owner(&self, admin: bool) -> Identity {
+        let roles: &[&str] = if admin { &["member", "admin"] } else { &["member"] };
+        Identity::new(OWNER, &self.owner_name, roles)
+    }
+}
+impl Auth for Open {
+    fn name(&self) -> &str {
+        "@nuah/auth-open"
+    }
+    fn authenticate(&self, db: &dyn DbRead, credential: &str, now: Millis) -> Result<Option<Identity>> {
+        let live = db.get(ADMIN_SESSIONS, &token_hash(credential))?.filter(|d| !d.deleted && d.body["expires_at"].as_i64().unwrap_or(0) > now);
+        Ok(Some(self.owner(live.is_some())))
+    }
+    fn implicit(&self) -> Option<Identity> {
+        Some(self.owner(false))
+    }
+}
+
+pub struct AuthOpen;
+impl Plugin for AuthOpen {
+    fn manifest(&self) -> Manifest {
+        serde_json::from_value(json!({
+            "id": "@nuah/auth-open", "version": "0.1.0", "name": "No sign-in for the app",
+            "description": "The app has no sign-in: whoever reaches the Core is the Owner. The console has one: the instance's admin password gives a short Admin session. Whoever can reach this instance can use the Owner's data: keep it on a network you trust.",
+            "fills": "auth", "namespaces": ["auth"],
+            "requires": {"ports": ["db", "clock", "ids"]},
+            "data": {"collections": [ADMIN_SESSIONS], "version": 1},
+            "settings_schema": {"type": "object", "additionalProperties": false, "properties": {
+                "owner_name": {"type": "string", "minLength": 1, "maxLength": 200, "default": "Owner", "title": "Owner's name", "description": "How the one person who uses the app is shown.", "x-tier": "operator", "x-apply": "restart"},
+                "admin_password_hash": {"type": "string", "minLength": 1, "x-secret": true, "title": "Admin password", "description": "The stored form of the password that opens the console (make it with `hash-password`). Without it nobody can be Admin.", "x-tier": "operator", "x-apply": "restart"},
+                "admin_session_minutes": {"type": "integer", "minimum": 5, "maximum": 1440, "default": 60, "title": "Admin session (minutes)", "description": "How long the console stays open without signing in again.", "x-tier": "operator", "x-apply": "restart"}
+            }},
+            "operations": {
+                "auth.sign_in": {"kind": "command", "public": true, "description": "Open the console: the admin password gives a short Admin session",
+                    "input": {"type": "object", "required": ["password"], "properties": {"name": {"type": "string", "maxLength": 200}, "password": {"type": "string", "minLength": 1, "maxLength": 1000}}, "additionalProperties": false},
+                    "output": {"type": "object", "required": ["token", "expires_at", "who"]},
+                    "reasons": {"auth.bad_credentials": "The password is wrong"}},
+                "auth.sign_out": {"kind": "command", "description": "End an Admin session you hold",
+                    "input": {"type": "object", "required": ["token"], "properties": {"token": {"type": "string", "minLength": 1}}, "additionalProperties": false}, "output": {"type": "object"}},
+                "auth.who": {"kind": "query", "description": "Who am I?", "output": {"type": "object", "required": ["subject"]}}
+            }
+        })).unwrap()
+    }
+    fn fill(&self, s: &Value) -> Result<Option<PortImpl>> {
+        let name = s.get("owner_name").and_then(|n| n.as_str()).unwrap_or("Owner").to_string();
+        Ok(Some(PortImpl::Auth(Arc::new(Open { owner_name: name }))))
+    }
+    fn bind(&self, b: &mut Bindings) {
+        b.op("auth.sign_in", |tx, input| {
+            let password = input["password"].as_str().unwrap_or("");
+            // always the same work, so timing does not say whether an admin password is set
+            let stored = tx.settings()["admin_password_hash"].as_str().map(String::from);
+            let set = stored.is_some();
+            let hash = stored.unwrap_or_else(|| "$argon2id$v=19$m=19456,t=2,p=1$c29tZXNhbHQ$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into());
+            let ok = PasswordHash::new(&hash).map(|h| Argon2::default().verify_password(password.as_bytes(), &h).is_ok()).unwrap_or(false) && set;
+            if !ok {
+                return Err(Error::reason(Category::Unauthenticated, "auth.bad_credentials", "The password is wrong"));
+            }
+            let name = tx.settings()["owner_name"].as_str().unwrap_or("Owner").to_string();
+            let who = Identity::new(OWNER, &name, &["member", "admin"]);
+            let token = format!("{}{}", tx.new_id(), tx.new_id());
+            let ttl = tx.settings()["admin_session_minutes"].as_i64().unwrap_or(60) * 60_000;
+            let expires = tx.now() + ttl;
+            tx.put(ADMIN_SESSIONS, &token_hash(&token), json!({"expires_at": expires}), Expect::Any)?;
+            Ok(json!({"token": token, "expires_at": expires, "who": who}))
+        });
+        b.op("auth.sign_out", |tx, input| {
+            let id = token_hash(input["token"].as_str().unwrap_or(""));
+            if tx.get(ADMIN_SESSIONS, &id)?.is_some() {
+                tx.delete(ADMIN_SESSIONS, &id)?;
+            }
+            Ok(json!({}))
+        });
+        b.op("auth.who", |tx, _| Ok(serde_json::to_value(tx.who()).unwrap()));
+    }
+}
+
 const SESSIONS: &str = "auth.sessions";
 const ACCOUNTS: &str = "auth.accounts";
 const NAMES: &str = "auth.names";
