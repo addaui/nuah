@@ -331,6 +331,47 @@ pub struct Manifest {
     pub images: Vec<String>,
 }
 
+/// Capabilities an Owner may allow a plugin without the operator: talking to the other plugins through Operations and events.
+/// Every other Capability, and any added later, is privileged by default ([ADR 0080]).
+///
+/// [ADR 0080]: https://docs.addaui.com/nuah/adr/0080-two-kinds-of-plugin-platform-plugins-are-for-the-operator-feature-plugins-are-for-the-owner-and-the-line-is-what-the-plugin-provides/
+pub const FEATURE_SAFE_CAPABILITIES: [&str; 2] = ["emit", "call"];
+
+/// Who a plugin is for ([ADR 0080]).
+///
+/// [ADR 0080]: https://docs.addaui.com/nuah/adr/0080-two-kinds-of-plugin-platform-plugins-are-for-the-operator-feature-plugins-are-for-the-owner-and-the-line-is-what-the-plugin-provides/
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginClass {
+    Platform,
+    Feature,
+}
+
+/// A plugin's class and the facts that decided it (empty for a feature).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Class {
+    pub class: PluginClass,
+    pub reasons: Vec<String>,
+}
+
+/// Who may change a setting: `bootstrap` (needed before the database opens) and `operator` are the operator's, in the console;
+/// `owner` is the product Owner's, in the product's settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsTier {
+    Bootstrap,
+    Operator,
+    Owner,
+}
+
+/// The tier of one setting (one property of a `settings_schema`). A missing or misspelled tier is the operator's: the safe side.
+pub fn settings_tier(property: &Value) -> SettingsTier {
+    match property.get("x-tier").and_then(|t| t.as_str()) {
+        Some("owner") => SettingsTier::Owner,
+        Some("bootstrap") => SettingsTier::Bootstrap,
+        _ => SettingsTier::Operator,
+    }
+}
+
 /// An origin a plugin may ask the browser to allow: `https://` and a host name (a port is fine), no path, query, user, wildcard or space.
 pub fn valid_connect_origin(o: &str) -> bool {
     let Some(host) = o.strip_prefix("https://") else { return false };
@@ -379,6 +420,49 @@ impl Manifest {
         }
     }
 
+    /// The class of this plugin ([ADR 0080]): **platform** (makes the system run; the operator's, in the console) or **feature**
+    /// (what a person sees or does; the Owner's too). It is worked out here from what the Manifest does, never from a field
+    /// an author writes, and the reasons come with it so a Face can say why.
+    ///
+    /// A plugin is platform when any of these is true:
+    /// - it fills a Port (`fills`);
+    /// - it publishes a Face or runs a service (`face`, the capability `serve`);
+    /// - it asks for a Capability outside [`FEATURE_SAFE_CAPABILITIES`] (`net`, `shell`, `serve` and anything added later);
+    /// - it uses a Runtime not listed as feature-safe (the match below is exhaustive, so a new Runtime forces a decision);
+    /// - one of its settings is in the `bootstrap` or `operator` tier, or has no tier (see [`settings_tier`]).
+    ///
+    /// Anything else is a feature. The only input an author writes is a setting's tier, and it cannot widen what the plugin may do:
+    /// a Capability is granted in the Profile whatever the class is, and a plugin with only feature-safe Capabilities reaches
+    /// nothing outside the Operations and events of the system.
+    ///
+    /// [ADR 0080]: https://docs.addaui.com/nuah/adr/0080-two-kinds-of-plugin-platform-plugins-are-for-the-operator-feature-plugins-are-for-the-owner-and-the-line-is-what-the-plugin-provides/
+    pub fn class(&self) -> Class {
+        let mut reasons: Vec<String> = vec![];
+        if let Some(port) = &self.fills {
+            reasons.push(format!("fills the port {port}"));
+        }
+        if let Some(face) = &self.face {
+            reasons.push(format!("publishes the Face {face}"));
+        }
+        for c in &self.requires.capabilities {
+            if !FEATURE_SAFE_CAPABILITIES.contains(&c.as_str()) {
+                reasons.push(format!("needs the capability {c}"));
+            }
+        }
+        match self.runtime {
+            Runtime::Native | Runtime::Data => {}
+        }
+        if let Some(props) = self.settings_schema.get("properties").and_then(|p| p.as_object()) {
+            for (name, p) in props {
+                let tier = settings_tier(p);
+                if tier != SettingsTier::Owner {
+                    reasons.push(format!("the setting {name} is for the operator"));
+                }
+            }
+        }
+        Class { class: if reasons.is_empty() { PluginClass::Feature } else { PluginClass::Platform }, reasons }
+    }
+
     pub fn owns_name(&self, name: &str) -> bool {
         self.namespaces.iter().any(|ns| name == ns || name.starts_with(&format!("{ns}.")))
     }
@@ -397,5 +481,82 @@ impl Manifest {
             .collect();
         let hooks: Vec<Value> = self.hooks.iter().map(|h| json!({"stage": h.stage, "on": h.on, "reasons": h.reasons.keys().collect::<Vec<_>>()})).collect();
         json!({ "operations": ops, "events": self.events.keys().collect::<Vec<_>>(), "hooks": hooks })
+    }
+}
+
+#[cfg(test)]
+mod class_tests {
+    use super::*;
+
+    fn m(extra: Value) -> Manifest {
+        let mut base = json!({"id": "@t/plugin", "version": "1.0.0", "namespaces": ["t"]});
+        for (k, v) in extra.as_object().unwrap() {
+            base[k] = v.clone();
+        }
+        Manifest::parse(&base.to_string()).unwrap()
+    }
+
+    fn platform(extra: Value) -> Vec<String> {
+        let c = m(extra).class();
+        assert_eq!(c.class, PluginClass::Platform, "{c:?}");
+        c.reasons
+    }
+
+    #[test]
+    fn a_plugin_that_only_adds_operations_and_talks_through_emit_and_call_is_a_feature() {
+        let c = m(json!({"requires": {"capabilities": ["emit", "call"]}, "operations": {"t.go": {"kind": "command", "input": {}, "output": {}}}})).class();
+        assert_eq!(c, Class { class: PluginClass::Feature, reasons: vec![] });
+    }
+
+    #[test]
+    fn filling_a_port_makes_a_plugin_platform() {
+        assert_eq!(platform(json!({"fills": "db"})), vec!["fills the port db"]);
+    }
+
+    #[test]
+    fn publishing_a_face_makes_a_plugin_platform() {
+        assert_eq!(platform(json!({"face": "web"})), vec!["publishes the Face web"]);
+    }
+
+    #[test]
+    fn every_capability_outside_the_safe_list_makes_a_plugin_platform_even_one_added_later() {
+        for c in ["net", "shell", "serve", "storage", "something-new"] {
+            assert_eq!(platform(json!({"requires": {"capabilities": [c]}})), vec![format!("needs the capability {c}")], "{c}");
+        }
+    }
+
+    #[test]
+    fn a_setting_for_the_operator_or_without_a_tier_makes_a_plugin_platform_and_one_for_the_owner_does_not() {
+        let schema = |tier: Option<&str>| {
+            let mut p = json!({"type": "string"});
+            if let Some(t) = tier {
+                p["x-tier"] = json!(t);
+            }
+            json!({"settings_schema": {"type": "object", "properties": {"key": p}}})
+        };
+        assert_eq!(platform(schema(Some("operator"))), vec!["the setting key is for the operator"]);
+        assert_eq!(platform(schema(Some("bootstrap"))).len(), 1);
+        assert_eq!(platform(schema(None)).len(), 1, "no tier is the safe side");
+        assert_eq!(platform(schema(Some("typo"))).len(), 1, "a misspelt tier is the safe side");
+        assert_eq!(m(schema(Some("owner"))).class().class, PluginClass::Feature);
+    }
+
+    #[test]
+    fn the_reasons_name_every_fact_not_only_the_first() {
+        let r = platform(json!({"fills": "net", "requires": {"capabilities": ["net"]}}));
+        assert_eq!(r.len(), 2);
+    }
+
+    #[test]
+    fn nothing_a_plugin_writes_in_its_manifest_can_name_its_own_class() {
+        // there is no `class` or `kind` field to write: a manifest that tries is read, and the field ignored
+        let c = m(json!({"fills": "db", "class": "feature", "kind": "feature"})).class();
+        assert_eq!(c.class, PluginClass::Platform);
+    }
+
+    #[test]
+    fn the_settings_annotation_check_accepts_the_owner_tier() {
+        let schema = json!({"properties": {"a": {"x-tier": "owner", "x-apply": "live"}}});
+        assert!(crate::setup::settings_annotation_problems(&schema).is_empty());
     }
 }

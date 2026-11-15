@@ -65,7 +65,7 @@ pub fn resolve_profile_refs(p: &Profile, problems: &mut Vec<crate::resolver::Pro
 }
 
 /// Where a setting lives and how a change takes effect (ADR 0033): `x-tier` is `bootstrap` (needed before the
-/// database opens) or `operator`; `x-apply` is `live`, `service` (restart that plugin's service) or `restart`.
+/// database opens), `operator`, or `owner` (the product Owner may set it, ADR 0080); `x-apply` is `live`, `service` (restart that plugin's service) or `restart`.
 /// Returns what is missing or misspelled for every top-level property of a settings schema, so a plugin's own
 /// test can keep its schema honest.
 pub fn settings_annotation_problems(schema: &Value) -> Vec<String> {
@@ -73,8 +73,8 @@ pub fn settings_annotation_problems(schema: &Value) -> Vec<String> {
     let Some(props) = schema.get("properties").and_then(|p| p.as_object()) else { return out };
     for (name, p) in props {
         match p.get("x-tier").and_then(|t| t.as_str()) {
-            Some("bootstrap") | Some("operator") => {}
-            other => out.push(format!("{name}: x-tier must be bootstrap or operator, not {other:?}")),
+            Some("bootstrap") | Some("operator") | Some("owner") => {}
+            other => out.push(format!("{name}: x-tier must be bootstrap, operator or owner, not {other:?}")),
         }
         match p.get("x-apply").and_then(|t| t.as_str()) {
             Some("live") | Some("service") | Some("restart") => {}
@@ -175,7 +175,7 @@ pub fn catalog_info(dist: &Distribution) -> Value {
             let m = pl.manifest();
             json!({
                 "id": m.id, "scope": m.scope(), "version": m.version, "name": m.name, "description": m.description,
-                "kind": m.kind(), "quality": m.quality, "runtime": m.runtime,
+                "kind": m.kind(), "class": m.class(), "quality": m.quality, "runtime": m.runtime,
                 "fills": m.fills,
                 "defines": m.defines.extension_points.iter().map(|(n, d)| json!({"name": n, "policy": d.policy})).collect::<Vec<_>>(),
                 "provides": m.provides.iter().map(|p| &p.extension_point).collect::<Vec<_>>(),
