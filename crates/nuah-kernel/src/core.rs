@@ -219,6 +219,14 @@ impl Core {
         out
     }
 
+    /// The origins the enabled plugins ask the browser to load pictures and media from (sorted, each once), ADR 0077.
+    pub fn image_origins(&self) -> Vec<String> {
+        let mut out: Vec<String> = self.inner.plan.active.values().flat_map(|a| a.manifest.images.iter().cloned()).filter(|o| crate::manifest::valid_connect_origin(o)).collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+
     pub fn plugin_ids(&self) -> Vec<String> {
         self.inner.plan.active.keys().cloned().collect()
     }

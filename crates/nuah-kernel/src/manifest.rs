@@ -322,6 +322,13 @@ pub struct Manifest {
     /// other; see [`valid_connect_origin`].
     #[serde(default)]
     pub connect: Vec<String>,
+    /// Sites a Face may load pictures and media from because a feature of this plugin shows them (a GIF provider's own files),
+    /// as origins like `connect`. The browser loads from this server and from exactly these and no other ([ADR 0077]): a page cannot make a
+    /// viewer's browser contact a site the operator did not allow.
+    ///
+    /// [ADR 0077]: https://docs.addaui.com/nuah/adr/0077-a-viewers-browser-loads-only-from-the-instance-and-the-sites-a-plugin-declares-previews-and-pictures-are-fetched-once-and-stored/
+    #[serde(default)]
+    pub images: Vec<String>,
 }
 
 /// An origin a plugin may ask the browser to allow: `https://` and a host name (a port is fine), no path, query, user, wildcard or space.

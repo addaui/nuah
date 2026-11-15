@@ -46,6 +46,8 @@ pub struct Config {
     /// Origins the browser may call from a Face (`connect-src`), besides this server: what the enabled plugins ask for (`Manifest::connect`).
     /// Filled when the router is made.
     pub connect: Vec<String>,
+    /// Origins the browser may load pictures and media from (`img-src`, `media-src`), besides this server: `Manifest::images`. Filled when the router is made.
+    pub images: Vec<String>,
     /// The Face `/` shows, by name (`web` for `/faces/web`), without redirecting. Default: `web` when it is hosted, else the first.
     pub root: Option<String>,
     /// Failed sign-ins allowed per account name within `throttle_window` (ADR 0015).
@@ -103,6 +105,7 @@ impl Default for Config {
             faces: vec![],
             faces_dir: "faces".into(),
             connect: vec![],
+            images: vec![],
             root: None,
             sign_in_failures_per_name: 5,
             sign_in_failures_overall: 100,
@@ -536,7 +539,7 @@ pub async fn guard(State(cfg): State<Arc<Config>>, req: Request, next: Next) -> 
         h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
     }
     if !h.contains_key(header::CONTENT_SECURITY_POLICY) {
-        if let Ok(v) = HeaderValue::from_str(&csp(&cfg.connect)) {
+        if let Ok(v) = HeaderValue::from_str(&csp(&cfg.connect, &cfg.images)) {
             h.insert(header::CONTENT_SECURITY_POLICY, v);
         }
     }
@@ -546,11 +549,13 @@ pub async fn guard(State(cfg): State<Arc<Config>>, req: Request, next: Next) -> 
     res
 }
 
-/// The Content-Security-Policy of every response: this server's own files, pictures from any https site, and calls only to this server and
-/// the origins plugins asked for (`connect`).
-pub fn csp(connect: &[String]) -> String {
+/// The Content-Security-Policy of every response: this server's own files, pictures and media only from this server and the origins plugins
+/// declared (`images`, ADR 0077), and calls only to this server and the origins plugins asked for (`connect`).
+pub fn csp(connect: &[String], images: &[String]) -> String {
     let extra: String = connect.iter().map(|o| format!(" {o}")).collect();
-    format!("default-src 'self'; connect-src 'self'{extra}; img-src 'self' data: https:; frame-src https://www.youtube-nocookie.com; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+    // Pictures and media load from this server and the origins plugins declare, never from any https site (ADR 0077): a page cannot tell a viewer's browser to contact a stranger.
+    let img: String = images.iter().map(|o| format!(" {o}")).collect();
+    format!("default-src 'self'; connect-src 'self'{extra}; img-src 'self' data: blob:{img}; media-src 'self' blob:{img}; frame-src https://www.youtube-nocookie.com; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 }
 
 /// Routes a product adds to the Projection. Called once with the Core, it returns its own router.
@@ -577,6 +582,7 @@ pub fn router_with(core: Core, mut cfg: Config, extra: &[RouteFn], shutdown: tok
         }
     }
     cfg.connect = core.connect_origins();
+    cfg.images = core.image_origins();
     let cfg = Arc::new(cfg);
     let mut r = Router::new()
         .route("/healthz", get(health))

@@ -211,6 +211,48 @@ fn the_browser_may_call_only_the_sites_enabled_plugins_ask_for() {
     services.stop();
 }
 
+struct ImagesPlugin(&'static str, Vec<&'static str>);
+impl Plugin for ImagesPlugin {
+    fn manifest(&self) -> Manifest {
+        serde_json::from_value(json!({"id": self.0, "version": "1", "runtime": "data", "images": self.1})).unwrap()
+    }
+}
+
+#[test]
+fn pictures_load_only_from_this_server_and_the_sites_enabled_plugins_declare() {
+    let port = free_port();
+    let mut p = Profile { name: "t".into(), ..Default::default() };
+    p.enabled = ["@nuah/db-memory", "@nuah/auth-local", "@nuah/policy-roles", "@nuah/clock-system", "@nuah/ids-random", "@nuah/http", "@test/gifs"].iter().map(|s| s.to_string()).collect();
+    p.settings.insert("@nuah/http".into(), json!({"listen": format!("127.0.0.1:{port}")}));
+    p.grants.insert("@nuah/http".into(), vec!["serve".into()]);
+    let list: Vec<std::sync::Arc<dyn Plugin>> = vec![
+        std::sync::Arc::new(AdapterMemory), std::sync::Arc::new(AuthLocal), std::sync::Arc::new(PolicyRoles), std::sync::Arc::new(StdClock), std::sync::Arc::new(StdIds),
+        std::sync::Arc::new(Http::new()),
+        std::sync::Arc::new(ImagesPlugin("@test/gifs", vec!["https://media.example.com", "https://media.example.com", "https://evil.example.com/p", "https://*.example.com", "http://plain.example.com"])),
+    ];
+    let core = Core::start(&Distribution { name: "t".into(), catalog: Catalog(list), profile: p }).unwrap_or_else(|e| panic!("{e:?}"));
+    assert_eq!(core.image_origins(), vec!["https://media.example.com".to_string()]);
+    let services = core.start_services().unwrap();
+    let r = agent().get(&format!("http://127.0.0.1:{port}/healthz")).call().unwrap();
+    let csp = r.headers().get("content-security-policy").unwrap().to_str().unwrap().to_string();
+    assert!(csp.contains("img-src 'self' data: blob: https://media.example.com;"), "{csp}");
+    assert!(csp.contains("media-src 'self' blob: https://media.example.com;"), "{csp}");
+    assert!(!csp.contains("evil") && !csp.contains('*') && !csp.contains(" https:;") && !csp.contains(" https: "), "{csp}");
+    services.stop();
+}
+
+#[test]
+fn without_a_declared_site_no_picture_loads_from_anywhere_but_this_server() {
+    let port = free_port();
+    let (_core, services) = start_with_http(json!({"listen": format!("127.0.0.1:{port}")}));
+    let r = agent().get(&format!("http://127.0.0.1:{port}/healthz")).call().unwrap();
+    let csp = r.headers().get("content-security-policy").unwrap().to_str().unwrap().to_string();
+    assert!(csp.contains("img-src 'self' data: blob:;"), "{csp}");
+    let img = csp.split(';').find(|d| d.trim_start().starts_with("img-src")).unwrap();
+    assert!(!img.contains("https"), "{csp}");
+    services.stop();
+}
+
 #[test]
 fn without_a_plugin_asking_the_browser_calls_only_this_server() {
     let port = free_port();
