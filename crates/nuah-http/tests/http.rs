@@ -261,3 +261,76 @@ fn without_a_plugin_asking_the_browser_calls_only_this_server() {
     assert!(r.headers().get("content-security-policy").unwrap().to_str().unwrap().contains("connect-src 'self';"));
     services.stop();
 }
+
+fn face_with_assets(tag: &str) -> String {
+    let d = std::path::PathBuf::from(face_dir(tag, "<!doctype html><title>x</title>"));
+    std::fs::create_dir_all(d.join("assets")).unwrap();
+    std::fs::write(d.join("assets/app-3f9a1c.js"), "const answer = 42;\n".repeat(400)).unwrap();
+    std::fs::write(d.join("assets/pic-77aa.png"), vec![0x89u8; 3000]).unwrap();
+    d.to_string_lossy().to_string()
+}
+
+/// A plain HTTP/1.1 request, headers as the server sent them (an HTTP client library hides `Content-Encoding` when it decodes for you).
+fn raw_get(url: &str, accept: &str) -> RawResponse {
+    use std::io::{Read, Write};
+    let rest = url.strip_prefix("http://").unwrap();
+    let (host, path) = rest.split_once('/').map(|(h, p)| (h, format!("/{p}"))).unwrap();
+    let mut s = std::net::TcpStream::connect(host).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    write!(s, "GET {path} HTTP/1.1\r\nHost: {host}\r\nAccept-Encoding: {accept}\r\nConnection: close\r\n\r\n").unwrap();
+    let mut buf = Vec::new();
+    s.read_to_end(&mut buf).unwrap();
+    let end = buf.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+    let head = String::from_utf8_lossy(&buf[..end]).to_string();
+    let headers = head.lines().skip(1).filter_map(|l| l.split_once(':')).map(|(k, v)| (k.trim().to_lowercase(), v.trim().to_string())).collect();
+    RawResponse { headers }
+}
+struct RawResponse { headers: Vec<(String, String)> }
+impl RawResponse {
+    fn header(&self, name: &str) -> Option<&str> { self.headers.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str()) }
+}
+
+#[test]
+fn face_files_are_compressed_and_hashed_files_are_cached_for_good() {
+    let web = face_with_assets("cache");
+    let port = free_port();
+    let (_core, services) = start_with_http(json!({"listen": format!("127.0.0.1:{port}"), "faces": {"/faces/web": web}}));
+    let base = format!("http://127.0.0.1:{port}/faces/web");
+    let js = format!("{base}/assets/app-3f9a1c.js");
+
+    // text is compressed for a client that accepts it, in the best way it names, and not for one that does not
+    let gz = raw_get(&js, "gzip");
+    assert_eq!(gz.header("content-encoding"), Some("gzip"));
+    assert!(gz.header("vary").is_some_and(|v| v.to_lowercase().contains("accept-encoding")));
+    assert_eq!(raw_get(&js, "br, gzip").header("content-encoding"), Some("br"));
+    assert_eq!(raw_get(&js, "identity").header("content-encoding"), None);
+    // a picture is already compressed: left alone
+    assert_eq!(raw_get(&format!("{base}/assets/pic-77aa.png"), "gzip").header("content-encoding"), None);
+
+    // a file with a hash in its name never changes; the page that names it always may
+    let forever = Some("public, max-age=31536000, immutable");
+    assert_eq!(raw_get(&js, "identity").header("cache-control"), forever);
+    assert_eq!(raw_get(&format!("{base}/assets/pic-77aa.png"), "identity").header("cache-control"), forever);
+    assert_eq!(raw_get(&format!("{base}/"), "identity").header("cache-control"), Some("no-cache"));
+    services.stop();
+}
+
+#[test]
+fn the_link_and_the_event_stream_are_not_cached_or_compressed_by_the_face_rules() {
+    let port = free_port();
+    let (_core, services) = start_with_http(json!({"listen": format!("127.0.0.1:{port}")}));
+    let r = raw_get(&format!("http://127.0.0.1:{port}/healthz"), "gzip, br");
+    assert_eq!(r.header("content-encoding"), None);
+    assert!(!r.header("cache-control").is_some_and(|v| v.contains("immutable")));
+    services.stop();
+}
+
+#[test]
+fn only_a_file_with_a_hash_in_an_assets_folder_counts_as_hashed() {
+    use nuah_http::is_hashed_asset as h;
+    assert!(h("/faces/web/assets/index-DkH1kXDf.js") && h("/assets/react-CRL5HtpL.js") && h("/assets/noto-sans-arabic-CSfveiSG.woff2") && h("/a/assets/x-ab_12.css"));
+    // no assets folder, no hash, too short a hash, or no name
+    for p in ["/faces/web/index.html", "/faces/web/vendor-editor.js", "/assets/logo.png", "/assets/app-ab.js", "/assets/-abcd1234.js", "/assets/", "/assets/app-abcd1234", "/assets/a-b c d1.js"] {
+        assert!(!h(p), "{p}");
+    }
+}

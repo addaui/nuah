@@ -534,8 +534,8 @@ pub async fn guard(State(cfg): State<Arc<Config>>, req: Request, next: Next) -> 
     let is_face = req.uri().path().starts_with("/faces/");
     let mut res = next.run(req).await;
     let h = res.headers_mut();
-    if is_face {
-        // Faces are small and change with every release: always ask the server whether they changed.
+    if is_face && !h.contains_key(header::CACHE_CONTROL) {
+        // The page of a Face changes with every release: always ask the server whether it did. (A file with a hash in its name was given its own rule by `face_cache`.)
         h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
     }
     if !h.contains_key(header::CONTENT_SECURITY_POLICY) {
@@ -547,6 +547,37 @@ pub async fn guard(State(cfg): State<Arc<Config>>, req: Request, next: Next) -> 
     h.insert(header::REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
     h.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
     res
+}
+
+/// The files of one Face: compressed for a client that accepts it (text only; pictures and the event stream are left alone) and cached by what they are,
+/// see [`face_cache`]. Only these routes get either; the Link and Pulse are never cached here.
+fn face_files(dir: impl AsRef<std::path::Path>) -> Router {
+    Router::new()
+        .fallback_service(tower_http::services::ServeDir::new(dir))
+        .layer(middleware::from_fn(face_cache))
+        .layer(tower_http::compression::CompressionLayer::new())
+}
+
+/// A file whose name carries a content hash (`app-3f9a1c.js`, in an `assets` folder: what a bundler writes) never changes, so a browser keeps it for good; anything
+/// else (the page that names those files) is asked about each time, which costs one cheap conditional request and means a new release shows at once.
+async fn face_cache(req: Request, next: Next) -> Response {
+    let hashed = is_hashed_asset(req.uri().path());
+    let mut resp = next.run(req).await;
+    if resp.status().is_success() && !resp.headers().contains_key(header::CACHE_CONTROL) {
+        resp.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static(if hashed { "public, max-age=31536000, immutable" } else { "no-cache" }));
+    }
+    resp
+}
+
+/// `…/assets/<name>-<hash>.<ext>` with a hash of at least four letters, digits, `_` or `-` characters.
+pub fn is_hashed_asset(path: &str) -> bool {
+    let mut parts = path.rsplit('/');
+    let Some(file) = parts.next() else { return false };
+    if !parts.any(|d| d == "assets") {
+        return false;
+    }
+    let Some((stem, ext)) = file.rsplit_once('.') else { return false };
+    !ext.is_empty() && ext.chars().all(|c| c.is_ascii_alphanumeric()) && stem.rsplit_once('-').is_some_and(|(name, hash)| !name.is_empty() && hash.len() >= 4 && hash.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
 }
 
 /// The Content-Security-Policy of every response: this server's own files, pictures and media only from this server and the origins plugins
@@ -598,11 +629,11 @@ pub fn router_with(core: Core, mut cfg: Config, extra: &[RouteFn], shutdown: tok
         r = r.merge(f(core.clone()));
     }
     for (prefix, dir) in &cfg.faces {
-        r = r.nest_service(prefix, tower_http::services::ServeDir::new(dir));
+        r = r.nest_service(prefix, face_files(dir));
     }
     // `/` shows the root Face where it is (no redirect), so a bare address opens the product.
     if let Some(dir) = root_face(&cfg) {
-        r = r.fallback_service(tower_http::services::ServeDir::new(dir));
+        r = r.fallback_service(face_files(dir));
     }
     r.layer(middleware::from_fn_with_state(cfg, guard))
 }
