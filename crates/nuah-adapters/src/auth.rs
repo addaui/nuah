@@ -250,6 +250,10 @@ impl Plugin for AuthPassword {
                     "input":{"type":"object","required":["token"],"properties":{"token":{"type":"string","minLength":1}},"additionalProperties":false},
                     "output":{"type":"object"}},
                 "auth.who": {"kind":"query","description":"Who am I?","output":{"type":"object","required":["subject"]}},
+                "auth.password.change": {"kind":"command","description":"Change your own password by giving the current one",
+                    "input":{"type":"object","required":["current","new"],"properties":{"current":{"type":"string","minLength":1,"maxLength":1000},"new":pw_in},"additionalProperties":false},
+                    "output":{"type":"object"},
+                    "reasons":{"auth.bad_credentials":"The current password is wrong"}},
                 "auth.account.list": {"kind":"query","permission":"auth.manage","description":"Every account, without passwords"},
                 "auth.account.create": {"kind":"command","permission":"auth.manage","description":"Create an account",
                     "input":{"type":"object","required":["name","password"],"properties":{"name":name_in,"display":{"type":"string","maxLength":200},"password":pw_in,"roles":{"type":"array","items":{"type":"string"}}},"additionalProperties":false},
@@ -361,6 +365,20 @@ impl Plugin for AuthPassword {
                 return Err(Error::reason(Category::Conflict, "auth.last_admin", "At least one enabled administrator must remain"));
             }
             tx.put(ACCOUNTS, subject, body, Expect::Rev(d.rev))?;
+            Ok(json!({}))
+        });
+        b.op("auth.password.change", |tx, input| {
+            // Only the caller's own account: there is no way to name another one.
+            let subject = tx.who().subject.clone();
+            let Some(d) = tx.get(ACCOUNTS, &subject)?.filter(|a| a.body["disabled"] != true) else { return Err(Error::unauthenticated()) };
+            let stored = d.body["password_hash"].as_str().unwrap_or("").to_string();
+            let ok = PasswordHash::new(&stored).map(|h| Argon2::default().verify_password(input["current"].as_str().unwrap_or("").as_bytes(), &h).is_ok()).unwrap_or(false);
+            if !ok {
+                return Err(Error::reason(Category::Unauthenticated, "auth.bad_credentials", "The current password is wrong"));
+            }
+            let mut body = d.body.clone();
+            body["password_hash"] = json!(AuthPassword::hash_password(input["new"].as_str().unwrap_or("")));
+            tx.put(ACCOUNTS, &subject, body, Expect::Rev(d.rev))?;
             Ok(json!({}))
         });
         b.op("auth.account.set_password", |tx, input| {

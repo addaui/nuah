@@ -85,3 +85,28 @@ fn a_seed_account_may_keep_the_subject_of_the_owner_so_what_they_made_stays_thei
     let made = as_who(&c, &who, "auth.account.create", json!({"name": "Bea", "password": "another-password"})).unwrap();
     assert_ne!(made["subject"], "owner");
 }
+
+#[test]
+fn a_person_changes_their_own_password_by_giving_the_current_one() {
+    let c = core();
+    let root = sign_in(&c, "Root", "first-password").unwrap()["who"].clone();
+    as_who(&c, &root, "auth.account.create", json!({"name": "sam", "password": "sam-secret-1", "roles": ["member"]})).unwrap();
+    let sam = sign_in(&c, "sam", "sam-secret-1").unwrap()["who"].clone();
+
+    // a wrong current password changes nothing
+    let wrong = as_who(&c, &sam, "auth.password.change", json!({"current": "not-the-password", "new": "sam-secret-2"})).unwrap_err();
+    assert_eq!(wrong.reason.as_deref(), Some("auth.bad_credentials"));
+    assert!(sign_in(&c, "sam", "sam-secret-1").is_ok());
+
+    // a new password that is too short is refused before anything is checked
+    assert!(as_who(&c, &sam, "auth.password.change", json!({"current": "sam-secret-1", "new": "short"})).is_err());
+
+    // the right current password changes it, and only theirs: the old one stops working, the new one works
+    as_who(&c, &sam, "auth.password.change", json!({"current": "sam-secret-1", "new": "sam-secret-2"})).unwrap();
+    assert!(sign_in(&c, "sam", "sam-secret-1").is_err());
+    assert!(sign_in(&c, "sam", "sam-secret-2").is_ok());
+    assert!(sign_in(&c, "Root", "first-password").is_ok(), "nobody else's password moved");
+
+    // someone who is not signed in cannot
+    assert!(c.call_as(&anon(), "auth.password.change", json!({"current": "x", "new": "yyyyyyyy"}), None).is_err());
+}
