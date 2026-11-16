@@ -499,6 +499,15 @@ async fn ready(State(core): State<Core>) -> Response {
     }
 }
 
+/// Is this host name one the server answers to? An entry is a name, or `*.example.com` for any name under it (a Space's own subdomain); the
+/// wildcard never matches `example.com` itself, so it must be listed too if wanted.
+pub fn host_allowed(hosts: &[String], host: &str) -> bool {
+    hosts.iter().any(|h| match h.strip_prefix("*.") {
+        Some(suffix) => host.len() > suffix.len() + 1 && host.ends_with(suffix) && host.as_bytes()[host.len() - suffix.len() - 1] == b'.',
+        None => h == host,
+    })
+}
+
 fn host_only(h: &str) -> String {
     match h.rsplit_once(':') {
         Some((host, port)) if !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) => host.to_lowercase(),
@@ -515,7 +524,7 @@ pub fn refuse(status: StatusCode, category: &str, key: &str, message: &str) -> R
 /// and security headers on every response.
 pub async fn guard(State(cfg): State<Arc<Config>>, req: Request, next: Next) -> Response {
     let host_header = header_str(req.headers(), "host").unwrap_or_default();
-    if !cfg.hosts.iter().any(|h| *h == host_only(&host_header)) {
+    if !host_allowed(&cfg.hosts, &host_only(&host_header)) {
         return refuse(StatusCode::MISDIRECTED_REQUEST, "invalid", "server.bad_host", "This host name is not allowed. Start the server with --allow-host to add it.");
     }
     if let Some(origin) = header_str(req.headers(), "origin") {
@@ -636,4 +645,26 @@ pub fn router_with(core: Core, mut cfg: Config, extra: &[RouteFn], shutdown: tok
         r = r.fallback_service(face_files(dir));
     }
     r.layer(middleware::from_fn_with_state(cfg, guard))
+}
+
+#[cfg(test)]
+mod host_tests {
+    use super::host_allowed;
+
+    fn hosts(l: &[&str]) -> Vec<String> {
+        l.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn a_wildcard_entry_matches_names_under_it_and_not_the_name_itself_or_look_alikes() {
+        let h = hosts(&["localhost", "*.example.com"]);
+        assert!(host_allowed(&h, "localhost"));
+        assert!(host_allowed(&h, "team.example.com"));
+        assert!(host_allowed(&h, "a.b.example.com"));
+        assert!(!host_allowed(&h, "example.com"));
+        assert!(!host_allowed(&h, "evilexample.com"));
+        assert!(!host_allowed(&h, "team.example.com.evil.org"));
+        assert!(!host_allowed(&h, ".example.com"));
+        assert!(!host_allowed(&hosts(&["localhost"]), "team.example.com"));
+    }
 }

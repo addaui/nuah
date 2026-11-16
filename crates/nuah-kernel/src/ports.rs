@@ -49,6 +49,11 @@ pub trait Auth: Send + Sync {
     fn implicit(&self) -> Option<Identity> {
         None
     }
+    /// Does this Adapter keep accounts that people sign in to? A plugin that offers "anyone signed in" or "these people" needs to know, because
+    /// on an instance without accounts those choices mean nothing.
+    fn has_accounts(&self) -> bool {
+        false
+    }
 }
 
 /// What the Subject holds on the resource being acted on, as answered by the plugin that owns it.

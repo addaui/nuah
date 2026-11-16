@@ -215,6 +215,10 @@ impl<'a> Tx<'a> {
     pub fn find_person(&self, name: &str) -> Result<Option<crate::ports::Identity>> {
         self.inner.auth.find(self.rd(), name)
     }
+    /// Does this instance have accounts people sign in to (see [`Auth::has_accounts`](crate::ports::Auth::has_accounts))?
+    pub fn has_accounts(&self) -> bool {
+        self.inner.auth.has_accounts()
+    }
     pub fn is_query(&self) -> bool {
         matches!(self.h, Handle::R(_))
     }
