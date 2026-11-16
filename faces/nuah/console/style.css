@@ -42,3 +42,4 @@ button.link.small { font-size:12px; }
 .scope h3{margin:10px 0 6px;font-size:13px;color:var(--muted,#6b7280)}
 .chip.platform{background:#e9ecf2;color:#34405a}
 .chip.feature{background:#dff3e8;color:#1f6b45}
+form.grid { display:flex; flex-direction:column; gap:8px; max-width:340px; margin-top:10px; } form.grid label { display:flex; flex-direction:column; gap:3px; font-weight:600; font-size:13px; }

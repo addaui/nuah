@@ -57,15 +57,15 @@ function review(title, node, okLabel) {
 // ---- tabs ----
 let TAB = null;
 function tabs() {
-  const list = [["overview", "Overview", true], ["config", "Plugins and settings", allowed("console.profile.get")], ["accounts", "Accounts", allowed("auth.account.list")], ["ops", "Operations", true], ["live", "Live", true]].filter((t) => t[2]);
+  const list = [["overview", "Overview", true], ["config", "Plugins and settings", allowed("console.profile.get")], ["auth", "Sign-in", allowed("console.auth.switch")], ["accounts", "Accounts", allowed("auth.account.list")], ["ops", "Operations", true], ["live", "Live", true]].filter((t) => t[2]);
   $("tabs").replaceChildren(...list.map(([id, label]) => h("button", { role: "tab", "aria-selected": String(TAB === id), "data-tab": id, onclick: () => go(id) }, label)));
-  for (const [id] of [["overview"], ["config"], ["accounts"], ["ops"], ["live"]]) $("tab-" + id).hidden = id !== TAB;
+  for (const [id] of [["overview"], ["config"], ["auth"], ["accounts"], ["ops"], ["live"]]) $("tab-" + id).hidden = id !== TAB;
 }
 function go(id) {
   if (TAB === "config" && id !== "config" && dirty()) { if (!confirm("You have unsaved changes on Plugins and settings. Leave anyway?")) return; }
   TAB = id; try { history.replaceState(null, "", "#" + id); } catch {}
   tabs();
-  if (id === "config") config(); if (id === "accounts") accounts();
+  if (id === "config") config(); if (id === "accounts") accounts(); if (id === "auth") authTab();
 }
 
 async function load() {
@@ -76,9 +76,9 @@ async function load() {
   if (!signedIn) { $("err").textContent = D.operations["auth.sign_in"] ? "" : "This core has no sign-in."; stop(); return; }
   overview(); renderOps(); connect();
   const want = location.hash.slice(1);
-  TAB = ["overview", "config", "accounts", "ops", "live"].includes(want) ? want : "overview";
+  TAB = ["overview", "config", "auth", "accounts", "ops", "live"].includes(want) ? want : "overview";
   tabs();
-  if (TAB === "config") config(); if (TAB === "accounts") accounts();
+  if (TAB === "config") config(); if (TAB === "accounts") accounts(); if (TAB === "auth") authTab();
   notice();
 }
 
@@ -198,6 +198,51 @@ let checkTimer = 0, checkSeq = 0, problems = [];
 // The Core works out the class from the Manifest (ADR 0080); a console talking to an older Core has none and shows everything as platform.
 const classOf = (p) => (p.class && p.class.class) || "platform";
 const entryOf = (id) => (C.profile.plugins || {})[id];
+
+// ---- sign-in (ADR 0085): how people sign in, with every option and what each means ----
+const AUTH_TEXT = {
+  "@nuah/auth-open": ["No sign-in", "Whoever opens the app is the Owner. Fine for one person on a private computer or network. Anyone who can reach the address can read, change and delete everything."],
+  "@nuah/auth-local": ["One local person", "Always signed in as one person, for an instance only that person can reach (the same computer)."],
+  "@nuah/auth-password": ["Accounts with passwords", "People sign in with a name and a password. You can add more people, give roles, and share safely. Recommended before sharing anything with the world."],
+};
+async function authTab() {
+  const box = $("auth"); box.textContent = "";
+  let state; try { state = (await call("console.profile.get", {})).output; } catch (e) { box.textContent = say(e); return; }
+  const on = (id) => !!(state.profile.plugins && state.profile.plugins[id] && state.profile.plugins[id].enabled);
+  const options = state.plugins.filter((p) => p.fills === "auth");
+  const wasOpen = on("@nuah/auth-open");
+  box.append(h("p", {}, wasOpen ? "This instance has no sign-in: whoever can reach it is the Owner. Choose how people should sign in." : "Choose how people sign in. Everything people made stays theirs."));
+  if (wasOpen) box.append(h("p", { class: "muted" }, "When you switch to accounts, you make the first administrator now. That account becomes the Owner: all the pages, projects and shares made so far stay theirs."));
+  for (const p of options) {
+    const [title, text] = AUTH_TEXT[p.id] || [nameOf(p.id), p.description || ""];
+    const first = p.settings_schema && p.settings_schema.properties && p.settings_schema.properties.accounts && p.settings_schema.properties.accounts["x-first-account"];
+    const form = first && !on(p.id) ? h("form", { class: "grid" },
+      h("label", {}, "Your name", h("input", { name: "name", required: true, autocomplete: "username" })),
+      h("label", {}, "Your password (8 characters or more)", h("input", { name: "password", type: "password", required: true, minlength: 8, autocomplete: "new-password" })),
+      h("button", { class: "primary", type: "submit" }, "Switch to " + title.toLowerCase())) : (on(p.id) ? null : h("form", {}, h("button", { class: "primary", type: "submit" }, "Switch to " + title.toLowerCase())));
+    if (form) form.addEventListener("submit", async (e) => {
+      e.preventDefault(); $("auth-err").textContent = "";
+      const f = new FormData(form), input = { plugin: p.id };
+      if (f.get("name")) { input.name = String(f.get("name")); input.password = String(f.get("password")); }
+      try {
+        const out = (await call("console.auth.switch", input)).output;
+        $("auth-done").hidden = false;
+        $("auth-msg").textContent = "Saved. Restart to use it" + (out.adopts_owner ? "; then sign in as " + input.name + ". Everything the Owner made is yours." : ".");
+      } catch (x) { $("auth-err").textContent = say(x); }
+    });
+    box.append(h("div", { class: "plugin" + (on(p.id) ? " on" : "") }, h("div", { class: "head" }, h("span", { class: "name" }, title), on(p.id) ? h("span", { class: "chip" }, "in use") : null), h("div", { class: "desc" }, text), form));
+  }
+}
+$("auth-restart").addEventListener("click", async () => {
+  const btn = $("auth-restart"); btn.disabled = true;
+  try { await call("console.restart", {}); } catch (e) { $("auth-msg").textContent = say(e); btn.disabled = false; return; }
+  $("auth-msg").textContent = "Restarting...";
+  for (let i = 0; i < 60; i++) {
+    await new Promise((r) => setTimeout(r, 500));
+    try { if ((await fetch("/healthz", { cache: "no-store" })).ok && i > 1) { location.reload(); return; } } catch {}
+  }
+  $("auth-msg").textContent = "The instance did not come back. Check its log; the previous file is kept as nuah.json.bak next to it."; btn.disabled = false;
+});
 
 async function config() {
   if (!allowed("console.profile.get")) return;
