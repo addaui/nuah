@@ -1,0 +1,29 @@
+/* The mode wheel grows out of the chip: it starts clipped to the chip's own shape and colour, then opens to the full wheel. */
+.mode-wheel {
+  clip-path: inset(-16px round 8px);
+  transition:
+    clip-path 260ms cubic-bezier(0.23, 1, 0.32, 1),
+    background-color 260ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+.mode-wheel[data-starting-style],
+.mode-wheel[data-ending-style] {
+  /* the chip: 4px in from the left, 44px down, 28px tall, as wide as the chip (--chip-w), fully rounded */
+  clip-path: inset(44px calc(100% - 4px - var(--chip-w)) calc(100% - 72px) 4px round 14px);
+  background-color: var(--secondary);
+}
+.mode-wheel[data-ending-style] {
+  transition-duration: 170ms;
+}
+.mode-wheel .wheel-bar {
+  transition: opacity 260ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+.mode-wheel[data-starting-style] .wheel-bar,
+.mode-wheel[data-ending-style] .wheel-bar {
+  opacity: 0;
+}
+@media (prefers-reduced-motion: reduce) {
+  .mode-wheel,
+  .mode-wheel .wheel-bar {
+    transition: none;
+  }
+}
