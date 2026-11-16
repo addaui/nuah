@@ -71,7 +71,11 @@ function go(id) {
 async function load() {
   D = await (await fetch("/link/describe", { credentials: "same-origin" })).json();
   const signedIn = !!D.who;
-  $("signin").hidden = signedIn; $("app").hidden = !signedIn; $("out").hidden = !signedIn;
+  // An instance whose app has no sign-in lets everyone in as the Owner; the console is for the administrator, who proves it with the admin password.
+  const needAdmin = signedIn && !allowed("console.profile.get") && !!(D.operations["auth.sign_in"] && D.operations["auth.sign_in"].allowed !== false);
+  $("signin").hidden = signedIn && !needAdmin; $("app").hidden = !signedIn || needAdmin; $("out").hidden = !signedIn;
+  $("signin-note").textContent = needAdmin ? "The app on this instance has no sign-in, so you are the Owner. The console is for the administrator: enter the administrator password." : "";
+  if (needAdmin) { $("err").textContent = ""; stop(); return; }
   $("who").textContent = signedIn ? `${D.who.display} · ${D.profile}` : "";
   if (!signedIn) { $("err").textContent = D.operations["auth.sign_in"] ? "" : "This core has no sign-in."; stop(); return; }
   overview(); renderOps(); connect();
@@ -209,7 +213,9 @@ async function authTab() {
   const box = $("auth"); box.textContent = "";
   let state; try { state = (await call("console.profile.get", {})).output; } catch (e) { box.textContent = say(e); return; }
   const on = (id) => !!(state.profile.plugins && state.profile.plugins[id] && state.profile.plugins[id].enabled);
-  const options = state.plugins.filter((p) => p.fills === "auth");
+  // accounts first: it is the one to recommend; the rest in a steady order
+  const rank = (id) => ["@nuah/auth-password", "@nuah/auth-open", "@nuah/auth-local"].indexOf(id) + 1 || 9;
+  const options = state.plugins.filter((p) => p.fills === "auth").sort((a, b) => rank(a.id) - rank(b.id));
   const wasOpen = on("@nuah/auth-open");
   box.append(h("p", {}, wasOpen ? "This instance has no sign-in: whoever can reach it is the Owner. Choose how people should sign in." : "Choose how people sign in. Everything people made stays theirs."));
   if (wasOpen) box.append(h("p", { class: "muted" }, "When you switch to accounts, you make the first administrator now. That account becomes the Owner: all the pages, projects and shares made so far stay theirs."));
