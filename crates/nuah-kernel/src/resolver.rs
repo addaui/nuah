@@ -42,6 +42,12 @@ pub struct Profile {
     ///
     /// [ADR 0032]: https://docs.addaui.com/nuah/adr/0032-telemetry-is-four-optional-fan-out-ports-the-core-decides-what-to-record-adapters-decide-how-it-looks-and-where-it-goes/
     pub telemetry: crate::telemetry::TelemetrySettings,
+    /// Who can reach this instance ([ADR 0087]); absent means the shell works it out from the address it listens on.
+    ///
+    /// [ADR 0087]: https://docs.addaui.com/nuah/adr/0087-the-operator-says-who-can-reach-the-instance-plugins-declare-how-far-they-are-safe-and-going-past-it-is-allowed-once-acknowledged/
+    pub reach: Option<crate::manifest::Reach>,
+    /// Plugins whose declared reach the operator knowingly goes past.
+    pub accepted_risks: Vec<String>,
 }
 
 /// One plugin's part of the file.
@@ -71,6 +77,10 @@ struct ProfileFile {
     bindings: BTreeMap<String, String>,
     permissions: BTreeMap<String, Vec<String>>,
     telemetry: crate::telemetry::TelemetrySettings,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reach: Option<crate::manifest::Reach>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    accepted_risks: Vec<String>,
 }
 
 impl From<ProfileFile> for Profile {
@@ -87,7 +97,7 @@ impl From<ProfileFile> for Profile {
                 grants.insert(id, e.grants);
             }
         }
-        Profile { name: f.name, contract: f.contract, enabled, bindings: f.bindings, settings, grants, permissions: f.permissions, telemetry: f.telemetry }
+        Profile { name: f.name, contract: f.contract, enabled, bindings: f.bindings, settings, grants, permissions: f.permissions, telemetry: f.telemetry, reach: f.reach, accepted_risks: f.accepted_risks }
     }
 }
 
@@ -98,7 +108,7 @@ impl From<Profile> for ProfileFile {
             .into_iter()
             .map(|id| (id.clone(), EntryFile { enabled: p.enabled.contains(id), grants: p.grants.get(id).cloned().unwrap_or_default(), settings: p.settings.get(id).cloned().unwrap_or(Value::Null) }))
             .collect();
-        ProfileFile { name: p.name, contract: p.contract, plugins, bindings: p.bindings, permissions: p.permissions, telemetry: p.telemetry }
+        ProfileFile { name: p.name, contract: p.contract, plugins, bindings: p.bindings, permissions: p.permissions, telemetry: p.telemetry, reach: p.reach, accepted_risks: p.accepted_risks }
     }
 }
 
@@ -219,6 +229,20 @@ pub fn resolve(dist: &Distribution) -> (Vec<Problem>, Plan) {
         }
     }
     let ids: BTreeSet<&str> = enabled.iter().map(|(i, _, _)| i.as_str()).collect();
+
+    // 2b. who can reach the instance, against how far each plugin says it is safe (ADR 0087)
+    let reach = p.reach.unwrap_or_default();
+    for (id, _, m) in &enabled {
+        if let Some(safe) = m.safe_reach {
+            if reach > safe && !p.accepted_risks.contains(id) {
+                ps.push(problem(
+                    "exceeds_reach",
+                    &[id],
+                    format!("{id} is safe for {} only, but this instance can be reached by {}: anyone who can reach it may see or change your data and settings. Put something in front of it (a sign-in portal, a firewall), choose another plugin, or accept the risk if you know what you are doing", safe.words(), reach.words()),
+                ));
+            }
+        }
+    }
 
     // 3. namespaces, collections and names each plugin owns
     let mut ns_owner: BTreeMap<String, String> = BTreeMap::new();

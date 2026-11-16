@@ -19,6 +19,44 @@ pub enum Runtime {
     Data,
 }
 
+/// Who can reach an instance ([ADR 0087]): the operator says it in the Profile, a plugin declares how far it is safe.
+/// Ordered from narrowest to widest.
+///
+/// [ADR 0087]: https://docs.addaui.com/nuah/adr/0087-the-operator-says-who-can-reach-the-instance-plugins-declare-how-far-they-are-safe-and-going-past-it-is-allowed-once-acknowledged/
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum Reach {
+    /// Only the computer it runs on.
+    #[default]
+    ThisComputer,
+    /// People on the same network.
+    Network,
+    /// Anyone on the internet.
+    Internet,
+}
+
+impl Reach {
+    /// What an address to listen on says by itself: loopback is this computer, anything else is a network. A program in a
+    /// container listens off loopback whatever the host does with the port, so the operator's own answer (the Profile's
+    /// `reach`) wins over this.
+    pub fn of_listen(addr: &str) -> Reach {
+        if addr.parse::<std::net::SocketAddr>().is_ok_and(|a| a.ip().is_loopback()) {
+            Reach::ThisComputer
+        } else {
+            Reach::Network
+        }
+    }
+
+    /// What the operator would call it, for messages.
+    pub fn words(self) -> &'static str {
+        match self {
+            Reach::ThisComputer => "only this computer",
+            Reach::Network => "people on your network",
+            Reach::Internet => "anyone on the internet",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum Quality {
@@ -283,6 +321,12 @@ pub struct Manifest {
     /// The core Port this plugin fills (an Adapter).
     #[serde(default)]
     pub fills: Option<String>,
+    /// The widest reach this plugin is safe for ([`Reach`]); absent means no limit. An instance reachable by more people
+    /// than this is a Problem until the operator accepts the risk ([ADR 0087]).
+    ///
+    /// [ADR 0087]: https://docs.addaui.com/nuah/adr/0087-the-operator-says-who-can-reach-the-instance-plugins-declare-how-far-they-are-safe-and-going-past-it-is-allowed-once-acknowledged/
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub safe_reach: Option<Reach>,
     #[serde(default)]
     pub defines: Defines,
     #[serde(default)]

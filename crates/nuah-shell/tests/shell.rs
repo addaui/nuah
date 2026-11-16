@@ -125,3 +125,29 @@ fn the_identity_file_is_nuah_json_unless_one_is_named() {
     assert_eq!(nuah_shell::identity_path(None, Some(d.clone())), d.join("nuah.json"));
     assert_eq!(nuah_shell::identity_path(Some("x.json".into()), Some(d.clone())), std::path::PathBuf::from("x.json"));
 }
+
+#[test]
+fn a_draft_is_checked_against_the_address_the_instance_listens_on_so_setup_and_console_see_what_start_would() {
+    // the program listens off loopback (a container): a draft with local sign-in is a Problem now, not at the next start
+    let d = dir("reach");
+    let mut local = profile(false);
+    local.enabled.retain(|e| e != "@nuah/auth-password");
+    local.enabled.push("@nuah/auth-local".into());
+    local.settings.remove("@nuah/auth-password");
+    let mut cat = catalog().0;
+    cat.push(Arc::new(AuthLocal));
+    let store = ProfileStore::new("t", Catalog(cat), local.clone(), d.join("t.json"));
+    assert!(store.check(&serde_json::to_value(&local).unwrap()).unwrap().iter().all(|p| p.code != "exceeds_reach"), "nothing says it is reachable yet");
+
+    store.set_default_reach(Some(Reach::of_listen("0.0.0.0:3000")));
+    let draft = serde_json::to_value(&local).unwrap();
+    assert!(store.check(&draft).unwrap().iter().any(|p| p.code == "exceeds_reach"), "setup must see the problem before saving");
+
+    // the operator accepts it: the same draft goes through, and nothing is forbidden
+    let mut accepted = draft.clone();
+    accepted["accepted_risks"] = json!(["@nuah/auth-local"]);
+    assert!(store.check(&accepted).unwrap().iter().all(|p| p.code != "exceeds_reach"));
+    assert_eq!(Reach::of_listen("127.0.0.1:3000"), Reach::ThisComputer);
+    assert_eq!(Reach::of_listen("[::1]:3000"), Reach::ThisComputer);
+    assert_eq!(Reach::of_listen("192.168.1.8:3000"), Reach::Network);
+}

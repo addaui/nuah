@@ -28,7 +28,7 @@ pub struct AuthLocal;
 impl Plugin for AuthLocal {
     fn manifest(&self) -> Manifest {
         serde_json::from_value(json!({
-            "id":"@nuah/auth-local","version":"0.2.0","name":"Local sign-in","description":"One person, always signed in as admin. Only for a Core that nobody else can reach.","fills":"auth",
+            "id":"@nuah/auth-local","version":"0.2.0","name":"Local sign-in","description":"One person, always signed in as admin. Only for a Core that nobody else can reach.","fills":"auth","safe_reach":"this-computer",
             "settings_schema":{"type":"object","properties":{"name":{"type":"string","minLength":1}},"additionalProperties":false}
         })).unwrap()
     }
@@ -69,7 +69,7 @@ impl Plugin for AuthOpen {
         serde_json::from_value(json!({
             "id": "@nuah/auth-open", "version": "0.1.0", "name": "No sign-in for the app",
             "description": "The app has no sign-in: whoever reaches the Core is the Owner. The console has one: the instance's admin password gives a short Admin session. Whoever can reach this instance can use the Owner's data: keep it on a network you trust.",
-            "fills": "auth", "namespaces": ["auth"],
+            "fills": "auth", "safe_reach": "this-computer", "namespaces": ["auth"],
             "requires": {"ports": ["db", "clock", "ids"]},
             "data": {"collections": [ADMIN_SESSIONS], "version": 1},
             "settings_schema": {"type": "object", "additionalProperties": false, "properties": {

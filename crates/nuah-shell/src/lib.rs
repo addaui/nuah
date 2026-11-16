@@ -171,7 +171,7 @@ pub fn run(product: impl Product) -> ! {
             let store = std::sync::Arc::new(edit::ProfileStore::new(product.name(), product.catalog(), product.starting_point(&home_of(&path)), path.clone()));
             let mut restarted = false;
             loop {
-                let (core, file_changed) = match start_core(&product, &path, &flags) {
+                let (core, file_changed) = match start_core(&product, &path, &flags, Some(&store)) {
                     Ok(x) => x,
                     Err(problems) if restarted => {
                         // A saved change did not start: put the file as it was back, once, and run that.
@@ -237,7 +237,7 @@ pub fn run(product: impl Product) -> ! {
             let mut pw = String::new();
             std::io::stdin().read_to_string(&mut pw).expect("read stdin");
             let pw = pw.trim_end_matches(['\r', '\n']);
-            let core = start_core(&product, &path, &ServeFlags::default()).unwrap_or_else(|problems| {
+            let core = start_core(&product, &path, &ServeFlags::default(), None).unwrap_or_else(|problems| {
                 for p in &problems {
                     eprintln!("{}: {}", p.code, p.message);
                 }
@@ -299,7 +299,7 @@ struct ServeFlags {
 
 /// Read the file, apply the flags, resolve and start a Core (no services). Also returns the contract the file
 /// was locked to when that differs from the contract now.
-fn start_core(product: &impl Product, path: &std::path::Path, f: &ServeFlags) -> Result<(Core, Option<String>), Vec<nuah_kernel::Problem>> {
+fn start_core(product: &impl Product, path: &std::path::Path, f: &ServeFlags, store: Option<&edit::ProfileStore>) -> Result<(Core, Option<String>), Vec<nuah_kernel::Problem>> {
     let mut profile = read_profile(path);
     // The lock is checked against the file as it was saved, before this run's command-line changes.
     let changed = profile.contract.clone().filter(|c| *c != Core::contract_for(&Distribution { name: product.name().to_string(), catalog: product.catalog(), profile: profile.clone() }));
@@ -308,10 +308,13 @@ fn start_core(product: &impl Product, path: &std::path::Path, f: &ServeFlags) ->
         profile.telemetry.level = Some(level.clone());
     }
     let listen_at = profile.settings["@nuah/http"]["listen"].as_str().unwrap_or("127.0.0.1:3000").to_string();
-    if profile.enabled.iter().any(|p| p == "@nuah/auth-local") && profile.enabled.iter().any(|p| p == "@nuah/http") && !listen_at.parse::<std::net::SocketAddr>().is_ok_and(|a| a.ip().is_loopback()) {
-        // a Problem, not a stop, so a restart after a console save can go back to the earlier file
-        return Err(vec![nuah_kernel::Problem { code: "auth_local_off_loopback".into(), plugins: vec!["@nuah/auth-local".into()], message: "the profile uses auth-local (everyone is admin); listen on 127.0.0.1 or use auth-password".into() }]);
+    // Who can reach the instance, when the file does not say: what the address suggests. The Resolver then checks every
+    // plugin's declared limit against it (ADR 0087), so setup, the console and this start all see the same Problems.
+    let from_address = profile.enabled.iter().any(|p| p == "@nuah/http").then(|| nuah_kernel::Reach::of_listen(&listen_at));
+    if let Some(s) = store {
+        s.set_default_reach(from_address);
     }
+    profile.reach = profile.reach.or(from_address);
     Core::start(&Distribution { name: product.name().to_string(), catalog: product.catalog(), profile }).map(|c| (c, changed))
 }
 

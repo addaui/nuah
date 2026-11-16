@@ -536,3 +536,49 @@ fn the_net_capability_and_the_net_port_are_both_needed() {
     let problems = outbound_world(false, true).err().expect("not requested");
     assert!(problems.iter().any(|p| p.code == "capability_not_requested"), "{problems:?}");
 }
+
+// ---- who can reach the instance (ADR 0087) --------------------------------------------------------
+
+fn reach_problems(reach: Option<Reach>, accepted: &[&str]) -> Vec<Problem> {
+    let clock = FixedClock::at(0);
+    let seen = Default::default();
+    let mut p = profile(&["@nuah/db-memory", "@nuah/auth-local", "@nuah/policy-roles", "@nuah/clock-fixed", "@nuah/ids-sequential"]);
+    p.reach = reach;
+    p.accepted_risks = accepted.iter().map(|s| s.to_string()).collect();
+    Core::check(&Distribution { name: "t".into(), catalog: catalog(&clock, &seen), profile: p })
+}
+
+#[test]
+fn a_plugin_that_is_safe_only_on_this_computer_is_a_problem_when_others_can_reach_the_instance() {
+    let found = reach_problems(Some(Reach::Network), &[]);
+    let p = found.iter().find(|p| p.code == "exceeds_reach").expect("auth-local must be flagged on a network");
+    assert_eq!(p.plugins, vec!["@nuah/auth-local".to_string()]);
+    assert!(p.message.contains("accept"), "the message says how to go on: {}", p.message);
+    assert!(reach_problems(Some(Reach::Internet), &[]).iter().any(|p| p.code == "exceeds_reach"));
+}
+
+#[test]
+fn the_same_plugin_is_fine_on_this_computer_and_when_the_operator_accepted_the_risk() {
+    assert!(reach_problems(None, &[]).iter().all(|p| p.code != "exceeds_reach"));
+    assert!(reach_problems(Some(Reach::ThisComputer), &[]).iter().all(|p| p.code != "exceeds_reach"));
+    assert!(reach_problems(Some(Reach::Internet), &["@nuah/auth-local"]).iter().all(|p| p.code != "exceeds_reach"), "accepting is allowed, nothing is forbidden");
+}
+
+#[test]
+fn any_plugin_can_declare_how_far_it_is_safe() {
+    struct Careful;
+    impl Plugin for Careful {
+        fn manifest(&self) -> Manifest {
+            serde_json::from_value(json!({"id":"@third/careful","version":"1","safe_reach":"network"})).unwrap()
+        }
+    }
+    let clock = FixedClock::at(0);
+    let seen = Default::default();
+    let mut cat = catalog(&clock, &seen);
+    cat.0.push(std::sync::Arc::new(Careful));
+    let mut p = profile(&["@nuah/db-memory", "@nuah/auth-password", "@nuah/policy-roles", "@nuah/clock-fixed", "@nuah/ids-sequential", "@third/careful"]);
+    p.reach = Some(Reach::Network);
+    assert!(Core::check(&Distribution { name: "t".into(), catalog: cat.clone(), profile: p.clone() }).iter().all(|p| p.code != "exceeds_reach"));
+    p.reach = Some(Reach::Internet);
+    assert!(Core::check(&Distribution { name: "t".into(), catalog: cat, profile: p }).iter().any(|p| p.code == "exceeds_reach" && p.plugins == vec!["@third/careful".to_string()]));
+}

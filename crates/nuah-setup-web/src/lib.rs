@@ -61,6 +61,7 @@ async fn serve(me: &SetupWeb, ctx: SetupContext) -> Result<(), String> {
         return Err(format!("the wizard Face is not at {}; put the setup-web Face there, or point --faces / NUAH_FACES at the directory that has it", face.display()));
     }
     let store = std::sync::Arc::new(ProfileStore::new(&ctx.product, ctx.catalog, ctx.starting_point, ctx.identity_file));
+    store.set_default_reach(Some(nuah_kernel::Reach::of_listen(&listen)));
     let saved = store.saved.clone();
     let cfg = SetupConfig { store, code: code.clone(), server };
     let listener = tokio::net::TcpListener::bind(addr).await.map_err(|e| format!("cannot listen on {listen}: {e}"))?;

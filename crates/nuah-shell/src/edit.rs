@@ -22,11 +22,15 @@ pub struct ProfileStore {
     pub restart: Arc<tokio::sync::Notify>,
     /// What the console should tell the operator after a restart that went back to the earlier file.
     notice: std::sync::Mutex<Option<String>>,
+    /// Who can reach the instance when the Profile does not say ([ADR 0087]): what the address it listens on suggests.
+    ///
+    /// [ADR 0087]: https://docs.addaui.com/nuah/adr/0087-the-operator-says-who-can-reach-the-instance-plugins-declare-how-far-they-are-safe-and-going-past-it-is-allowed-once-acknowledged/
+    default_reach: std::sync::Mutex<Option<nuah_kernel::Reach>>,
 }
 
 impl ProfileStore {
     pub fn new(product: &str, catalog: Catalog, starting_point: Profile, path: PathBuf) -> Self {
-        ProfileStore { product: product.into(), catalog, starting_point, path, saved: Arc::new(tokio::sync::Notify::new()), restart: Arc::new(tokio::sync::Notify::new()), notice: std::sync::Mutex::new(None) }
+        ProfileStore { product: product.into(), catalog, starting_point, path, saved: Arc::new(tokio::sync::Notify::new()), restart: Arc::new(tokio::sync::Notify::new()), notice: std::sync::Mutex::new(None), default_reach: std::sync::Mutex::new(None) }
     }
 
     /// Remember a message for the next `state` (the shell sets it when a saved file did not start).
@@ -34,7 +38,17 @@ impl ProfileStore {
         *self.notice.lock().unwrap_or_else(|e| e.into_inner()) = text;
     }
 
-    pub fn dist(&self, profile: Profile) -> Distribution {
+    pub fn set_default_reach(&self, reach: Option<nuah_kernel::Reach>) {
+        *self.default_reach.lock().unwrap_or_else(|e| e.into_inner()) = reach;
+    }
+
+    pub fn default_reach(&self) -> Option<nuah_kernel::Reach> {
+        *self.default_reach.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub fn dist(&self, mut profile: Profile) -> Distribution {
+        // a draft is checked as the next start would check it; the file keeps only what the operator chose
+        profile.reach = profile.reach.or_else(|| self.default_reach());
         Distribution { name: self.product.clone(), catalog: self.catalog.clone(), profile }
     }
 
@@ -90,6 +104,7 @@ impl ShellServices for ProfileStore {
         body["path"] = json!(self.path.display().to_string());
         body["file_exists"] = json!(exists);
         body["load_error"] = json!(load_error);
+        body["reach_default"] = json!(self.default_reach());
         body["notice"] = json!(self.notice.lock().unwrap_or_else(|e| e.into_inner()).clone());
         Ok(body)
     }
