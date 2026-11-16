@@ -464,6 +464,46 @@ impl Manifest {
         }
     }
 
+    /// What the plugin is to the rest of the system, in the words a person can use: an `adapter` fills a Port, a `projection` carries
+    /// the Link over a transport (it runs a service), a `face` is something people use, a `provider` fills an extension point, a
+    /// `theme` is only data, and everything else is a `feature`. Worked out from the Manifest, never declared.
+    pub fn role(&self) -> &'static str {
+        if self.fills.is_some() {
+            "adapter"
+        } else if self.requires.capabilities.iter().any(|c| c == "serve") {
+            "projection"
+        } else if self.face.is_some() {
+            "face"
+        } else {
+            match self.kind() {
+                PluginKind::Provider => "provider",
+                PluginKind::Theme => "theme",
+                _ => "feature",
+            }
+        }
+    }
+
+    /// What the plugin may do that a person should know before switching it on, in four kinds: it keeps data (`stores`), it
+    /// opens a port (`listens`), it contacts the internet (`reaches out`), it can change how the instance runs (`changes settings`).
+    /// Worked out from what the Manifest asks for, so a plugin cannot understate it.
+    pub fn powers(&self) -> Vec<&'static str> {
+        let cap = |c: &str| self.requires.capabilities.iter().any(|x| x == c);
+        let mut out = vec![];
+        if self.fills.as_deref() == Some("db") || !self.data.collections.is_empty() {
+            out.push("stores");
+        }
+        if cap("serve") {
+            out.push("listens");
+        }
+        if cap("net") || self.fills.as_deref() == Some("net") {
+            out.push("reaches out");
+        }
+        if cap("shell") {
+            out.push("changes settings");
+        }
+        out
+    }
+
     /// The class of this plugin ([ADR 0080]): **platform** (makes the system run; the operator's, in the console) or **feature**
     /// (what a person sees or does; the Owner's too). It is worked out here from what the Manifest does, never from a field
     /// an author writes, and the reasons come with it so a Face can say why.
@@ -583,6 +623,25 @@ mod class_tests {
         assert_eq!(platform(schema(None)).len(), 1, "no tier is the safe side");
         assert_eq!(platform(schema(Some("typo"))).len(), 1, "a misspelt tier is the safe side");
         assert_eq!(m(schema(Some("owner"))).class().class, PluginClass::Feature);
+    }
+
+    #[test]
+    fn a_wizard_can_tell_what_a_plugin_is_and_what_it_may_do_from_the_manifest_alone() {
+        let r = |extra: Value| m(extra).role();
+        assert_eq!(r(json!({"fills": "db"})), "adapter");
+        assert_eq!(r(json!({"requires": {"capabilities": ["serve"]}})), "projection");
+        assert_eq!(r(json!({"face": "console"})), "face");
+        assert_eq!(r(json!({"provides": [{"extension_point": "files.store"}]})), "provider");
+        assert_eq!(r(json!({"theme": {"colors": {}}})), "theme");
+        assert_eq!(r(json!({})), "feature");
+        let may = |extra: Value| m(extra).powers();
+        assert_eq!(may(json!({"fills": "db"})), vec!["stores"]);
+        assert_eq!(may(json!({"data": {"collections": ["x.docs"], "version": 1}})), vec!["stores"]);
+        assert_eq!(may(json!({"requires": {"capabilities": ["serve"]}})), vec!["listens"]);
+        assert_eq!(may(json!({"requires": {"capabilities": ["net"]}})), vec!["reaches out"]);
+        assert_eq!(may(json!({"fills": "net"})), vec!["reaches out"]);
+        assert_eq!(may(json!({"requires": {"capabilities": ["shell"]}})), vec!["changes settings"]);
+        assert!(may(json!({"requires": {"capabilities": ["emit", "call"]}})).is_empty(), "the safe capabilities are not a power worth a tag");
     }
 
     #[test]

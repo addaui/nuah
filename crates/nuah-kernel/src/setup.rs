@@ -175,7 +175,7 @@ pub fn catalog_info(dist: &Distribution) -> Value {
             let m = pl.manifest();
             json!({
                 "id": m.id, "scope": m.scope(), "version": m.version, "name": m.name, "description": m.description,
-                "kind": m.kind(), "class": m.class(), "quality": m.quality, "runtime": m.runtime,
+                "kind": m.kind(), "role": m.role(), "powers": m.powers(), "face": m.face, "safe_reach": m.safe_reach, "class": m.class(), "quality": m.quality, "runtime": m.runtime,
                 "fills": m.fills,
                 "defines": m.defines.extension_points.iter().map(|(n, d)| json!({"name": n, "policy": d.policy})).collect::<Vec<_>>(),
                 "provides": m.provides.iter().map(|p| &p.extension_point).collect::<Vec<_>>(),
