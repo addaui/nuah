@@ -157,8 +157,8 @@ pub struct NetPublic {
 impl Plugin for NetPublic {
     fn manifest(&self) -> Manifest {
         serde_json::from_value(json!({
-            "id": "@nuah/net-public", "version": "0.1.0", "name": "Public web access",
-            "description": "Outbound http and https to public addresses only: no private network, no credentials in the address, standard ports, at most 3 redirects",
+            "id": "@nuah/net-public", "version": "0.1.0", "name": "Safe fetching",
+            "description": "A safe way for plugins to fetch from the internet: http and https to public addresses only, no private network, no credentials in the address, standard ports, at most 3 redirects. It protects only the plugins that use it. It cannot stop a plugin from reaching the internet some other way",
             "fills": "net"
         }))
         .unwrap()

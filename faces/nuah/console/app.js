@@ -206,7 +206,7 @@ const entryOf = (id) => (C.profile.plugins || {})[id];
 // ---- sign-in (ADR 0085): how people sign in, with every option and what each means ----
 const AUTH_TEXT = {
   "@nuah/auth-open": ["No sign-in", "Whoever opens the app is the Owner. Fine for one person on a private computer or network. Anyone who can reach the address can read, change and delete everything."],
-  "@nuah/auth-local": ["One local person", "Always signed in as one person, for an instance only that person can reach (the same computer)."],
+  "@nuah/auth-local": ["Single user, no sign-in", "Nobody signs in: you are always the administrator. Only for an instance that nobody else can reach (the same computer)."],
   "@nuah/auth-password": ["Accounts with passwords", "People sign in with a name and a password. You can add more people, give roles, and share safely. Recommended before sharing anything with the world."],
 };
 async function authTab() {
