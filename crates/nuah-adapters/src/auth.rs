@@ -74,7 +74,7 @@ impl Plugin for AuthOpen {
             "data": {"collections": [ADMIN_SESSIONS], "version": 1},
             "settings_schema": {"type": "object", "additionalProperties": false, "properties": {
                 "owner_name": {"type": "string", "minLength": 1, "maxLength": 200, "default": "Owner", "title": "Owner's name", "description": "How the one person who uses the app is shown.", "x-tier": "operator", "x-apply": "restart"},
-                "admin_password_hash": {"type": "string", "minLength": 1, "x-secret": true, "title": "Admin password", "description": "The stored form of the password that opens the console (make it with `hash-password`). Without it nobody can be Admin.", "x-tier": "operator", "x-apply": "restart"},
+                "admin_password_hash": {"type": "string", "minLength": 1, "x-secret": true, "x-wizard-password": true, "title": "Admin password", "description": "The stored form of the password that opens the console (make it with `hash-password`). Without it nobody can be Admin.", "x-tier": "operator", "x-apply": "restart"},
                 "admin_session_minutes": {"type": "integer", "minimum": 5, "maximum": 1440, "default": 60, "title": "Admin session (minutes)", "description": "How long the console stays open without signing in again.", "x-tier": "operator", "x-apply": "restart"}
             }},
             "operations": {

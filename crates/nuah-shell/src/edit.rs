@@ -153,6 +153,36 @@ pub fn put_first_account(p: &mut Profile, plugin: &str, username: &str, password
     }
 }
 
+/// The enabled plugin with a setting that holds the hash of a password the person picks in the wizard (`x-wizard-password` on the
+/// setting), as the plugin and the setting's name. The wizard asks for the password, hashes it and stores the hash there.
+pub fn settings_password_slot(catalog: &Catalog, p: &Profile) -> Option<(String, String)> {
+    catalog.0.iter().map(|pl| pl.manifest()).filter(|m| p.enabled.contains(&m.id)).find_map(|m| {
+        m.settings_schema["properties"].as_object().and_then(|props| props.iter().find(|(_, v)| v["x-wizard-password"] == true).map(|(k, _)| (m.id.clone(), k.clone())))
+    })
+}
+
+/// Is there a password hash (or a hidden one that stands for it) in that setting already?
+pub fn has_settings_password(p: &Profile, plugin: &str, key: &str) -> bool {
+    match p.settings.get(plugin).map(|v| &v[key]) {
+        Some(Value::String(s)) => !s.is_empty(),
+        Some(Value::Object(_)) => true,
+        _ => false,
+    }
+}
+
+/// The Problem for a settings password that was not given properly, or None when it is fine.
+pub fn settings_password_problem(plugin: &str, password: &str) -> Option<Problem> {
+    (password.chars().count() < MIN_PASSWORD).then(|| Problem { code: "settings_password_missing".into(), plugins: vec![plugin.into()], message: format!("Choose a password of at least {MIN_PASSWORD} characters for the settings area.") })
+}
+
+/// Put the hash of the password into that setting.
+pub fn put_settings_password(p: &mut Profile, plugin: &str, key: &str, password: &str) {
+    let slot = p.settings.entry(plugin.to_string()).or_insert_with(|| json!({}));
+    if let Some(o) = slot.as_object_mut() {
+        o.insert(key.into(), json!(AuthPassword::hash_password(password)));
+    }
+}
+
 /// Write to a sibling file and rename, so a crash never leaves half a Profile. A new file is
 /// private to the owner; an existing one keeps its permissions.
 pub fn write_profile(path: &Path, p: &Profile) -> std::io::Result<()> {

@@ -18,7 +18,7 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use nuah_shell::edit::{first_account_plugin, first_account_problem, has_accounts, put_first_account, ProfileStore};
+use nuah_shell::edit::{first_account_plugin, first_account_problem, has_accounts, has_settings_password, put_first_account, put_settings_password, settings_password_problem, settings_password_slot, ProfileStore};
 use nuah_kernel::setup::redact_profile;
 use nuah_kernel::{Core, ShellServices, Problem, Profile};
 use serde_json::{json, Value};
@@ -56,12 +56,13 @@ async fn state(State(s): State<Setup>) -> Response {
     }
 }
 
-/// Read a draft from the body and put back the secrets it did not retype. `first_account` (username, password) is
+/// Read a draft from the body and put back the secrets it did not retype. `first_account` (username, password) and `settings_password` are
 /// not part of a Profile: it becomes the first administrator in the settings of the plugin that keeps accounts,
 /// as a password hash, when `hash` is true.
 fn draft(s: &Setup, body: &Value, hash: bool) -> Result<(Profile, Vec<Problem>), Response> {
     let mut body = body.clone();
     let first = body.as_object_mut().and_then(|o| o.remove("first_account"));
+    let settings_password = body.as_object_mut().and_then(|o| o.remove("settings_password")).and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
     let mut p = s.0.store.draft(&body).map_err(|m| refuse(StatusCode::BAD_REQUEST, "invalid", "setup.bad_profile", &m))?;
     let mut problems = vec![];
     if let Some(plugin) = first_account_plugin(&s.0.store.catalog, &p) {
@@ -71,6 +72,16 @@ fn draft(s: &Setup, body: &Value, hash: bool) -> Result<(Profile, Vec<Problem>),
             match first_account_problem(&plugin, &name, &password) {
                 Some(problem) => problems.push(problem),
                 None if hash => put_first_account(&mut p, &plugin, &name, &password),
+                None => {}
+            }
+        }
+    }
+    // a password for the settings area, for a plugin that has one to pick (no sign-in with a settings password)
+    if let Some((plugin, key)) = settings_password_slot(&s.0.store.catalog, &p) {
+        if !has_settings_password(&p, &plugin, &key) {
+            match settings_password_problem(&plugin, &settings_password) {
+                Some(problem) => problems.push(problem),
+                None if hash => put_settings_password(&mut p, &plugin, &key, &settings_password),
                 None => {}
             }
         }

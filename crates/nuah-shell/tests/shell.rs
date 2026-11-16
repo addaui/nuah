@@ -151,3 +151,34 @@ fn a_draft_is_checked_against_the_address_the_instance_listens_on_so_setup_and_c
     assert_eq!(Reach::of_listen("[::1]:3000"), Reach::ThisComputer);
     assert_eq!(Reach::of_listen("192.168.1.8:3000"), Reach::Network);
 }
+
+// ---- a password the person picks in the wizard for the settings area (ADR 0088) ---------------------
+
+#[test]
+fn a_settings_password_is_asked_for_hashed_and_stored_where_the_plugin_says() {
+    use nuah_shell::edit::{has_settings_password, put_settings_password, settings_password_problem, settings_password_slot};
+    let mut cat = catalog().0;
+    cat.push(Arc::new(AuthOpen));
+    let cat = Catalog(cat);
+    let mut p = profile(false);
+    p.enabled.retain(|e| e != "@nuah/auth-password");
+    p.settings.remove("@nuah/auth-password");
+    p.enabled.push("@nuah/auth-open".into());
+
+    // the plugin names the setting that holds the hash; nothing is stored yet
+    let (plugin, key) = settings_password_slot(&cat, &p).expect("auth-open asks for a settings password");
+    assert_eq!((plugin.as_str(), key.as_str()), ("@nuah/auth-open", "admin_password_hash"));
+    assert!(!has_settings_password(&p, &plugin, &key));
+
+    // too short is a Problem, long enough is stored as a hash and never as the password
+    assert!(settings_password_problem(&plugin, "short").is_some());
+    assert!(settings_password_problem(&plugin, "long enough pw").is_none());
+    put_settings_password(&mut p, &plugin, &key, "long enough pw");
+    let stored = p.settings["@nuah/auth-open"]["admin_password_hash"].as_str().unwrap();
+    assert!(stored.starts_with("$argon2") && !stored.contains("long enough pw"));
+    assert!(has_settings_password(&p, &plugin, &key));
+
+    // a plugin that does not ask, or one that is off, has no slot
+    let off = profile(false);
+    assert!(settings_password_slot(&cat, &off).is_none());
+}
