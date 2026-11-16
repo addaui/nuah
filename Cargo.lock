@@ -1110,6 +1110,7 @@ dependencies = [
 name = "nuah-console"
 version = "0.13.0"
 dependencies = [
+ "nuah-adapters",
  "nuah-kernel",
  "serde_json",
 ]

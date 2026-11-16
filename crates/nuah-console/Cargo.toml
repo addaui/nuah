@@ -8,4 +8,5 @@ description = "The console: a generic Face that shows any Core's Operations, hea
 
 [dependencies]
 nuah-kernel = { path = "../nuah-kernel" }
+nuah-adapters = { path = "../nuah-adapters" }
 serde_json = "1.0.154"

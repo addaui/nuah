@@ -182,13 +182,23 @@ impl AuthPassword {
     }
 }
 
-fn create_account(tx: &mut Tx, name: &str, display: &str, password_hash: &str, roles: &[String]) -> Result<String> {
+/// `subject`: a person who already has data under an id (the Owner of an instance that had no sign-in, whose id is `owner`) keeps it, so everything
+/// they made stays theirs. Only a seed account in the Profile may name one, and never one that exists.
+fn create_account(tx: &mut Tx, name: &str, display: &str, password_hash: &str, roles: &[String], subject: Option<&str>) -> Result<String> {
     let taken = || Error::reason(Category::Conflict, "auth.name_taken", "That name is already used");
     let key = name_key(name);
     if key.is_empty() || tx.get(NAMES, &key)?.is_some() {
         return Err(taken());
     }
-    let subject = tx.new_id();
+    let subject = match subject {
+        Some(s) if !s.is_empty() => {
+            if tx.get(ACCOUNTS, s)?.is_some() {
+                return Err(taken());
+            }
+            s.to_string()
+        }
+        _ => tx.new_id(),
+    };
     let now = tx.now();
     tx.put(NAMES, &key, json!({"subject": subject}), Expect::Absent).map_err(|_| taken())?;
     tx.put(ACCOUNTS, &subject, json!({"name": name.trim(), "display": display, "password_hash": password_hash, "roles": roles, "disabled": false, "created_at": now}), Expect::Absent)?;
@@ -224,7 +234,8 @@ impl Plugin for AuthPassword {
                 "session_hours": {"type":"integer","minimum":1,"maximum":720,"title":"Session length (hours)","description":"How long someone stays signed in without signing in again.","default":24},
                 "accounts": {"x-secret":true,"x-first-account":"password-hash","description":"Accounts to create the first time the data is set up; after that they are managed in the database","type":"array","items":{"type":"object","required":["name","password_hash"],
                     "properties":{"name":{"type":"string","minLength":1},"display":{"type":"string"},
-                    "password_hash":{"type":"string","minLength":1},"roles":{"type":"array","items":{"type":"string"}}},
+                    "password_hash":{"type":"string","minLength":1},"roles":{"type":"array","items":{"type":"string"}},
+                    "subject":{"type":"string","minLength":1,"maxLength":100,"description":"Keep the id a person already has (the Owner of an instance that had no sign-in is `owner`), so what they made stays theirs"}},
                     "additionalProperties":false}}},
                 "additionalProperties": false},
             "operations": {
@@ -260,7 +271,7 @@ impl Plugin for AuthPassword {
             for a in tx.settings()["accounts"].as_array().cloned().unwrap_or_default() {
                 let name = a["name"].as_str().unwrap_or("");
                 let roles = if a["roles"].is_array() { roles_of(&a["roles"]) } else { vec!["member".into()] };
-                create_account(tx, name, a["display"].as_str().unwrap_or(name), a["password_hash"].as_str().unwrap_or(""), &roles)?;
+                create_account(tx, name, a["display"].as_str().unwrap_or(name), a["password_hash"].as_str().unwrap_or(""), &roles, a["subject"].as_str())?;
             }
         }
         Ok(())
@@ -321,7 +332,7 @@ impl Plugin for AuthPassword {
             let name = input["name"].as_str().unwrap_or("");
             let roles = if input["roles"].is_array() { roles_of(&input["roles"]) } else { vec!["member".into()] };
             let hash = AuthPassword::hash_password(input["password"].as_str().unwrap_or(""));
-            let subject = create_account(tx, name, input["display"].as_str().unwrap_or(name), &hash, &roles)?;
+            let subject = create_account(tx, name, input["display"].as_str().unwrap_or(name), &hash, &roles, None)?;
             Ok(json!({"subject": subject}))
         });
         b.op("auth.account.update", |tx, input| {

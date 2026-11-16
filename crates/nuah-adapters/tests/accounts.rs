@@ -71,3 +71,17 @@ fn accounts_are_managed_by_the_people_allowed_to_and_the_last_admin_stays() {
     assert!(sign_in(&c, "root", "first-password").is_err());
     assert!(sign_in(&c, "root", "second-password").is_ok());
 }
+
+#[test]
+fn a_seed_account_may_keep_the_subject_of_the_owner_so_what_they_made_stays_theirs() {
+    let mut p = Profile { name: "t".into(), ..Default::default() };
+    p.enabled = ["@nuah/db-memory", "@nuah/auth-password", "@nuah/policy-roles", "@nuah/clock-system", "@nuah/ids-random"].iter().map(|s| s.to_string()).collect();
+    p.settings.insert("@nuah/auth-password".into(), json!({"accounts": [{"name": "Sam", "subject": "owner", "password_hash": AuthPassword::hash_password("first-password"), "roles": ["member", "admin"]}]}));
+    let list: Vec<Arc<dyn Plugin>> = vec![Arc::new(AdapterMemory), Arc::new(AuthPassword), Arc::new(PolicyRoles), Arc::new(StdClock), Arc::new(StdIds)];
+    let c = Core::start(&Distribution { name: "t".into(), catalog: Catalog(list), profile: p }).unwrap_or_else(|e| panic!("{e:?}"));
+    let who = sign_in(&c, "sam", "first-password").unwrap()["who"].clone();
+    assert_eq!(who["subject"], "owner", "the Owner of an instance without sign-in is this account");
+    // an account made later by the usual route still gets an opaque id, and cannot take an existing one
+    let made = as_who(&c, &who, "auth.account.create", json!({"name": "Bea", "password": "another-password"})).unwrap();
+    assert_ne!(made["subject"], "owner");
+}
