@@ -26,7 +26,7 @@ fn start(port: u16) -> (Core, Services) {
     let hash = AuthPassword::hash_password("pw");
     let mut p = Profile { name: "t".into(), ..Default::default() };
     p.enabled = ["@nuah/db-memory", "@nuah/auth-password", "@nuah/policy-roles", "@nuah/clock-system", "@nuah/ids-random", "@test/echo", "@nuah/http"].iter().map(|s| s.to_string()).collect();
-    p.settings.insert("@nuah/auth-password".into(), json!({"accounts": [{"name": "alice", "password_hash": hash, "roles": ["member"]}]}));
+    p.settings.insert("@nuah/auth-password".into(), json!({"accounts": [{"username": "alice", "password_hash": hash, "roles": ["member"]}]}));
     p.settings.insert("@nuah/http".into(), json!({"listen": format!("127.0.0.1:{port}")}));
     p.grants.insert("@nuah/http".into(), vec!["serve".into()]);
     let mut catalog = vec![];
@@ -67,7 +67,7 @@ fn a_product_less_core_is_served_over_http_and_stops() {
     assert!(d["operations"].get("echo.say").is_none(), "{d}");
     // an operation needs a session
     assert_eq!(post(&base, "echo.say", json!({"text": "hi"}), None, None).0, 401);
-    let (s, signed) = post(&base, "auth.sign_in", json!({"name": "alice", "password": "pw"}), None, None);
+    let (s, signed) = post(&base, "auth.sign_in", json!({"username": "alice", "password": "pw"}), None, None);
     assert_eq!(s, 200, "{signed}");
     let token = signed["output"]["token"].as_str().unwrap().to_string();
     let (s, said) = post(&base, "echo.say", json!({"text": "hi"}), Some(&token), None);
@@ -81,7 +81,7 @@ fn the_guard_refuses_unknown_hosts_and_calls_without_the_face_header() {
     let port = free_port();
     let base = format!("http://127.0.0.1:{port}");
     let (_core, services) = start(port);
-    let (s, body) = post(&base, "auth.sign_in", json!({"name": "alice", "password": "pw"}), None, Some("evil.example"));
+    let (s, body) = post(&base, "auth.sign_in", json!({"username": "alice", "password": "pw"}), None, Some("evil.example"));
     assert_eq!(s, 421, "{body}");
     let mut res = agent().post(&format!("{base}/link/call/auth.sign_in")).header("Content-Type", "application/json").send("{}").unwrap();
     assert_eq!(res.status().as_u16(), 400, "{:?}", res.body_mut().read_to_string());

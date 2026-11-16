@@ -79,7 +79,7 @@ impl Plugin for AuthOpen {
             }},
             "operations": {
                 "auth.sign_in": {"kind": "command", "public": true, "description": "Open the console: the admin password gives a short Admin session",
-                    "input": {"type": "object", "required": ["password"], "properties": {"name": {"type": "string", "maxLength": 200}, "password": {"type": "string", "minLength": 1, "maxLength": 1000}}, "additionalProperties": false},
+                    "input": {"type": "object", "required": ["password"], "properties": {"username": {"type": "string", "maxLength": 200}, "password": {"type": "string", "minLength": 1, "maxLength": 1000}}, "additionalProperties": false},
                     "output": {"type": "object", "required": ["token", "expires_at", "who"]},
                     "reasons": {"auth.bad_credentials": "The password is wrong"}},
                 "auth.sign_out": {"kind": "command", "description": "End an Admin session you hold",
@@ -135,6 +135,24 @@ fn name_key(name: &str) -> String {
     name.trim().to_lowercase()
 }
 
+/// The username an account document holds. Accounts made before ADR 0089 keep it under `name`; both are read, `username` is written.
+fn username_of(body: &Value) -> &str {
+    body["username"].as_str().or_else(|| body["name"].as_str()).unwrap_or("")
+}
+
+/// The one rule for a username ([ADR 0089]): 2 to 32 letters, numbers, dots, dashes or underscores. Checked when one is made or changed, never at sign-in,
+/// so an older username that does not fit keeps working.
+///
+/// [ADR 0089]: https://docs.addaui.com/nuah/adr/0089-what-a-person-types-to-sign-in-is-called-username-everywhere-and-has-one-rule/
+pub fn valid_username(username: &str) -> bool {
+    let t = username.trim();
+    (2..=32).contains(&t.chars().count()) && t.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+}
+
+fn bad_username() -> Error {
+    Error::reason(Category::Invalid, "auth.bad_username", "A username is 2 to 32 letters, numbers, dots, dashes or underscores")
+}
+
 /// The person an account document describes. The document's id is the `subject`: an opaque id made when the
 /// account was created, kept when the login name changes, never reused ([ADR 0039]).
 ///
@@ -142,7 +160,7 @@ fn name_key(name: &str) -> String {
 fn identity_of(subject: &str, body: &Value) -> Identity {
     Identity {
         subject: subject.into(),
-        display: body["display"].as_str().filter(|d| !d.is_empty()).or_else(|| body["name"].as_str()).unwrap_or(subject).into(),
+        display: body["display"].as_str().filter(|d| !d.is_empty()).or_else(|| Some(username_of(body)).filter(|n| !n.is_empty())).unwrap_or(subject).into(),
         roles: body["roles"].as_array().map(|r| r.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default(),
     }
 }
@@ -166,8 +184,8 @@ impl Auth for Password {
     fn has_accounts(&self) -> bool {
         true
     }
-    fn find(&self, db: &dyn DbRead, name: &str) -> Result<Option<Identity>> {
-        let Some(subject) = db.get(NAMES, &name_key(name))?.filter(|d| !d.deleted).and_then(|d| d.body["subject"].as_str().map(String::from)) else { return Ok(None) };
+    fn find(&self, db: &dyn DbRead, username: &str) -> Result<Option<Identity>> {
+        let Some(subject) = db.get(NAMES, &name_key(username))?.filter(|d| !d.deleted).and_then(|d| d.body["subject"].as_str().map(String::from)) else { return Ok(None) };
         Ok(db.get(ACCOUNTS, &subject)?.filter(|a| !a.deleted && a.body["disabled"] != true).map(|a| identity_of(&subject, &a.body)))
     }
 }
@@ -184,9 +202,9 @@ impl AuthPassword {
 
 /// `subject`: a person who already has data under an id (the Owner of an instance that had no sign-in, whose id is `owner`) keeps it, so everything
 /// they made stays theirs. Only a seed account in the Profile may name one, and never one that exists.
-fn create_account(tx: &mut Tx, name: &str, display: &str, password_hash: &str, roles: &[String], subject: Option<&str>) -> Result<String> {
-    let taken = || Error::reason(Category::Conflict, "auth.name_taken", "That name is already used");
-    let key = name_key(name);
+fn create_account(tx: &mut Tx, username: &str, display: &str, password_hash: &str, roles: &[String], subject: Option<&str>) -> Result<String> {
+    let taken = || Error::reason(Category::Conflict, "auth.username_taken", "That username is already used");
+    let key = name_key(username);
     if key.is_empty() || tx.get(NAMES, &key)?.is_some() {
         return Err(taken());
     }
@@ -201,7 +219,7 @@ fn create_account(tx: &mut Tx, name: &str, display: &str, password_hash: &str, r
     };
     let now = tx.now();
     tx.put(NAMES, &key, json!({"subject": subject}), Expect::Absent).map_err(|_| taken())?;
-    tx.put(ACCOUNTS, &subject, json!({"name": name.trim(), "display": display, "password_hash": password_hash, "roles": roles, "disabled": false, "created_at": now}), Expect::Absent)?;
+    tx.put(ACCOUNTS, &subject, json!({"username": username.trim(), "display": display, "password_hash": password_hash, "roles": roles, "disabled": false, "created_at": now}), Expect::Absent)?;
     Ok(subject)
 }
 
@@ -210,7 +228,7 @@ fn roles_of(v: &Value) -> Vec<String> {
 }
 
 fn public_account(subject: &str, body: &Value) -> Value {
-    json!({"subject": subject, "name": body["name"], "display": body["display"], "roles": body["roles"], "disabled": body["disabled"], "created_at": body["created_at"]})
+    json!({"subject": subject, "username": username_of(body), "display": body["display"], "roles": body["roles"], "disabled": body["disabled"], "created_at": body["created_at"]})
 }
 
 /// Would this change leave nobody able to manage accounts?
@@ -221,7 +239,7 @@ fn another_admin_remains(tx: &Tx, except: &str) -> Result<bool> {
 
 impl Plugin for AuthPassword {
     fn manifest(&self) -> Manifest {
-        let name_in = json!({"type":"string","minLength":1,"maxLength":200});
+        let username_in = json!({"type":"string","minLength":1,"maxLength":200,"description":"2 to 32 letters, numbers, dots, dashes or underscores"});
         let pw_in = json!({"type":"string","minLength":8,"maxLength":1000});
         serde_json::from_value(json!({
             "id": "@nuah/auth-password", "version": "0.3.0", "name": "Password sign-in",
@@ -232,17 +250,17 @@ impl Plugin for AuthPassword {
             "permissions": {"auth.manage": {"description": "Create accounts, change their roles and passwords, disable them", "default": ["admin"]}},
             "settings_schema": {"type":"object","properties":{
                 "session_hours": {"type":"integer","minimum":1,"maximum":720,"title":"Session length (hours)","description":"How long someone stays signed in without signing in again.","default":24},
-                "accounts": {"x-secret":true,"x-first-account":"password-hash","description":"Accounts to create the first time the data is set up; after that they are managed in the database","type":"array","items":{"type":"object","required":["name","password_hash"],
-                    "properties":{"name":{"type":"string","minLength":1},"display":{"type":"string"},
+                "accounts": {"x-secret":true,"x-first-account":"password-hash","description":"Accounts to create the first time the data is set up; after that they are managed in the database","type":"array","items":{"type":"object","required":["password_hash"],
+                    "properties":{"username":{"type":"string","minLength":1},"name":{"type":"string","minLength":1,"description":"Older name of `username`; still read"},"display":{"type":"string"},
                     "password_hash":{"type":"string","minLength":1},"roles":{"type":"array","items":{"type":"string"}},
                     "subject":{"type":"string","minLength":1,"maxLength":100,"description":"Keep the id a person already has (the Owner of an instance that had no sign-in is `owner`), so what they made stays theirs"}},
                     "additionalProperties":false}}},
                 "additionalProperties": false},
             "operations": {
-                "auth.sign_in": {"kind":"command","public":true,"description":"Exchange a name and password for a session",
-                    "input":{"type":"object","required":["name","password"],"properties":{"name":{"type":"string","minLength":1,"maxLength":200},"password":{"type":"string","minLength":1,"maxLength":1000}},"additionalProperties":false},
+                "auth.sign_in": {"kind":"command","public":true,"description":"Exchange a username and password for a session",
+                    "input":{"type":"object","required":["username","password"],"properties":{"username":{"type":"string","minLength":1,"maxLength":200},"password":{"type":"string","minLength":1,"maxLength":1000}},"additionalProperties":false},
                     "output":{"type":"object","required":["token","expires_at","who"]},
-                    "reasons":{"auth.bad_credentials":"The name or password is wrong"}},
+                    "reasons":{"auth.bad_credentials":"The username or password is wrong"}},
                 "auth.refresh": {"kind":"command","description":"Extend a session you hold",
                     "input":{"type":"object","required":["token"],"properties":{"token":{"type":"string","minLength":1}},"additionalProperties":false},
                     "output":{"type":"object","required":["expires_at"]}},
@@ -256,12 +274,12 @@ impl Plugin for AuthPassword {
                     "reasons":{"auth.bad_credentials":"The current password is wrong"}},
                 "auth.account.list": {"kind":"query","permission":"auth.manage","description":"Every account, without passwords"},
                 "auth.account.create": {"kind":"command","permission":"auth.manage","description":"Create an account",
-                    "input":{"type":"object","required":["name","password"],"properties":{"name":name_in,"display":{"type":"string","maxLength":200},"password":pw_in,"roles":{"type":"array","items":{"type":"string"}}},"additionalProperties":false},
+                    "input":{"type":"object","required":["username","password"],"properties":{"username":username_in,"display":{"type":"string","maxLength":200},"password":pw_in,"roles":{"type":"array","items":{"type":"string"}}},"additionalProperties":false},
                     "output":{"type":"object","required":["subject"]},
-                    "reasons":{"auth.name_taken":"That name is already used"}},
+                    "reasons":{"auth.username_taken":"That username is already used","auth.bad_username":"A username is 2 to 32 letters, numbers, dots, dashes or underscores"}},
                 "auth.account.update": {"kind":"command","permission":"auth.manage","description":"Rename an account, change its display name or roles, disable or enable it",
-                    "input":{"type":"object","required":["subject"],"properties":{"subject":{"type":"string","minLength":1},"name":name_in,"display":{"type":"string","maxLength":200},"roles":{"type":"array","items":{"type":"string"}},"disabled":{"type":"boolean"}},"additionalProperties":false},
-                    "reasons":{"auth.name_taken":"That name is already used","auth.last_admin":"At least one enabled administrator must remain","auth.no_account":"There is no such account"}},
+                    "input":{"type":"object","required":["subject"],"properties":{"subject":{"type":"string","minLength":1},"username":username_in,"display":{"type":"string","maxLength":200},"roles":{"type":"array","items":{"type":"string"}},"disabled":{"type":"boolean"}},"additionalProperties":false},
+                    "reasons":{"auth.username_taken":"That username is already used","auth.bad_username":"A username is 2 to 32 letters, numbers, dots, dashes or underscores","auth.last_admin":"At least one enabled administrator must remain","auth.no_account":"There is no such account"}},
                 "auth.account.set_password": {"kind":"command","permission":"auth.manage","description":"Set the password of an account",
                     "input":{"type":"object","required":["subject","password"],"properties":{"subject":{"type":"string","minLength":1},"password":pw_in},"additionalProperties":false},
                     "reasons":{"auth.no_account":"There is no such account"}}
@@ -273,7 +291,7 @@ impl Plugin for AuthPassword {
         if from == 0 {
             // The first time this data is set up, the accounts the Profile names become accounts in the database.
             for a in tx.settings()["accounts"].as_array().cloned().unwrap_or_default() {
-                let name = a["name"].as_str().unwrap_or("");
+                let name = username_of(&a);
                 let roles = if a["roles"].is_array() { roles_of(&a["roles"]) } else { vec!["member".into()] };
                 create_account(tx, name, a["display"].as_str().unwrap_or(name), a["password_hash"].as_str().unwrap_or(""), &roles, a["subject"].as_str())?;
             }
@@ -283,7 +301,7 @@ impl Plugin for AuthPassword {
 
     fn bind(&self, b: &mut Bindings) {
         b.op("auth.sign_in", |tx, input| {
-            let name = input["name"].as_str().unwrap_or("");
+            let name = input["username"].as_str().unwrap_or("");
             let password = input["password"].as_str().unwrap_or("");
             let subject = tx.get(NAMES, &name_key(name))?.and_then(|d| d.body["subject"].as_str().map(String::from));
             let account = match &subject {
@@ -294,7 +312,7 @@ impl Plugin for AuthPassword {
             let stored = account.as_ref().and_then(|a| a.body["password_hash"].as_str()).unwrap_or("$argon2id$v=19$m=19456,t=2,p=1$c29tZXNhbHQ$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA").to_string();
             let ok = PasswordHash::new(&stored).map(|h| Argon2::default().verify_password(password.as_bytes(), &h).is_ok()).unwrap_or(false);
             let (Some(acc), Some(subject)) = (account.filter(|_| ok), subject) else {
-                return Err(Error::reason(Category::Unauthenticated, "auth.bad_credentials", "The name or password is wrong"));
+                return Err(Error::reason(Category::Unauthenticated, "auth.bad_credentials", "The username or password is wrong"));
             };
             let who = identity_of(&subject, &acc.body);
             let token = format!("{}{}", tx.new_id(), tx.new_id());
@@ -329,11 +347,14 @@ impl Plugin for AuthPassword {
         b.op("auth.account.list", |tx, _| {
             let page = tx.query(ACCOUNTS, &Query::new().limit(1000))?;
             let mut accounts: Vec<Value> = page.items.iter().map(|d| public_account(&d.id, &d.body)).collect();
-            accounts.sort_by_key(|a| a["name"].as_str().unwrap_or("").to_lowercase());
+            accounts.sort_by_key(|a| a["username"].as_str().unwrap_or("").to_lowercase());
             Ok(json!({"accounts": accounts}))
         });
         b.op("auth.account.create", |tx, input| {
-            let name = input["name"].as_str().unwrap_or("");
+            let name = input["username"].as_str().unwrap_or("");
+            if !valid_username(name) {
+                return Err(bad_username());
+            }
             let roles = if input["roles"].is_array() { roles_of(&input["roles"]) } else { vec!["member".into()] };
             let hash = AuthPassword::hash_password(input["password"].as_str().unwrap_or(""));
             let subject = create_account(tx, name, input["display"].as_str().unwrap_or(name), &hash, &roles, None)?;
@@ -343,12 +364,22 @@ impl Plugin for AuthPassword {
             let subject = input["subject"].as_str().unwrap_or("");
             let Some(d) = tx.get(ACCOUNTS, subject)? else { return Err(Error::reason(Category::NotFound, "auth.no_account", "There is no such account")) };
             let mut body = d.body.clone();
-            if let Some(n) = input["name"].as_str().filter(|n| name_key(n) != name_key(body["name"].as_str().unwrap_or(""))) {
-                tx.put(NAMES, &name_key(n), json!({"subject": subject}), Expect::Absent).map_err(|_| Error::reason(Category::Conflict, "auth.name_taken", "That name is already used"))?;
-                tx.delete(NAMES, &name_key(body["name"].as_str().unwrap_or("")))?;
-                body["name"] = json!(n.trim());
-            } else if let Some(n) = input["name"].as_str() {
-                body["name"] = json!(n.trim());
+            if let Some(n) = input["username"].as_str() {
+                let current = username_of(&body).to_string();
+                if name_key(n) != name_key(&current) {
+                    if !valid_username(n) {
+                        return Err(bad_username());
+                    }
+                    tx.put(NAMES, &name_key(n), json!({"subject": subject}), Expect::Absent).map_err(|_| Error::reason(Category::Conflict, "auth.username_taken", "That username is already used"))?;
+                    tx.delete(NAMES, &name_key(&current))?;
+                }
+                body["username"] = json!(n.trim());
+            }
+            if let Some(o) = body.as_object_mut() {
+                // an account made before ADR 0089 keeps its username under `name`; it moves to `username` the first time it is saved
+                if let Some(old) = o.remove("name") {
+                    o.entry("username").or_insert(old);
+                }
             }
             if let Some(v) = input["display"].as_str() {
                 body["display"] = json!(v);

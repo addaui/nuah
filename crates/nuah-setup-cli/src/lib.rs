@@ -131,7 +131,7 @@ impl Bootstrap for SetupCli {
         if let Some(plugin) = first_account_plugin(&ctx.catalog, &p) {
             if !has_accounts(&p, &plugin) {
                 io.say("Create the first administrator.");
-                let name = io.ask("  Name", "")?;
+                let name = io.ask("  Username (letters, numbers, dots, dashes, underscores)", "")?;
                 let password = loop {
                     let one = io.password(&format!("  Password (at least {MIN_PASSWORD} characters)"))?;
                     if one.chars().count() < MIN_PASSWORD {

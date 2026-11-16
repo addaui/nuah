@@ -53,7 +53,7 @@ fn the_terminal_asks_for_the_first_administrator_and_writes_a_profile_that_resol
     let saved: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
     assert_eq!(saved["plugins"]["@nuah/http"]["settings"]["listen"], "127.0.0.1:4100");
     let acc = &saved["plugins"]["@nuah/auth-password"]["settings"]["accounts"][0];
-    assert_eq!(acc["name"], "ada");
+    assert_eq!(acc["username"], "ada");
     assert_eq!(acc["roles"], json!(["admin"]));
     assert!(acc["password_hash"].as_str().unwrap().starts_with("$argon2"), "the password is stored hashed");
     assert!(!std::fs::read_to_string(&file).unwrap().contains("long-enough-1"));
@@ -61,7 +61,7 @@ fn the_terminal_asks_for_the_first_administrator_and_writes_a_profile_that_resol
     // and the file starts, with that account
     let p = nuah_kernel::setup::profile_from_json(&saved).unwrap();
     let core = Core::start(&Distribution { name: "t".into(), catalog: catalog(), profile: p }).unwrap_or_else(|e| panic!("{e:?}"));
-    assert!(core.call_as(&Identity::new("", "", &[]), "auth.sign_in", json!({"name": "ada", "password": "long-enough-1"}), None).is_ok());
+    assert!(core.call_as(&Identity::new("", "", &[]), "auth.sign_in", json!({"username": "ada", "password": "long-enough-1"}), None).is_ok());
     let _ = std::fs::remove_dir_all(d);
 }
 

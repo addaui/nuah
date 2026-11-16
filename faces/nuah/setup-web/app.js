@@ -32,7 +32,7 @@ async function send(path, body) {
   return { status: r.status, body: await r.json().catch(() => ({})) };
 }
 
-const st = { info: null, profile: null, name: '', plugins: {}, bindings: {}, first: { name: '', password: '' }, step: 0, steps: [], problems: [], timer: 0, seq: 0, saved: null, seen: new Set() };
+const st = { info: null, profile: null, name: '', plugins: {}, bindings: {}, first: { username: '', password: '' }, step: 0, steps: [], problems: [], timer: 0, seq: 0, saved: null, seen: new Set() };
 
 const isOn = (id) => !!st.plugins[id]?.enabled;
 const settingsOf = (p) => { const s = st.plugins[p.id]; return s.form ? s.form.get() : s.settings; };
@@ -87,7 +87,7 @@ function stepError(id) {
   if (id === 'signin') {
     if (!fills('auth').some((p) => isOn(p.id))) return 'Choose how people sign in.';
     const e = formErr(fills('auth')); if (e) return e;
-    if (needsFirst()) { if (!st.first.name.trim()) return 'Choose a name for the first administrator.'; if (st.first.password.length < 8) return 'The password needs at least 8 characters.'; }
+    if (needsFirst()) { if (!/^[A-Za-z0-9._-]{2,32}$/.test(st.first.username)) return 'Choose a username of 2 to 32 letters, numbers, dots, dashes or underscores.'; if (st.first.password.length < 8) return 'The password needs at least 8 characters.'; }
     return null;
   }
   if (id === 'features') return formErr(st.info.plugins.filter((p) => !fills('db').includes(p) && !fills('auth').includes(p)));
@@ -195,7 +195,7 @@ function render() {
     page.replaceChildren(...lead('Where is the data kept?', 'Pick one. You can move to another later from the console.'), ...pickOne('db', fills('db')));
   } else if (cur === 'signin') {
     const first = needsFirst() ? [h('h2', {}, 'First administrator'), h('p', { class: 'lead' }, 'The person who signs in first and can add the others. The password is stored hashed; you can change it later.'),
-      (() => { const i = h('input', { type: 'text', id: 'first-name', autocomplete: 'username', maxlength: 200 }); i.value = st.first.name; i.addEventListener('input', () => { st.first.name = i.value; schedule(); }); return h('div', { class: 'field req' }, h('label', { for: 'first-name' }, 'Name'), i); })(),
+      (() => { const i = h('input', { type: 'text', id: 'first-name', autocomplete: 'username', autocapitalize: 'none', spellcheck: false, maxlength: 32 }); i.value = st.first.username; i.addEventListener('input', () => { st.first.username = i.value.replace(/^@+/, '').replace(/\s/g, ''); i.value = st.first.username; schedule(); }); return h('div', { class: 'field req' }, h('label', { for: 'first-name' }, 'Username'), i, h('div', { class: 'help' }, 'What you type, with your password, to sign in.')); })(),
       (() => { const i = h('input', { type: 'password', id: 'first-pass', autocomplete: 'new-password', maxlength: 1000 }); i.value = st.first.password; i.addEventListener('input', () => { st.first.password = i.value; schedule(); }); return h('div', { class: 'field req' }, h('label', { for: 'first-pass' }, 'Password'), i, h('div', { class: 'help' }, 'At least 8 characters.')); })()] : [];
     page.replaceChildren(...lead('How do people sign in?', 'Pick one.'), ...pickOne('auth', fills('auth')), ...first);
   } else if (cur === 'features') {
@@ -211,7 +211,7 @@ function render() {
     const row = (k, v) => h('div', {}, h('b', {}, k), h('span', {}, v));
     const pick = (port) => on.find((p) => p.fills === port);
     page.replaceChildren(...lead('Review', 'Nothing is written until you save, and only a setup that works can be saved.'),
-      h('div', { class: 'sum' }, row('Name', st.name), pick('db') ? row('Data', pick('db').name || pick('db').id) : null, pick('auth') ? row('Sign-in', (pick('auth').name || pick('auth').id) + (needsFirst() ? ` (first administrator: ${st.first.name})` : '')) : null,
+      h('div', { class: 'sum' }, row('Instance name', st.name), pick('db') ? row('Data', pick('db').name || pick('db').id) : null, pick('auth') ? row('Sign-in', (pick('auth').name || pick('auth').id) + (needsFirst() ? ` (first administrator: @${st.first.username})` : '')) : null,
         row('Running', on.filter((p) => !p.fills).map((p) => nameOf(p.id)).join(', ') || 'only the basics'), row('Saved to', st.info.path)),
       h('h2', {}, 'Does it work?'), h('div', { id: 'problems' }));
     renderProblems();
@@ -224,7 +224,7 @@ async function save() {
   const { status, body } = await send('/setup/save', draft());
   if (status === 200 && body.ok) {
     st.saved = body.saved; st.info.file_exists = true;
-    const who = needsFirst() || st.first.name ? st.first.name : '';
+    const who = needsFirst() || st.first.username ? '@' + st.first.username : '';
     $('page').replaceChildren(h('div', { class: 'done-box' }, h('h1', {}, 'Saved'), h('p', {}, 'The configuration is in ', h('code', {}, body.saved), '.'),
       h('p', {}, 'If the server was started for the first time it now starts on its own. Reload this page in a few seconds' + (who ? ' and sign in as ' + who : '') + '.'),
       h('p', { class: 'muted' }, 'If you ran setup by hand, start the product with its serve command.')));

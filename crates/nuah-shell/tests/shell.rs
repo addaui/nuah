@@ -19,7 +19,7 @@ fn catalog() -> Catalog {
 fn profile(grant_host: bool) -> Profile {
     let mut p = Profile { name: "t".into(), ..Default::default() };
     p.enabled = ["@nuah/db-memory", "@nuah/auth-password", "@nuah/policy-roles", "@nuah/clock-system", "@nuah/ids-random", "@nuah/http", "@nuah/console"].iter().map(|s| s.to_string()).collect();
-    p.settings.insert("@nuah/auth-password".into(), json!({"accounts": [{"name": "root", "password_hash": AuthPassword::hash_password("first-password"), "roles": ["admin"]}]}));
+    p.settings.insert("@nuah/auth-password".into(), json!({"accounts": [{"username": "root", "password_hash": AuthPassword::hash_password("first-password"), "roles": ["admin"]}]}));
     p.settings.insert("@nuah/http".into(), json!({"listen": "127.0.0.1:0"}));
     p.grants.insert("@nuah/http".into(), vec!["serve".into()]);
     if grant_host {
@@ -40,7 +40,7 @@ fn start(p: &Profile) -> Core {
 }
 
 fn sign_in(c: &Core, name: &str, pw: &str) -> Result<Identity> {
-    let out = c.call_as(&Identity::new("", "", &[]), "auth.sign_in", json!({"name": name, "password": pw}), None)?.output;
+    let out = c.call_as(&Identity::new("", "", &[]), "auth.sign_in", json!({"username": name, "password": pw}), None)?.output;
     Ok(serde_json::from_value(out["who"].clone()).unwrap())
 }
 
@@ -89,7 +89,7 @@ fn the_console_reads_and_changes_the_identity_file_and_asks_for_a_restart() {
     rt.block_on(async { tokio::time::timeout(std::time::Duration::from_secs(2), store.restart.notified()).await.expect("the host was asked to restart") });
 
     // only administrators may
-    core.call_as(&root, "auth.account.create", json!({"name": "sam", "password": "sam-secret-1", "roles": ["member"]}), None).unwrap();
+    core.call_as(&root, "auth.account.create", json!({"username": "sam", "password": "sam-secret-1", "roles": ["member"]}), None).unwrap();
     let sam = sign_in(&core, "sam", "sam-secret-1").unwrap();
     assert_eq!(core.call_as(&sam, "console.profile.get", json!({}), None).unwrap_err().category, Category::Denied);
     let _ = std::fs::remove_dir_all(d);

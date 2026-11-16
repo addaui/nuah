@@ -14,7 +14,7 @@ pub mod sqlite;
 pub mod std_ports;
 pub mod transfer;
 
-pub use auth::{AuthLocal, AuthOpen, AuthPassword};
+pub use auth::{valid_username, AuthLocal, AuthOpen, AuthPassword};
 pub use log::{LogConsole, LogFile};
 pub use db_plugins::{AdapterMemory, AdapterPostgres, AdapterSqlite};
 pub use memory::MemoryDb;

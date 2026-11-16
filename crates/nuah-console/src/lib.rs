@@ -44,8 +44,8 @@ impl Plugin for Console {
                     "reasons": {"console.problems": "The draft does not resolve; nothing was written", "console.no_shell": "The program running this instance offers the console no shell services"},
                     "output": {"type":"object","required":["saved"]}},
                 "console.auth.switch": {"kind": "outbound", "permission": "console.admin", "description": "Turn on a way of signing in. For one with accounts, the first administrator is made now; when the instance had no sign-in, that person keeps everything the Owner made.",
-                    "input": {"type":"object","required":["plugin"],"properties":{"plugin":{"type":"string"},"name":{"type":"string","maxLength":200},"display":{"type":"string","maxLength":200},"password":{"type":"string","maxLength":1000}},"additionalProperties":false},
-                    "reasons": {"console.first_account": "Choose a name and a password of at least 8 characters for the first administrator", "console.problems": "The draft does not resolve; nothing was written", "console.no_shell": "The program running this instance offers the console no shell services"},
+                    "input": {"type":"object","required":["plugin"],"properties":{"plugin":{"type":"string"},"username":{"type":"string","maxLength":200},"display":{"type":"string","maxLength":200},"password":{"type":"string","maxLength":1000}},"additionalProperties":false},
+                    "reasons": {"console.first_account": "Choose a username (2 to 32 letters, numbers, dots, dashes or underscores) and a password of at least 8 characters for the first administrator", "console.problems": "The draft does not resolve; nothing was written", "console.no_shell": "The program running this instance offers the console no shell services"},
                     "output": {"type":"object","required":["saved","restart_required","adopts_owner"]}},
                 "console.restart": {"kind": "outbound", "permission": "console.admin", "description": "Stop, read the identity file again and start.", "output": {"type":"object"}}
             }
@@ -121,13 +121,13 @@ pub fn switch_auth(state: &Value, input: &Value) -> nuah_kernel::Result<(Value, 
         let existing = &profile["plugins"][plugin]["settings"]["accounts"];
         let has = existing.is_object() || existing.as_array().is_some_and(|a| !a.is_empty());
         if !has {
-            let (name, password) = (input["name"].as_str().unwrap_or("").trim(), input["password"].as_str().unwrap_or(""));
+            let (name, password) = (input["username"].as_str().unwrap_or("").trim(), input["password"].as_str().unwrap_or(""));
             if name.is_empty() || password.chars().count() < 8 {
-                return Err(Error::reason(nuah_kernel::Category::Invalid, "console.first_account", "Choose a name and a password of at least 8 characters for the first administrator"));
+                return Err(Error::reason(nuah_kernel::Category::Invalid, "console.first_account", "Choose a username (2 to 32 letters, numbers, dots, dashes or underscores) and a password of at least 8 characters for the first administrator"));
             }
             adopts = was_open;
             let display = input["display"].as_str().filter(|d| !d.trim().is_empty()).unwrap_or(name);
-            let mut account = json!({"name": name, "display": display, "password_hash": nuah_adapters::AuthPassword::hash_password(password), "roles": ["member", "admin"]});
+            let mut account = json!({"username": name, "display": display, "password_hash": nuah_adapters::AuthPassword::hash_password(password), "roles": ["member", "admin"]});
             if adopts {
                 account["subject"] = json!(OWNER_SUBJECT);
             }
@@ -158,12 +158,12 @@ mod tests {
 
     #[test]
     fn switching_from_no_sign_in_makes_the_first_administrator_the_owner_so_nothing_is_lost() {
-        let (p, adopts) = switch_auth(&state(true), &json!({"plugin": "@nuah/auth-password", "name": "Sam", "password": "long enough pw"})).unwrap();
+        let (p, adopts) = switch_auth(&state(true), &json!({"plugin": "@nuah/auth-password", "username": "Sam", "password": "long enough pw"})).unwrap();
         assert!(adopts);
         assert_eq!(p["plugins"]["@nuah/auth-open"]["enabled"], false);
         assert_eq!(p["plugins"]["@nuah/auth-password"]["enabled"], true);
         let a = &p["plugins"]["@nuah/auth-password"]["settings"]["accounts"][0];
-        assert_eq!((a["name"].clone(), a["subject"].clone(), a["roles"].clone()), (json!("Sam"), json!("owner"), json!(["member", "admin"])));
+        assert_eq!((a["username"].clone(), a["subject"].clone(), a["roles"].clone()), (json!("Sam"), json!("owner"), json!(["member", "admin"])));
         assert!(a["password_hash"].as_str().unwrap().starts_with("$argon2"), "the password is stored hashed");
         assert!(!p.to_string().contains("long enough pw"));
         assert!(p["bindings"].get("auth").is_none(), "the old choice of Adapter goes");
@@ -182,7 +182,7 @@ mod tests {
 
     #[test]
     fn a_name_and_a_password_of_eight_characters_are_needed_and_only_sign_in_plugins_can_be_chosen() {
-        let e = switch_auth(&state(true), &json!({"plugin": "@nuah/auth-password", "name": "Sam", "password": "short"})).unwrap_err();
+        let e = switch_auth(&state(true), &json!({"plugin": "@nuah/auth-password", "username": "Sam", "password": "short"})).unwrap_err();
         assert_eq!(e.reason.as_deref(), Some("console.first_account"));
         assert!(switch_auth(&state(true), &json!({"plugin": "@nuah/db-memory"})).is_err());
         assert!(switch_auth(&state(true), &json!({"plugin": "@nobody/x"})).is_err());

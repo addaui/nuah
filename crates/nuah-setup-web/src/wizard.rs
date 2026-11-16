@@ -56,7 +56,7 @@ async fn state(State(s): State<Setup>) -> Response {
     }
 }
 
-/// Read a draft from the body and put back the secrets it did not retype. `first_account` (name, password) is
+/// Read a draft from the body and put back the secrets it did not retype. `first_account` (username, password) is
 /// not part of a Profile: it becomes the first administrator in the settings of the plugin that keeps accounts,
 /// as a password hash, when `hash` is true.
 fn draft(s: &Setup, body: &Value, hash: bool) -> Result<(Profile, Vec<Problem>), Response> {
@@ -65,7 +65,7 @@ fn draft(s: &Setup, body: &Value, hash: bool) -> Result<(Profile, Vec<Problem>),
     let mut p = s.0.store.draft(&body).map_err(|m| refuse(StatusCode::BAD_REQUEST, "invalid", "setup.bad_profile", &m))?;
     let mut problems = vec![];
     if let Some(plugin) = first_account_plugin(&s.0.store.catalog, &p) {
-        let name = first.as_ref().and_then(|f| f["name"].as_str()).unwrap_or("").to_string();
+        let name = first.as_ref().and_then(|f| f["username"].as_str()).unwrap_or("").to_string();
         let password = first.as_ref().and_then(|f| f["password"].as_str()).unwrap_or("").to_string();
         if !has_accounts(&p, &plugin) {
             match first_account_problem(&plugin, &name, &password) {

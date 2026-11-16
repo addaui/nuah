@@ -330,7 +330,7 @@ pub fn reset_password(core: &Core, name: &str, password: &str) -> Result<(), Str
         _ => e.message,
     })?;
     let want = name.trim().to_lowercase();
-    let subject = list.output["accounts"].as_array().into_iter().flatten().find(|a| a["name"].as_str().is_some_and(|n| n.to_lowercase() == want)).and_then(|a| a["subject"].as_str()).map(String::from).ok_or_else(|| format!("no account named {name}"))?;
+    let subject = list.output["accounts"].as_array().into_iter().flatten().find(|a| a["username"].as_str().is_some_and(|n| n.to_lowercase() == want)).and_then(|a| a["subject"].as_str()).map(String::from).ok_or_else(|| format!("no account with the username {name}"))?;
     core.call_as(&admin, "auth.account.set_password", json!({"subject": subject, "password": password}), None).map(|_| ()).map_err(|e| e.message)
 }
 

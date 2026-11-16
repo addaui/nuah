@@ -138,15 +138,15 @@ pub fn has_accounts(p: &Profile, plugin: &str) -> bool {
 pub const MIN_PASSWORD: usize = 8;
 
 /// The Problem for a first administrator that was not given properly, or None when it is fine.
-pub fn first_account_problem(plugin: &str, name: &str, password: &str) -> Option<Problem> {
-    (name.trim().is_empty() || password.chars().count() < MIN_PASSWORD)
-        .then(|| Problem { code: "first_account_missing".into(), plugins: vec![plugin.into()], message: format!("Choose a name and a password of at least {MIN_PASSWORD} characters for the first administrator.") })
+pub fn first_account_problem(plugin: &str, username: &str, password: &str) -> Option<Problem> {
+    (!nuah_adapters::valid_username(username) || password.chars().count() < MIN_PASSWORD)
+        .then(|| Problem { code: "first_account_missing".into(), plugins: vec![plugin.into()], message: format!("Choose a username (2 to 32 letters, numbers, dots, dashes or underscores) and a password of at least {MIN_PASSWORD} characters for the first administrator.") })
 }
 
 /// Put the first administrator, with the password as a hash, into the settings of the plugin that keeps accounts.
-pub fn put_first_account(p: &mut Profile, plugin: &str, name: &str, password: &str) {
-    let name = name.trim();
-    let acc = json!([{"name": name, "display": name, "password_hash": AuthPassword::hash_password(password), "roles": ["admin"]}]);
+pub fn put_first_account(p: &mut Profile, plugin: &str, username: &str, password: &str) {
+    let name = username.trim();
+    let acc = json!([{"username": name, "display": name, "password_hash": AuthPassword::hash_password(password), "roles": ["admin"]}]);
     let slot = p.settings.entry(plugin.to_string()).or_insert_with(|| json!({}));
     if let Some(o) = slot.as_object_mut() {
         o.insert("accounts".into(), acc);

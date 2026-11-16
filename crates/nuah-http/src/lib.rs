@@ -361,7 +361,7 @@ async fn call(State(app): State<App>, Path(op): Path<String>, headers: HeaderMap
         }
     }
     // Failed sign-ins are counted; past the limit the attempt is refused before any password is checked.
-    let attempt = (op == "auth.sign_in").then(|| input["name"].as_str().unwrap_or_default().to_string());
+    let attempt = (op == "auth.sign_in").then(|| input["username"].as_str().unwrap_or_default().to_string());
     if let Some(name) = &attempt {
         let wait = app.throttle.lock().unwrap_or_else(|e| e.into_inner()).blocked(name, &app.cfg);
         if let Some(wait) = wait {

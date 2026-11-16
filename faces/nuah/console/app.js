@@ -167,7 +167,7 @@ $("find").addEventListener("input", () => D && D.who && renderOps());
 $("out").addEventListener("click", async () => { try { await call("auth.sign_out", {}); } catch {} load(); });
 $("form").addEventListener("submit", async (e) => {
   e.preventDefault(); $("err").textContent = "";
-  try { await call("auth.sign_in", { name: e.target.name.value, password: e.target.password.value }, { "X-Nuah-Session": "cookie" }); e.target.password.value = ""; await load(); }
+  try { await call("auth.sign_in", { username: e.target.username.value, password: e.target.password.value }, { "X-Nuah-Session": "cookie" }); e.target.password.value = ""; await load(); }
   catch (x) { $("err").textContent = x.message || "Sign-in failed"; }
 });
 
@@ -178,20 +178,20 @@ async function accounts() {
   try { list = (await call("auth.account.list", {})).output.accounts; } catch (e) { $("accounts").textContent = say(e); return; }
   const act = (fn) => async () => { $("acct-err").textContent = ""; try { await fn(); } catch (e) { $("acct-err").textContent = say(e); } accounts(); };
   $("accounts").replaceChildren(h("table", {}, h("tbody", {}, list.map((a) => h("tr", { class: a.disabled ? "off" : "" },
-    h("td", {}, h("strong", {}, a.name), a.display && a.display !== a.name ? " (" + a.display + ")" : ""),
+    h("td", {}, h("strong", {}, "@" + a.username), a.display && a.display !== a.username ? " (" + a.display + ")" : ""),
     h("td", {}, (a.roles || []).map((r) => h("span", { class: "chip" }, r)), " "),
     h("td", {}, a.disabled ? h("span", { class: "chip warn" }, "disabled") : ""),
     h("td", { class: "actions" },
-      h("button", { onclick: act(async () => { const v = await ask("Rename " + a.name, [{ name: "name", label: "New name", value: a.name }], "Rename"); if (v && v.name && v.name !== a.name) await call("auth.account.update", { subject: a.subject, name: v.name }); }) }, "Rename"), " ",
-      h("button", { onclick: act(async () => { const v = await ask("Roles of " + a.name, [{ name: "roles", label: "Roles, separated by commas", value: (a.roles || []).join(", "), help: "admin may manage accounts and the configuration; member is an ordinary person." }], "Save"); if (v) await call("auth.account.update", { subject: a.subject, roles: v.roles.split(",").map((x) => x.trim()).filter(Boolean) }); }) }, "Roles"), " ",
-      h("button", { onclick: act(async () => { const v = await ask("New password for " + a.name, [{ name: "password", label: "Password", type: "password", help: "At least 8 characters." }], "Set password"); if (v && v.password) await call("auth.account.set_password", { subject: a.subject, password: v.password }); }) }, "Password"), " ",
+      h("button", { onclick: act(async () => { const v = await ask("Change the username of @" + a.username, [{ name: "username", label: "New username", value: a.username, help: "2 to 32 letters, numbers, dots, dashes or underscores." }], "Change"); if (v && v.username && v.username !== a.username) await call("auth.account.update", { subject: a.subject, username: v.username }); }) }, "Username"), " ",
+      h("button", { onclick: act(async () => { const v = await ask("Roles of @" + a.username, [{ name: "roles", label: "Roles, separated by commas", value: (a.roles || []).join(", "), help: "admin may manage accounts and the configuration; member is an ordinary person." }], "Save"); if (v) await call("auth.account.update", { subject: a.subject, roles: v.roles.split(",").map((x) => x.trim()).filter(Boolean) }); }) }, "Roles"), " ",
+      h("button", { onclick: act(async () => { const v = await ask("New password for @" + a.username, [{ name: "password", label: "Password", type: "password", help: "At least 8 characters." }], "Set password"); if (v && v.password) await call("auth.account.set_password", { subject: a.subject, password: v.password }); }) }, "Password"), " ",
       h("button", { onclick: act(async () => { await call("auth.account.update", { subject: a.subject, disabled: !a.disabled }); }) }, a.disabled ? "Enable" : "Disable")))))));
 }
 $("newacct").addEventListener("click", async () => {
   $("acct-err").textContent = "";
-  const v = await ask("New account", [{ name: "name", label: "Name" }, { name: "password", label: "Password", type: "password", help: "At least 8 characters." }, { name: "roles", label: "Roles, separated by commas", value: "member" }], "Create");
+  const v = await ask("New account", [{ name: "username", label: "Username", help: "2 to 32 letters, numbers, dots, dashes or underscores." }, { name: "password", label: "Password", type: "password", help: "At least 8 characters." }, { name: "roles", label: "Roles, separated by commas", value: "member" }], "Create");
   if (!v) return;
-  try { await call("auth.account.create", { name: v.name, password: v.password, roles: v.roles.split(",").map((x) => x.trim()).filter(Boolean) }); } catch (e) { $("acct-err").textContent = say(e); }
+  try { await call("auth.account.create", { username: v.username, password: v.password, roles: v.roles.split(",").map((x) => x.trim()).filter(Boolean) }); } catch (e) { $("acct-err").textContent = say(e); }
   accounts();
 });
 
@@ -223,17 +223,17 @@ async function authTab() {
     const [title, text] = AUTH_TEXT[p.id] || [nameOf(p.id), p.description || ""];
     const first = p.settings_schema && p.settings_schema.properties && p.settings_schema.properties.accounts && p.settings_schema.properties.accounts["x-first-account"];
     const form = first && !on(p.id) ? h("form", { class: "grid" },
-      h("label", {}, "Your name", h("input", { name: "name", required: true, autocomplete: "username" })),
+      h("label", {}, "Username", h("input", { name: "username", required: true, autocomplete: "username", autocapitalize: "none", spellcheck: false })),
       h("label", {}, "Your password (8 characters or more)", h("input", { name: "password", type: "password", required: true, minlength: 8, autocomplete: "new-password" })),
       h("button", { class: "primary", type: "submit" }, "Switch to " + title.toLowerCase())) : (on(p.id) ? null : h("form", {}, h("button", { class: "primary", type: "submit" }, "Switch to " + title.toLowerCase())));
     if (form) form.addEventListener("submit", async (e) => {
       e.preventDefault(); $("auth-err").textContent = "";
       const f = new FormData(form), input = { plugin: p.id };
-      if (f.get("name")) { input.name = String(f.get("name")); input.password = String(f.get("password")); }
+      if (f.get("username")) { input.username = String(f.get("username")); input.password = String(f.get("password")); }
       try {
         const out = (await call("console.auth.switch", input)).output;
         $("auth-done").hidden = false;
-        $("auth-msg").textContent = "Saved. Restart to use it" + (out.adopts_owner ? "; then sign in as " + input.name + ". Everything the Owner made is yours." : ".");
+        $("auth-msg").textContent = "Saved. Restart to use it" + (out.adopts_owner ? "; then sign in as @" + input.username + ". Everything the Owner made is yours." : ".");
       } catch (x) { $("auth-err").textContent = say(x); }
     });
     box.append(h("div", { class: "plugin" + (on(p.id) ? " on" : "") }, h("div", { class: "head" }, h("span", { class: "name" }, title), on(p.id) ? h("span", { class: "chip" }, "in use") : null), h("div", { class: "desc" }, text), form));

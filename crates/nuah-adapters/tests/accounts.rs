@@ -9,9 +9,14 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 
 fn core() -> Core {
+    // a seed that still says `name`, as every Profile saved before ADR 0089 does
+    core_with(json!([{"name": "Root", "password_hash": AuthPassword::hash_password("first-password"), "roles": ["admin"]}]))
+}
+
+fn core_with(accounts: Value) -> Core {
     let mut p = Profile { name: "t".into(), ..Default::default() };
     p.enabled = ["@nuah/db-memory", "@nuah/auth-password", "@nuah/policy-roles", "@nuah/clock-system", "@nuah/ids-random"].iter().map(|s| s.to_string()).collect();
-    p.settings.insert("@nuah/auth-password".into(), json!({"accounts": [{"name": "Root", "password_hash": AuthPassword::hash_password("first-password"), "roles": ["admin"]}]}));
+    p.settings.insert("@nuah/auth-password".into(), json!({ "accounts": accounts }));
     let list: Vec<Arc<dyn Plugin>> = vec![Arc::new(AdapterMemory), Arc::new(AuthPassword), Arc::new(PolicyRoles), Arc::new(StdClock), Arc::new(StdIds)];
     Core::start(&Distribution { name: "t".into(), catalog: Catalog(list), profile: p }).unwrap_or_else(|e| panic!("{e:?}"))
 }
@@ -21,7 +26,7 @@ fn anon() -> Identity {
 }
 
 fn sign_in(c: &Core, name: &str, pw: &str) -> Result<Value> {
-    c.call_as(&anon(), "auth.sign_in", json!({"name": name, "password": pw}), None).map(|r| r.output)
+    c.call_as(&anon(), "auth.sign_in", json!({"username": name, "password": pw}), None).map(|r| r.output)
 }
 
 fn as_who(c: &Core, who: &Value, op: &str, input: Value) -> Result<Value> {
@@ -36,7 +41,7 @@ fn the_subject_is_an_opaque_id_not_the_login_name_and_survives_a_rename() {
     let subject = root["subject"].as_str().unwrap().to_string();
     assert_ne!(subject.to_lowercase(), "root");
 
-    as_who(&c, &root, "auth.account.update", json!({"subject": subject, "name": "boss"})).unwrap();
+    as_who(&c, &root, "auth.account.update", json!({"subject": subject, "username": "boss"})).unwrap();
     assert!(sign_in(&c, "root", "first-password").is_err(), "the old name no longer signs in");
     let again = sign_in(&c, "boss", "first-password").unwrap()["who"].clone();
     assert_eq!(again["subject"], root["subject"], "the same person keeps the same subject");
@@ -46,13 +51,13 @@ fn the_subject_is_an_opaque_id_not_the_login_name_and_survives_a_rename() {
 fn accounts_are_managed_by_the_people_allowed_to_and_the_last_admin_stays() {
     let c = core();
     let root = sign_in(&c, "Root", "first-password").unwrap()["who"].clone();
-    let made = as_who(&c, &root, "auth.account.create", json!({"name": "sam", "password": "sam-secret-1", "roles": ["member"]})).unwrap();
+    let made = as_who(&c, &root, "auth.account.create", json!({"username": "sam", "password": "sam-secret-1", "roles": ["member"]})).unwrap();
     let sam = sign_in(&c, "sam", "sam-secret-1").unwrap()["who"].clone();
     assert_eq!(sam["subject"], made["subject"]);
     // a member may not manage accounts, and a taken name is a conflict
     assert!(as_who(&c, &sam, "auth.account.list", json!({})).is_err());
-    let taken = as_who(&c, &root, "auth.account.create", json!({"name": "SAM", "password": "another-pass"})).unwrap_err();
-    assert_eq!(taken.reason.as_deref(), Some("auth.name_taken"));
+    let taken = as_who(&c, &root, "auth.account.create", json!({"username": "SAM", "password": "another-pass"})).unwrap_err();
+    assert_eq!(taken.reason.as_deref(), Some("auth.username_taken"));
     // the only administrator cannot be disabled or demoted
     let root_subject = root["subject"].as_str().unwrap();
     for change in [json!({"disabled": true}), json!({"roles": ["member"]})] {
@@ -82,7 +87,7 @@ fn a_seed_account_may_keep_the_subject_of_the_owner_so_what_they_made_stays_thei
     let who = sign_in(&c, "sam", "first-password").unwrap()["who"].clone();
     assert_eq!(who["subject"], "owner", "the Owner of an instance without sign-in is this account");
     // an account made later by the usual route still gets an opaque id, and cannot take an existing one
-    let made = as_who(&c, &who, "auth.account.create", json!({"name": "Bea", "password": "another-password"})).unwrap();
+    let made = as_who(&c, &who, "auth.account.create", json!({"username": "Bea", "password": "another-password"})).unwrap();
     assert_ne!(made["subject"], "owner");
 }
 
@@ -90,7 +95,7 @@ fn a_seed_account_may_keep_the_subject_of_the_owner_so_what_they_made_stays_thei
 fn a_person_changes_their_own_password_by_giving_the_current_one() {
     let c = core();
     let root = sign_in(&c, "Root", "first-password").unwrap()["who"].clone();
-    as_who(&c, &root, "auth.account.create", json!({"name": "sam", "password": "sam-secret-1", "roles": ["member"]})).unwrap();
+    as_who(&c, &root, "auth.account.create", json!({"username": "sam", "password": "sam-secret-1", "roles": ["member"]})).unwrap();
     let sam = sign_in(&c, "sam", "sam-secret-1").unwrap()["who"].clone();
 
     // a wrong current password changes nothing
@@ -109,4 +114,38 @@ fn a_person_changes_their_own_password_by_giving_the_current_one() {
 
     // someone who is not signed in cannot
     assert!(c.call_as(&anon(), "auth.password.change", json!({"current": "x", "new": "yyyyyyyy"}), None).is_err());
+}
+
+// ---- the username (ADR 0089) -------------------------------------------------------------------
+
+#[test]
+fn a_username_has_one_rule_when_it_is_made_or_changed() {
+    let c = core();
+    let root = sign_in(&c, "Root", "first-password").unwrap()["who"].clone();
+    for bad in ["a", "has space", "way-too-long-way-too-long-way-too-long-way", "no@at", "émile"] {
+        let e = as_who(&c, &root, "auth.account.create", json!({"username": bad, "password": "long-enough-1"})).unwrap_err();
+        assert_eq!(e.reason.as_deref(), Some("auth.bad_username"), "{bad:?} must be refused");
+    }
+    let made = as_who(&c, &root, "auth.account.create", json!({"username": "Ana.B-1_2", "password": "long-enough-1"})).unwrap();
+    // never case-sensitive, and the same rule when it is renamed
+    assert!(sign_in(&c, "ana.b-1_2", "long-enough-1").is_ok());
+    let e = as_who(&c, &root, "auth.account.update", json!({"subject": made["subject"], "username": "not valid"})).unwrap_err();
+    assert_eq!(e.reason.as_deref(), Some("auth.bad_username"));
+    // the list says `username`
+    let list = as_who(&c, &root, "auth.account.list", json!({})).unwrap();
+    assert!(list["accounts"].as_array().unwrap().iter().all(|a| a["username"].is_string() && a.get("name").is_none()));
+}
+
+#[test]
+fn accounts_from_before_the_rename_still_work_and_move_to_username_when_saved() {
+    // a seed that still says `name`, with a username that would not pass the rule today
+    let c = core_with(json!([{"name": "Alan Smith", "password_hash": AuthPassword::hash_password("first-password"), "roles": ["admin"]}]));
+    // signing in does not check the rule
+    let who = sign_in(&c, "alan smith", "first-password").unwrap()["who"].clone();
+    // saving it with a valid username moves it, and the old one stops working
+    let list = as_who(&c, &who, "auth.account.list", json!({})).unwrap();
+    assert_eq!(list["accounts"][0]["username"], "Alan Smith", "read from the older field");
+    as_who(&c, &who, "auth.account.update", json!({"subject": who["subject"], "username": "alan"})).unwrap();
+    assert!(sign_in(&c, "alan", "first-password").is_ok());
+    assert!(sign_in(&c, "Alan Smith", "first-password").is_err());
 }
