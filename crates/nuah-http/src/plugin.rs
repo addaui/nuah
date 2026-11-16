@@ -54,6 +54,7 @@ impl Plugin for Http {
                 "root": {"type": "string", "description": "Which Face `/` shows, by name (for example web). Default: web, else the first.", "x-tier": "operator", "x-apply": "service"},
                 "faces_dir": {"type": "string", "description": "Where plugins' Faces are: a plugin that publishes the Face named X is served from <faces_dir>/<scope>/<name> of its id. Default: faces (or NUAH_FACES)", "x-tier": "operator", "x-apply": "service"},
                 "faces": {"type": "object", "additionalProperties": {"type": "string"}, "x-tier": "operator", "x-apply": "service"},
+                "face_paths": {"type": "object", "additionalProperties": {"type": "string"}, "title": "Paths a Face answers", "description": "A path and the Face that opens at it, for example {\"/share\": \"web-react\"}: the path and everything under it return that Face's page.", "x-tier": "operator", "x-apply": "service"},
                 "worker_threads": {"type": "integer", "minimum": 0, "maximum": 1024, "title": "Worker threads", "description": "0 uses every core.", "x-tier": "operator", "x-apply": "service"},
                 "sign_in_failures_per_name": {"type": "integer", "minimum": 1, "x-tier": "operator", "x-apply": "service"},
                 "sign_in_failures_overall": {"type": "integer", "minimum": 1, "x-tier": "operator", "x-apply": "service"},

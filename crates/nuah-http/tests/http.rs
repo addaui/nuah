@@ -334,3 +334,19 @@ fn only_a_file_with_a_hash_in_an_assets_folder_counts_as_hashed() {
         assert!(!h(p), "{p}");
     }
 }
+
+#[test]
+fn a_configured_path_opens_a_face_so_a_browser_path_not_a_hash_route_reaches_it() {
+    let (console, web) = (face_dir("fp-console", "CONSOLE"), face_dir("fp-web", "WEB"));
+    let port = free_port();
+    let (_core, services) = start_with_http(json!({"listen": format!("127.0.0.1:{port}"), "face_paths": {"/share": "web", "tools/": "console"}, "faces": {"/faces/console": console, "/faces/web": web}}));
+    let at = |p: &str| get_text(&format!("http://127.0.0.1:{port}{p}"));
+    assert_eq!(at("/share"), (200, "WEB".to_string()));
+    assert_eq!(at("/share/abc123"), (200, "WEB".to_string()), "any depth below it");
+    assert_eq!(at("/share/a/b/c"), (200, "WEB".to_string()));
+    assert_eq!(at("/tools/x").1, "CONSOLE", "a path may be written with or without its slashes");
+    // the Face's own files and the Link are untouched
+    assert_eq!(at("/faces/console/").1, "CONSOLE");
+    assert_eq!(agent().get(&format!("http://127.0.0.1:{port}/healthz")).call().unwrap().status().as_u16(), 200);
+    services.stop();
+}

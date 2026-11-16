@@ -41,6 +41,9 @@ pub struct Config {
     pub secure_cookie: bool,
     /// Static Faces to host: (URL prefix such as `/faces/web`, directory).
     pub faces: Vec<(String, std::path::PathBuf)>,
+    /// Paths a Face answers itself: `/share` -> `web-react` makes `/share` and everything under it return that Face's `index.html`, so a
+    /// browser path (not a `#` route) opens the Face, which reads `location.pathname`. Static files and the Link keep their own routes.
+    pub face_paths: Vec<(String, String)>,
     /// Where the Faces of plugins are: `<faces_dir>/<scope>/<name>` (`faces/nuah/console` for `@nuah/console`), for each enabled plugin that publishes one and has no entry in `faces`.
     pub faces_dir: std::path::PathBuf,
     /// Origins the browser may call from a Face (`connect-src`), besides this server: what the enabled plugins ask for (`Manifest::connect`).
@@ -75,6 +78,9 @@ impl Config {
             c.listen = l.into();
         }
         c.hosts.extend(v["hosts"].as_array().into_iter().flatten().filter_map(|h| h.as_str()).map(|h| h.to_lowercase()));
+        if let Some(m) = v["face_paths"].as_object() {
+            c.face_paths = m.iter().filter_map(|(p, f)| Some((format!("/{}", p.trim_matches('/')), f.as_str()?.to_string()))).filter(|(p, _)| p != "/").collect();
+        }
         c.secure_cookie = v["secure_cookie"].as_bool().unwrap_or(false);
         if let Some(d) = v["faces_dir"].as_str() {
             c.faces_dir = d.into();
@@ -103,6 +109,7 @@ impl Default for Config {
             hosts: ["localhost", "127.0.0.1", "[::1]"].iter().map(|s| s.to_string()).collect(),
             secure_cookie: false,
             faces: vec![],
+            face_paths: vec![],
             faces_dir: "faces".into(),
             connect: vec![],
             images: vec![],
@@ -639,6 +646,13 @@ pub fn router_with(core: Core, mut cfg: Config, extra: &[RouteFn], shutdown: tok
     }
     for (prefix, dir) in &cfg.faces {
         r = r.nest_service(prefix, face_files(dir));
+    }
+    // a path that opens a Face: the Face's own page for the path and everything under it
+    for (path, face) in &cfg.face_paths {
+        if let Some((_, dir)) = cfg.faces.iter().find(|(p, _)| p.trim_start_matches("/faces/") == face) {
+            let index = tower_http::services::ServeFile::new(dir.join("index.html"));
+            r = r.route_service(path, index.clone()).route_service(&format!("{path}/{{*rest}}"), index);
+        }
     }
     // `/` shows the root Face where it is (no redirect), so a bare address opens the product.
     if let Some(dir) = root_face(&cfg) {
