@@ -227,6 +227,14 @@ impl Core {
         out
     }
 
+    /// The origins the enabled plugins ask the browser to load font files from (sorted, each once), ADR 0090.
+    pub fn font_origins(&self) -> Vec<String> {
+        let mut out: Vec<String> = self.inner.plan.active.values().flat_map(|a| a.manifest.font_origins.iter().cloned()).filter(|o| crate::manifest::valid_connect_origin(o)).collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+
     pub fn plugin_ids(&self) -> Vec<String> {
         self.inner.plan.active.keys().cloned().collect()
     }

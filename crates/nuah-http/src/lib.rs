@@ -51,6 +51,8 @@ pub struct Config {
     pub connect: Vec<String>,
     /// Origins the browser may load pictures and media from (`img-src`, `media-src`), besides this server: `Manifest::images`. Filled when the router is made.
     pub images: Vec<String>,
+    /// Origins the browser may load font files from (`font-src`), besides this server: `Manifest::font_origins`. Filled when the router is made.
+    pub font_origins: Vec<String>,
     /// The Face `/` shows, by name (`web` for `/faces/web`), without redirecting. Default: `web` when it is hosted, else the first.
     pub root: Option<String>,
     /// Failed sign-ins allowed per account name within `throttle_window` (ADR 0015).
@@ -113,6 +115,7 @@ impl Default for Config {
             faces_dir: "faces".into(),
             connect: vec![],
             images: vec![],
+            font_origins: vec![],
             root: None,
             sign_in_failures_per_name: 5,
             sign_in_failures_overall: 100,
@@ -304,6 +307,25 @@ pub async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static)
 
 pub fn no_store<T: IntoResponse>(t: T) -> Response {
     ([(header::CACHE_CONTROL, "no-store")], t).into_response()
+}
+
+/// A font file the instance fetched once and stores (ADR 0090). The bytes come from the public operation `fonts.get` of whichever plugin
+/// answers for it; a name is `<key>.woff2`, the key being a hash of the file, so the answer never changes and is cached for good.
+async fn font_file(State(app): State<App>, Path(file): Path<String>) -> Result<Response, ApiError> {
+    use base64::Engine;
+    let key = file.strip_suffix(".woff2").unwrap_or("").to_string();
+    if key.is_empty() || key.len() > 64 || !key.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return Ok(StatusCode::NOT_FOUND.into_response());
+    }
+    let core = app.core.clone();
+    let req = CallRequest { credential: None, op: "fonts.get".into(), input: json!({"key": key}), key: None, contract: None };
+    let out = match blocking(move || core.call(req)).await? {
+        Ok(r) => r.output,
+        Err(e) if e.category == Category::NotFound || e.category == Category::Invalid => return Ok(StatusCode::NOT_FOUND.into_response()),
+        Err(e) => return Err(e.into()),
+    };
+    let Some(bytes) = out["data"].as_str().and_then(|d| base64::engine::general_purpose::STANDARD.decode(d).ok()) else { return Ok(StatusCode::NOT_FOUND.into_response()) };
+    Ok(([(header::CONTENT_TYPE, "font/woff2"), (header::CACHE_CONTROL, "public, max-age=31536000, immutable")], bytes).into_response())
 }
 
 async fn describe(State(app): State<App>, headers: HeaderMap) -> Result<Response, ApiError> {
@@ -555,7 +577,7 @@ pub async fn guard(State(cfg): State<Arc<Config>>, req: Request, next: Next) -> 
         h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
     }
     if !h.contains_key(header::CONTENT_SECURITY_POLICY) {
-        if let Ok(v) = HeaderValue::from_str(&csp(&cfg.connect, &cfg.images)) {
+        if let Ok(v) = HeaderValue::from_str(&csp(&cfg.connect, &cfg.images, &cfg.font_origins)) {
             h.insert(header::CONTENT_SECURITY_POLICY, v);
         }
     }
@@ -598,11 +620,12 @@ pub fn is_hashed_asset(path: &str) -> bool {
 
 /// The Content-Security-Policy of every response: this server's own files, pictures and media only from this server and the origins plugins
 /// declared (`images`, ADR 0077), and calls only to this server and the origins plugins asked for (`connect`).
-pub fn csp(connect: &[String], images: &[String]) -> String {
+pub fn csp(connect: &[String], images: &[String], fonts: &[String]) -> String {
+    let font: String = fonts.iter().map(|o| format!(" {o}")).collect();
     let extra: String = connect.iter().map(|o| format!(" {o}")).collect();
     // Pictures and media load from this server and the origins plugins declare, never from any https site (ADR 0077): a page cannot tell a viewer's browser to contact a stranger.
     let img: String = images.iter().map(|o| format!(" {o}")).collect();
-    format!("default-src 'self'; connect-src 'self'{extra}; img-src 'self' data: blob:{img}; media-src 'self' blob:{img}; frame-src https://www.youtube-nocookie.com; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+    format!("default-src 'self'; connect-src 'self'{extra}; img-src 'self' data: blob:{img}; media-src 'self' blob:{img}; font-src 'self'{font}; frame-src https://www.youtube-nocookie.com; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 }
 
 /// Routes a product adds to the Projection. Called once with the Core, it returns its own router.
@@ -630,6 +653,7 @@ pub fn router_with(core: Core, mut cfg: Config, extra: &[RouteFn], shutdown: tok
     }
     cfg.connect = core.connect_origins();
     cfg.images = core.image_origins();
+    cfg.font_origins = core.font_origins();
     let cfg = Arc::new(cfg);
     let mut r = Router::new()
         .route("/healthz", get(health))
@@ -640,6 +664,7 @@ pub fn router_with(core: Core, mut cfg: Config, extra: &[RouteFn], shutdown: tok
         .route("/link/tools.json", get(tools_doc))
         .route("/link/client.ts", get(client_ts))
         .route("/pulse", get(pulse))
+        .route("/fonts/{file}", get(font_file))
         .with_state(App { core: core.clone(), cfg: cfg.clone(), throttle: Default::default(), streams: Default::default(), shutdown });
     for f in extra {
         r = r.merge(f(core.clone()));

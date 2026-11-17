@@ -8,6 +8,7 @@ publish.workspace = true
 [dependencies]
 async-stream = "0.3.6"
 axum = "0.8.9"
+base64 = "0.22.1"
 futures-util = "0.3.34"
 nuah-kernel = { path = "../nuah-kernel" }
 serde_json = "1.0.154"

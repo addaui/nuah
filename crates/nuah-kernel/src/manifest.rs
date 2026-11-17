@@ -72,6 +72,10 @@ pub enum PluginKind {
     Adapter,
     Provider,
     Theme,
+    /// Only font data: families a Face may draw with ([ADR 0090]).
+    ///
+    /// [ADR 0090]: https://docs.addaui.com/nuah/adr/0090-fonts-are-plugins-the-interface-has-one-font-per-language-pages-choose-from-a-short-curated-list-and-web-fonts-are-fetched-once-by-the-instance/
+    Font,
     Feature,
 }
 
@@ -357,6 +361,9 @@ pub struct Manifest {
     /// A Theme's data for Faces.
     #[serde(default)]
     pub theme: Option<Value>,
+    /// A font plugin's families for Faces (`fonts/1`, checked by the plugin that owns the data). Like a theme it is only data.
+    #[serde(default)]
+    pub fonts: Option<Value>,
     /// The name of the Face this plugin publishes (`web`, `console`). A projection that serves static
     /// Faces finds its files in `<faces dir>/<plugin id>` unless the Profile names another directory.
     #[serde(default)]
@@ -373,6 +380,13 @@ pub struct Manifest {
     /// [ADR 0077]: https://docs.addaui.com/nuah/adr/0077-a-viewers-browser-loads-only-from-the-instance-and-the-sites-a-plugin-declares-previews-and-pictures-are-fetched-once-and-stored/
     #[serde(default)]
     pub images: Vec<String>,
+    /// Sites the browser may load font files from, as origins like `connect` (`font-src`). Only for a font whose licence forbids the
+    /// instance storing it; every other font is fetched once by the instance and served by it, so the browser contacts only this server
+    /// ([ADR 0090]).
+    ///
+    /// [ADR 0090]: https://docs.addaui.com/nuah/adr/0090-fonts-are-plugins-the-interface-has-one-font-per-language-pages-choose-from-a-short-curated-list-and-web-fonts-are-fetched-once-by-the-instance/
+    #[serde(default)]
+    pub font_origins: Vec<String>,
 }
 
 /// Capabilities an Owner may allow a plugin without the operator: talking to the other plugins through Operations and events.
@@ -459,6 +473,8 @@ impl Manifest {
             && self.listeners.is_empty()
         {
             PluginKind::Theme
+        } else if self.fonts.is_some() && self.operations.is_empty() && self.hooks.is_empty() && self.listeners.is_empty() {
+            PluginKind::Font
         } else {
             PluginKind::Feature
         }
@@ -478,6 +494,7 @@ impl Manifest {
             match self.kind() {
                 PluginKind::Provider => "provider",
                 PluginKind::Theme => "theme",
+                PluginKind::Font => "font",
                 _ => "feature",
             }
         }

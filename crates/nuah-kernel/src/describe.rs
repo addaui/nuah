@@ -63,6 +63,7 @@ impl Core {
             perms.insert(p.clone(), json!({"roles": roles, "held": roles.iter().any(|r| who.has_role(r))}));
         }
         let themes: Vec<Value> = inner.plan.active.iter().filter_map(|(id, a)| a.manifest.theme.as_ref().map(|t| json!({"id": id, "name": a.manifest.name, "tokens": t}))).collect();
+        let fonts: Vec<Value> = inner.plan.active.iter().filter_map(|(id, a)| a.manifest.fonts.as_ref().map(|f| json!({"id": id, "name": a.manifest.name, "families": f}))).collect();
         let points: Map<String, Value> = inner.plan.ext_points.iter().map(|(n, (owner, d))| {
             let providers: Vec<&String> = inner.plan.providers.get(n).map(|v| v.iter().map(|(_, p)| p).collect()).unwrap_or_default();
             (n.clone(), json!({"owner": owner, "policy": d.policy, "providers": providers}))
@@ -83,7 +84,7 @@ impl Core {
         json!({
             "envelope": ENVELOPE_VERSION, "contract": inner.plan.hash, "profile": inner.profile_name,
             "who": who, "plugins": plugins, "operations": ops, "events": events,
-            "permissions": perms, "themes": themes, "extension_points": points, "slots": slots,
+            "permissions": perms, "themes": themes, "fonts": fonts, "extension_points": points, "slots": slots,
         })
     }
 }

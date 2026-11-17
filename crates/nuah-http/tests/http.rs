@@ -350,3 +350,88 @@ fn a_configured_path_opens_a_face_so_a_browser_path_not_a_hash_route_reaches_it(
     assert_eq!(agent().get(&format!("http://127.0.0.1:{port}/healthz")).call().unwrap().status().as_u16(), 200);
     services.stop();
 }
+
+struct FontData(&'static str, Vec<&'static str>);
+impl Plugin for FontData {
+    fn manifest(&self) -> Manifest {
+        serde_json::from_value(json!({"id": self.0, "version": "1", "runtime": "data", "fonts": {"schema": "fonts/1", "families": []}, "font_origins": self.1})).unwrap()
+    }
+}
+
+/// A store that answers `fonts.get` the way a font plugin does: base64 bytes for a key it holds.
+struct FontStore;
+impl Plugin for FontStore {
+    fn manifest(&self) -> Manifest {
+        serde_json::from_value(json!({"id": "@test/font-store", "version": "1", "namespaces": ["fonts"],
+            "operations": {"fonts.get": {"kind": "query", "public": true, "input": {"type": "object", "properties": {"key": {"type": "string"}}}}}})).unwrap()
+    }
+    fn bind(&self, b: &mut Bindings) {
+        b.op("fonts.get", |_tx, i| match i["key"].as_str() {
+            Some("abc123") => Ok(json!({"data": "d09GMgABAAA=", "type": "font/woff2"})),
+            _ => Err(Error::not_found("font")),
+        });
+    }
+}
+
+fn start_with_fonts(port: u16, extra: Vec<std::sync::Arc<dyn Plugin>>, ids: &[&str]) -> (Core, Services) {
+    let mut p = Profile { name: "t".into(), ..Default::default() };
+    p.enabled = ["@nuah/db-memory", "@nuah/auth-local", "@nuah/policy-roles", "@nuah/clock-system", "@nuah/ids-random", "@nuah/http"].iter().chain(ids.iter()).map(|s| s.to_string()).collect();
+    p.settings.insert("@nuah/http".into(), json!({"listen": format!("127.0.0.1:{port}")}));
+    p.grants.insert("@nuah/http".into(), vec!["serve".into()]);
+    let mut list: Vec<std::sync::Arc<dyn Plugin>> = vec![
+        std::sync::Arc::new(AdapterMemory), std::sync::Arc::new(AuthLocal), std::sync::Arc::new(PolicyRoles), std::sync::Arc::new(StdClock), std::sync::Arc::new(StdIds),
+        std::sync::Arc::new(Http::new()),
+    ];
+    list.extend(extra);
+    let core = Core::start(&Distribution { name: "t".into(), catalog: Catalog(list), profile: p }).unwrap_or_else(|e| panic!("{e:?}"));
+    let services = core.start_services().unwrap();
+    (core, services)
+}
+
+#[test]
+fn fonts_load_only_from_this_server_and_the_sites_a_font_plugin_declares() {
+    let port = free_port();
+    let (core, services) = start_with_fonts(port, vec![std::sync::Arc::new(FontData("@test/fonts-a", vec!["https://fonts.example.com", "https://*.example.com", "http://plain.example.com"]))], &["@test/fonts-a"]);
+    assert_eq!(core.font_origins(), vec!["https://fonts.example.com".to_string()]);
+    let r = agent().get(&format!("http://127.0.0.1:{port}/healthz")).call().unwrap();
+    let csp = r.headers().get("content-security-policy").unwrap().to_str().unwrap().to_string();
+    assert!(csp.contains("font-src 'self' https://fonts.example.com;"), "{csp}");
+    assert!(!csp.contains('*') && !csp.contains("plain.example.com"), "{csp}");
+    services.stop();
+
+    let port = free_port();
+    let (_core, services) = start_with_http(json!({"listen": format!("127.0.0.1:{port}")}));
+    let csp = agent().get(&format!("http://127.0.0.1:{port}/healthz")).call().unwrap().headers().get("content-security-policy").unwrap().to_str().unwrap().to_string();
+    assert!(csp.contains("font-src 'self';"), "{csp}");
+    services.stop();
+}
+
+#[test]
+fn a_font_plugin_is_only_data_and_describe_lists_its_families() {
+    let port = free_port();
+    let (core, services) = start_with_fonts(port, vec![std::sync::Arc::new(FontData("@test/fonts-a", vec![]))], &["@test/fonts-a"]);
+    let m = FontData("@test/fonts-a", vec![]).manifest();
+    assert_eq!(m.kind(), PluginKind::Font);
+    assert_eq!(m.role(), "font");
+    let d = core.describe(&Identity::new("a", "A", &[]));
+    assert_eq!(d["fonts"][0]["id"], "@test/fonts-a");
+    assert_eq!(d["fonts"][0]["families"]["schema"], "fonts/1");
+    services.stop();
+}
+
+#[test]
+fn a_stored_font_is_served_to_anyone_and_cached_for_good() {
+    let port = free_port();
+    let (_core, services) = start_with_fonts(port, vec![std::sync::Arc::new(FontStore)], &["@test/font-store"]);
+    let r = agent().get(&format!("http://127.0.0.1:{port}/fonts/abc123.woff2")).call().unwrap();
+    assert_eq!(r.headers().get("content-type").unwrap(), "font/woff2");
+    assert!(r.headers().get("cache-control").unwrap().to_str().unwrap().contains("immutable"));
+    let mut body = r.into_body();
+    assert_eq!(body.read_to_vec().unwrap(), vec![0x77, 0x4f, 0x46, 0x32, 0x00, 0x01, 0x00, 0x00]);
+    for bad in ["nope.woff2", "abc123", "..%2Fx.woff2", "abc123.ttf"] {
+        let r = agent().get(&format!("http://127.0.0.1:{port}/fonts/{bad}")).call();
+        let status = match r { Ok(r) => r.status().as_u16(), Err(ureq::Error::StatusCode(c)) => c, Err(e) => panic!("{e}") };
+        assert_eq!(status, 404, "{bad}");
+    }
+    services.stop();
+}
