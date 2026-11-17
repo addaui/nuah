@@ -443,6 +443,14 @@ impl<'a> Outbound<'a> {
         self.core.inner.check_capability(&self.plugin, "net")?;
         Ok(&*self.core.inner.net)
     }
+    /// Call an Operation as this plugin itself, not as the person asking: the Subject is the plugin's id and its only Role is
+    /// `plugin:<id>`, so a Permission whose default Roles are exactly that is held by this plugin and by nobody else. For writes a plugin
+    /// must make after checking something a person cannot be trusted to (a file it just fetched). Needs the capability `call`.
+    pub fn call_as_self(&self, op: &str, input: Value) -> Result<Value> {
+        self.core.inner.check_capability(&self.plugin, "call")?;
+        let me = crate::ports::Identity::new(&self.plugin, &self.plugin, &[&format!("plugin:{}", self.plugin)]);
+        self.core.call_as(&me, op, input, None).map(|r| r.output)
+    }
     /// The font data of every enabled font plugin: what an outbound Operation that stores fonts may fetch (ADR 0090).
     pub fn font_data(&self) -> Vec<Value> {
         self.core.font_data()
