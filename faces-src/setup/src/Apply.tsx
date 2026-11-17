@@ -6,9 +6,10 @@ import { Progress } from "@/components/ui/progress"
 import { cn } from "@/lib/utils"
 import { send, type Problem } from "./api"
 import type { W } from "./common"
+import { useI18n, type Key } from "./i18n"
 import { draft } from "./wizard"
 
-const STAGES = ["Saving your settings", "Starting it", "Checking that it answers", "Opening it"]
+const STAGES: Key[] = ["apply.saving", "apply.starting", "apply.checking", "apply.opening"]
 const WAIT_MS = 45_000
 
 type Phase = { at: "saving" } | { at: "starting"; since: number } | { at: "rejected"; problems: Problem[] } | { at: "silent"; path: string }
@@ -18,10 +19,14 @@ type Phase = { at: "saving" } | { at: "starting"; since: number } | { at: "rejec
  * it waits, and says plainly when the Core refused the draft or nothing came up, instead of asking the person to reload.
  */
 export function Apply({ info, c, onBack }: Pick<W, "info" | "c"> & { onBack: () => void }) {
+  const { t } = useI18n()
   const [phase, setPhase] = useState<Phase>({ at: "saving" })
   const [stage, setStage] = useState(0)
   const [run, setRun] = useState(0)
   const started = useRef(-1)
+  // the text of the fallback message is read when it is needed, so changing the language while it waits does not restart anything
+  const tRef = useRef(t)
+  useEffect(() => { tRef.current = t })
 
   useEffect(() => {
     if (started.current === run) return
@@ -31,7 +36,7 @@ export function Apply({ info, c, onBack }: Pick<W, "info" | "c"> & { onBack: () 
       const { status, body } = await send<{ ok?: boolean; problems?: Problem[]; saved?: string; error?: { message: string } }>("/setup/save", draft(info, c))
       if (stop) return
       if (status !== 200 || !body.ok) {
-        setPhase({ at: "rejected", problems: body.problems ?? [{ code: "invalid_profile", plugins: [], message: body.error?.message ?? "Could not save." }] })
+        setPhase({ at: "rejected", problems: body.problems ?? [{ code: "invalid_profile", plugins: [], message: body.error?.message ?? tRef.current("apply.couldNot") }] })
         return
       }
       const t0 = Date.now()
@@ -53,16 +58,16 @@ export function Apply({ info, c, onBack }: Pick<W, "info" | "c"> & { onBack: () 
   if (phase.at === "rejected") {
     return (
       <div className="grid gap-4">
-        <Alert variant="destructive"><TriangleAlert /><AlertTitle>The Core did not accept these settings</AlertTitle><AlertDescription className="grid gap-1">{phase.problems.map((p, i) => <span key={i}>{p.message}</span>)}</AlertDescription></Alert>
-        <div><Button onClick={onBack}>Change settings</Button></div>
+        <Alert variant="destructive"><TriangleAlert /><AlertTitle>{t("apply.rejected")}</AlertTitle><AlertDescription className="grid gap-1">{phase.problems.map((p, i) => <span key={i}>{p.message}</span>)}</AlertDescription></Alert>
+        <div><Button onClick={onBack}>{t("apply.change")}</Button></div>
       </div>
     )
   }
   if (phase.at === "silent") {
     return (
       <div className="grid gap-4">
-        <Alert><TriangleAlert /><AlertTitle>Saved, but nothing answered yet</AlertTitle><AlertDescription>Your settings are in <code>{phase.path}</code>. If you started setup by hand, start the service with its serve command. If this was the first start, the service may have refused the settings: look at its log, change them here and try again. Nothing was lost.</AlertDescription></Alert>
-        <div className="flex gap-2"><Button onClick={() => { started.current = -1; setPhase({ at: "saving" }); setStage(0); setRun((n) => n + 1) }}>Check again</Button><Button variant="outline" onClick={onBack}>Change settings</Button></div>
+        <Alert><TriangleAlert /><AlertTitle>{t("apply.silent")}</AlertTitle><AlertDescription>{t("apply.silentText", { path: phase.path })}</AlertDescription></Alert>
+        <div className="flex gap-2"><Button onClick={() => { started.current = -1; setPhase({ at: "saving" }); setStage(0); setRun((n) => n + 1) }}>{t("apply.again")}</Button><Button variant="outline" onClick={onBack}>{t("apply.change")}</Button></div>
       </div>
     )
   }
@@ -70,13 +75,13 @@ export function Apply({ info, c, onBack }: Pick<W, "info" | "c"> & { onBack: () 
     <div className="grid gap-4" role="status" aria-live="polite">
       <Progress value={Math.round((stage / STAGES.length) * 100)} />
       <ol className="m-0 grid list-none gap-2 p-0 text-sm">
-        {STAGES.map((t, i) => (
-          <li key={t} className={cn("flex items-center gap-2 transition-opacity duration-200", i > stage && "opacity-40")}>
-            {i < stage ? <Check className="size-4 text-emerald-600" /> : i === stage ? <LoaderCircle className="size-4 animate-spin" /> : <span className="size-4 rounded-full border" />}{i === 1 ? `${t}` : t}
+        {STAGES.map((k, i) => (
+          <li key={k} className={cn("flex items-center gap-2 transition-opacity duration-200", i > stage && "opacity-40")}>
+            {i < stage ? <Check className="size-4 text-emerald-600" /> : i === stage ? <LoaderCircle className="size-4 animate-spin" /> : <span className="size-4 rounded-full border" />}{t(k)}
           </li>
         ))}
       </ol>
-      <p className="m-0 text-xs text-muted-foreground">You are taken there when it is ready. Nothing to reload.</p>
+      <p className="m-0 text-xs text-muted-foreground">{t("apply.note")}</p>
     </div>
   )
 }

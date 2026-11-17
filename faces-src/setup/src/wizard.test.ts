@@ -37,7 +37,7 @@ describe("the draft the Core judges", () => {
     let c = { ...initial(i), reach: "network" as const }
     expect(risky(i, c).map((p) => p.id)).toEqual(["@nuah/auth-open"])
     expect(draft(i, c).accepted_risks).toEqual([])
-    expect(stepError(i, c, "access", 0)).toMatch(/Tick the box/)
+    expect(stepError(i, c, "access", 0)?.key).toBe("risk.stop")
     c = { ...c, accepted: true }
     expect(draft(i, c).accepted_risks).toEqual(["@nuah/auth-open"])
     expect(stepError(i, c, "access", 0)).toBeNull()

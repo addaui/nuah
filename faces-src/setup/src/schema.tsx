@@ -2,6 +2,7 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { cn } from "@/lib/utils"
+import { useI18n, type Key } from "./i18n"
 
 /** The part of a JSON Schema a settings form draws. */
 export interface Prop {
@@ -32,20 +33,24 @@ export function fieldsOf(schema: Schema | null | undefined): [string, Prop, bool
   return Object.entries(schema?.properties ?? {}).filter(([, p]) => drawable(p)).map(([k, p]) => [k, p, required.has(k)])
 }
 
+export interface FormError { key: Key; name: string }
+
 /** The first thing missing or out of bounds, or null: what stops the step. */
-export function settingsError(schema: Schema | null | undefined, value: Record<string, unknown> | undefined): string | null {
+export function settingsError(schema: Schema | null | undefined, value: Record<string, unknown> | undefined): FormError | null {
   for (const [k, p, req] of fieldsOf(schema)) {
     const v = value?.[k]
     const empty = v === undefined || v === "" || v === null
-    if (req && empty && p.default === undefined) return `${p.title ?? k} is needed.`
-    if (typeof v === "number" && ((p.minimum !== undefined && v < p.minimum) || (p.maximum !== undefined && v > p.maximum))) return `${p.title ?? k} is out of range.`
-    if (typeof v === "string" && v !== "" && p.minLength !== undefined && v.length < p.minLength) return `${p.title ?? k} is too short.`
+    const name = p.title ?? k
+    if (req && empty && p.default === undefined) return { key: "field.needed", name }
+    if (typeof v === "number" && ((p.minimum !== undefined && v < p.minimum) || (p.maximum !== undefined && v > p.maximum))) return { key: "field.range", name }
+    if (typeof v === "string" && v !== "" && p.minLength !== undefined && v.length < p.minLength) return { key: "field.short", name }
   }
   return null
 }
 
 /** A settings form drawn from a plugin's schema. Required fields are marked, defaults are shown as placeholders, secrets are never shown again. */
 export function SchemaForm({ schema, value, onChange, idPrefix }: { schema: Schema | null | undefined; value: Record<string, unknown> | undefined; onChange: (v: Record<string, unknown>) => void; idPrefix: string }) {
+  const { t } = useI18n()
   const fields = fieldsOf(schema)
   const set = (k: string, v: unknown) => {
     const next = { ...(value ?? {}) }
@@ -62,7 +67,7 @@ export function SchemaForm({ schema, value, onChange, idPrefix }: { schema: Sche
         const v = value?.[k]
         const types = typesOf(p)
         const head = (
-          <div className="flex items-baseline justify-between gap-2"><Label htmlFor={id}>{label}</Label><span className="text-xs text-muted-foreground">{req ? "Required" : "Optional"}</span></div>
+          <div className="flex items-baseline justify-between gap-2"><Label htmlFor={id}>{label}</Label><span className="text-xs text-muted-foreground">{req ? t("field.required") : t("field.optional")}</span></div>
         )
         const hint = p.description ? <p className="m-0 text-xs text-muted-foreground">{p.description}</p> : null
         if (types.includes("array") && p.items?.enum) {
@@ -94,7 +99,7 @@ export function SchemaForm({ schema, value, onChange, idPrefix }: { schema: Sche
         const secret = !!p["x-secret"]
         return (
           <div key={k} className="grid content-start gap-1.5">{head}
-            <Input id={id} type={secret ? "password" : "text"} autoComplete={secret ? "new-password" : "off"} value={isMarker(v) ? "" : String(v ?? "")} placeholder={isMarker(v) ? "Already set. Type to replace it." : p.default === undefined ? "" : String(p.default)} onChange={(e) => (secret && e.target.value === "" && isMarker(v) ? undefined : set(k, e.target.value))} />{hint}
+            <Input id={id} type={secret ? "password" : "text"} autoComplete={secret ? "new-password" : "off"} value={isMarker(v) ? "" : String(v ?? "")} placeholder={isMarker(v) ? t("field.secretSet") : p.default === undefined ? "" : String(p.default)} onChange={(e) => (secret && e.target.value === "" && isMarker(v) ? undefined : set(k, e.target.value))} />{hint}
           </div>
         )
       })}

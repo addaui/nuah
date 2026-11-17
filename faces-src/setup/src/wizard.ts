@@ -1,4 +1,5 @@
 import type { Entry, Info, Plugin, Reach } from "./api"
+import type { Key } from "./i18n"
 import { settingsError } from "./schema"
 
 /** Everything the person chose, kept apart from what the server sent. The draft sent to the Core is built from both. */
@@ -161,20 +162,22 @@ export function draft(info: Info, c: Choices): Record<string, unknown> {
 
 export type StepId = "instance" | "data" | "signin" | "access" | "plugins" | "review"
 
-export function stepError(info: Info, c: Choices, id: StepId, serverProblems: number): string | null {
-  const form = (ps: Plugin[]) => { for (const p of ps) if (c.enabled[p.id]) { const e = settingsError(p.settings_schema, c.settings[p.id]); if (e) return `${p.name}: ${e}` } return null }
+export interface StepMessage { key: Key; params?: Record<string, string | number> }
+
+export function stepError(info: Info, c: Choices, id: StepId, serverProblems: number): StepMessage | null {
+  const form = (ps: Plugin[]): StepMessage | null => { for (const p of ps) if (c.enabled[p.id]) { const e = settingsError(p.settings_schema, c.settings[p.id]); if (e) return { key: e.key, params: { name: `${label(p)}: ${e.name}` } } } return null }
   switch (id) {
-    case "instance": return c.name.trim() ? null : "Give this instance a name."
-    case "data": return !fills(info, "db").some((p) => c.enabled[p.id]) ? "Choose where the data is kept." : form(fills(info, "db"))
+    case "instance": return c.name.trim() ? null : { key: "instance.missing" }
+    case "data": return !fills(info, "db").some((p) => c.enabled[p.id]) ? { key: "data.choose" } : form(fills(info, "db"))
     case "signin": {
-      if (!authPlugins(info).some((p) => c.enabled[p.id])) return "Choose how people sign in."
+      if (!authPlugins(info).some((p) => c.enabled[p.id])) return { key: "signin.choose" }
       const e = form(authPlugins(info)); if (e) return e
-      if (needsFirst(info, c)) { if (!USERNAME.test(c.first.username)) return "Choose a username of 2 to 32 letters, numbers, dots, dashes or underscores."; if (c.first.password.length < MIN_PASSWORD) return "The password needs at least 8 characters." }
-      if (settingsPasswordSlot(info, c) && c.settingsPassword.length < MIN_PASSWORD) return "The settings password needs at least 8 characters."
+      if (needsFirst(info, c)) { if (!USERNAME.test(c.first.username)) return { key: "signin.badUsername" }; if (c.first.password.length < MIN_PASSWORD) return { key: "signin.shortPassword" } }
+      if (settingsPasswordSlot(info, c) && c.settingsPassword.length < MIN_PASSWORD) return { key: "signin.shortSettingsPassword" }
       return null
     }
-    case "access": return risky(info, c).length > 0 && !c.accepted ? "Tick the box to go on, or choose another way to sign in." : null
+    case "access": return risky(info, c).length > 0 && !c.accepted ? { key: "risk.stop" } : null
     case "plugins": return form(info.plugins.filter((p) => !fills(info, "db").includes(p) && !fills(info, "auth").includes(p)))
-    case "review": return serverProblems > 0 ? "Fix the problems above first." : null
+    case "review": return serverProblems > 0 ? { key: "review.fixFirst" } : null
   }
 }

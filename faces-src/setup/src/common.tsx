@@ -3,6 +3,7 @@ import { Label } from "@/components/ui/label"
 import { RadioGroupItem } from "@/components/ui/radio-group"
 import { cn } from "@/lib/utils"
 import type { Info, Power, Problem } from "./api"
+import { useI18n } from "./i18n"
 import type { Choices } from "./wizard"
 
 /** What every step is given: what the server said, what the person chose, and how to change it. */
@@ -21,20 +22,17 @@ export const TAG: Record<Power, string> = {
   "reaches out": "bg-amber-500/10 text-amber-700 dark:text-amber-300",
   "changes settings": "bg-rose-500/10 text-rose-700 dark:text-rose-300",
 }
-export const SHORT: Record<Power, string> = { stores: "keeps its own data", listens: "opens a port", "reaches out": "uses the internet", "changes settings": "can change how this runs" }
-export const POWER_WORDS: Record<Power, string> = {
-  stores: "Keeps its own data in your database",
-  listens: "Opens a port and answers requests",
-  "reaches out": "Contacts websites on the internet",
-  "changes settings": "Can change how this instance runs",
+export const Pill = ({ w }: { w: Power }) => {
+  const { t } = useI18n()
+  return <span className={cn("rounded-full px-2 py-0.5 text-[11px] font-medium", TAG[w])}>{t(`power.${w}` as "power.stores")}</span>
 }
-export const Pill = ({ w }: { w: Power }) => <span className={cn("rounded-full px-2 py-0.5 text-[11px] font-medium", TAG[w])}>{w}</span>
 
 /** A labelled field; the hint is the short plain note and the error shows only once the person has tried to go on. */
 export function Field({ label, hint, error, optional, children, htmlFor }: { label: string; hint?: ReactNode; error?: string; optional?: boolean; children: ReactNode; htmlFor?: string }) {
+  const { t } = useI18n()
   return (
     <div className="grid content-start gap-1.5">
-      <div className="flex items-baseline justify-between gap-2"><Label htmlFor={htmlFor}>{label}</Label><span className="text-xs text-muted-foreground">{optional ? "Optional" : "Required"}</span></div>
+      <div className="flex items-baseline justify-between gap-2"><Label htmlFor={htmlFor}>{label}</Label><span className="text-xs text-muted-foreground">{optional ? t("field.optional") : t("field.required")}</span></div>
       {children}
       {error ? <p className="m-0 text-xs text-destructive" role="alert">{error}</p> : hint ? <p className="m-0 text-xs text-muted-foreground">{hint}</p> : null}
     </div>
