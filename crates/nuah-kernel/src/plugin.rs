@@ -208,6 +208,10 @@ impl<'a> Tx<'a> {
     }
     /// Does the data Adapter provide this feature (see [`feature`](crate::feature))? For a plugin that
     /// `prefers` a feature and takes another path without it.
+    /// The font data of every enabled font plugin (ADR 0090), for an operation that describes fonts to a reader.
+    pub fn font_data(&self) -> Vec<Value> {
+        self.inner.plan.active.values().filter_map(|a| a.manifest.fonts.clone()).collect()
+    }
     pub fn has_feature(&self, name: &str) -> bool {
         self.inner.features.has(name)
     }
