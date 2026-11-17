@@ -443,6 +443,10 @@ impl<'a> Outbound<'a> {
         self.core.inner.check_capability(&self.plugin, "net")?;
         Ok(&*self.core.inner.net)
     }
+    /// The font data of every enabled font plugin: what an outbound Operation that stores fonts may fetch (ADR 0090).
+    pub fn font_data(&self) -> Vec<Value> {
+        self.core.font_data()
+    }
     /// The shell's services. Needs the capability `shell`, granted in the Profile.
     pub fn shell(&self) -> Result<Arc<dyn ShellServices>> {
         self.core.inner.check_capability(&self.plugin, "shell")?;

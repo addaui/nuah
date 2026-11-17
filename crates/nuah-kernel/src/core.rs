@@ -235,6 +235,11 @@ impl Core {
         out
     }
 
+    /// The font data of every enabled font plugin (`Manifest::fonts`), so a plugin that stores fonts knows which addresses it may fetch.
+    pub fn font_data(&self) -> Vec<Value> {
+        self.inner.plan.active.values().filter_map(|a| a.manifest.fonts.clone()).collect()
+    }
+
     pub fn plugin_ids(&self) -> Vec<String> {
         self.inner.plan.active.keys().cloned().collect()
     }
