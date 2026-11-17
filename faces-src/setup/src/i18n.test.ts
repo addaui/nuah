@@ -26,7 +26,7 @@ describe("translations", () => {
 
   it("uses only keys that exist: every t(\"key\") in the source is in the English file", () => {
     const used = new Set<string>()
-    for (const f of files("src")) for (const m of readFileSync(f, "utf8").matchAll(/\bt\("([a-zA-Z.\-]+)"/g)) used.add(m[1])
+    for (const f of files("src")) for (const m of readFileSync(f, "utf8").matchAll(/\bt\("([a-zA-Z.-]+)"/g)) used.add(m[1])
     const missing = [...used].filter((k) => !(k in en))
     expect(missing).toEqual([])
   })
