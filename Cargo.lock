@@ -1121,6 +1121,7 @@ version = "0.14.1"
 dependencies = [
  "async-stream",
  "axum",
+ "base64 0.22.1",
  "futures-util",
  "nuah-adapters",
  "nuah-kernel",
