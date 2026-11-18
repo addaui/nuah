@@ -557,11 +557,21 @@ impl Db for PgDb {
         }
         let keep: Vec<String> = keep.iter().map(index_name).collect();
         let mut w = self.writer.lock();
-        let rows = w
-            .query("SELECT indexname FROM pg_indexes WHERE schemaname=current_schema() AND tablename='nuah_docs' AND (indexname LIKE 'nuah\\_uq\\_%' OR indexname LIKE 'nuah\\_ix\\_%') AND indexdef LIKE $1", &[&format!("%collection = '{collection}'::text%")])
+        // This schema's indexes by catalog row only: `pg_indexes` would work out the definition of every index in the
+        // database before filtering, and fails when another schema is dropped meanwhile. Each definition is then read alone.
+        let ours = w
+            .query("SELECT c.oid, c.relname::text FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = current_schema() AND c.relkind = 'i' AND (c.relname LIKE 'nuah\\_uq\\_%' OR c.relname LIKE 'nuah\\_ix\\_%')", &[])
             .map_err(pg_err)?;
-        for n in rows.iter().map(|r| r.get::<_, String>(0)).filter(|n| !keep.contains(n)) {
-            w.batch_execute(&format!("DROP INDEX IF EXISTS {n}")).map_err(pg_err)?;
+        let wanted = format!("collection = '{collection}'::text");
+        for r in &ours {
+            let (oid, name): (postgres::types::Oid, String) = (r.get(0), r.get(1));
+            if keep.contains(&name) {
+                continue;
+            }
+            let def: Option<String> = w.query_opt("SELECT pg_get_indexdef($1)", &[&oid]).map_err(pg_err)?.and_then(|r| r.get(0));
+            if def.is_some_and(|d| d.contains(&wanted)) {
+                w.batch_execute(&format!("DROP INDEX IF EXISTS {name}")).map_err(pg_err)?;
+            }
         }
         Ok(())
     }

@@ -149,3 +149,37 @@ fn text_jsonb_cannot_hold_is_refused_without_poisoning_the_transaction() {
     })
     .unwrap();
 }
+
+/// Another process's schema being dropped while this one tidies its indexes must not fail the tidy-up: only this
+/// schema's indexes are looked at.
+#[test]
+fn retain_indexes_is_not_disturbed_by_other_schemas_being_dropped() {
+    let Some(u) = url() else { return };
+    let mine = Schema::new(&u);
+    let db = mine.open(0).unwrap();
+    db.ensure_index(&IndexSpec::on("rx", "a").unique()).unwrap();
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let churn = {
+        let (u, stop) = (u.clone(), stop.clone());
+        std::thread::spawn(move || {
+            while !stop.load(Ordering::SeqCst) {
+                let other = Schema::new(&u);
+                let o = other.open(0).unwrap();
+                for f in ["a", "b", "c", "d"] {
+                    o.ensure_index(&IndexSpec::on("rx", f).unique()).unwrap();
+                }
+                drop(o);
+                drop(other);
+            }
+        })
+    };
+    let mut errors = vec![];
+    for _ in 0..300 {
+        if let Err(e) = db.retain_indexes("rx", &[IndexSpec::on("rx", "a").unique()]) {
+            errors.push(e.message);
+        }
+    }
+    stop.store(true, Ordering::SeqCst);
+    churn.join().unwrap();
+    assert!(errors.is_empty(), "{} of 300 failed: {:?}", errors.len(), errors.first());
+}
