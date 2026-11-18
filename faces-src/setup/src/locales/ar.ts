@@ -205,8 +205,7 @@ export const ar: Record<keyof typeof en, string> = {
   "pic.provides": "توفّر {what}",
   "pic.carries": "ينقل الرابط",
   // the Upgrade report (ADR 0091)
-  "upgrade.title": "لا يمكن تحديث {plugin} من {from} إلى {to}",
-  "upgrade.titleNew": "لا يمكن تحديث {plugin} إلى {to}",
+  "upgrade.title": "لا يمكن تحديث {plugin} ({id}) من {from} إلى {to}",
   "upgrade.titleMany": "لا يمكن تحديث بعض الإضافات",
   "upgrade.intro": "لا يمكن نقل بياناتك الحالية إلى هذا الإصدار، لذلك لم يتغير شيء. بياناتك كما كانت تمامًا.",
   "upgrade.wrong": "ما المشكلة",
@@ -237,4 +236,5 @@ export const ar: Record<keyof typeof en, string> = {
   "upgrade.problem.other": "{at}: {code}",
   "plugins.accessTo": "ستصل إلى",
   "plugins.accessFields": "{fields} (في {collection})",
+  "upgrade.titleData": "لا يمكن لـ{plugin} ({id}) نقل بياناته من الإصدار {from} إلى {to}",
 }

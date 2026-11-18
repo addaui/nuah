@@ -9,6 +9,8 @@ export interface ReportState {
   plugins: Record<string, PluginVersions>
   /** For each plugin named: the other plugins that "start without it" also switches off. */
   without: Record<string, string[]>
+  /** What people call each plugin the report mentions. */
+  names?: Record<string, string>
 }
 
 /** Every code the Core's Schema check can give. */
@@ -19,8 +21,21 @@ export const CODES = [
 
 export const problemKey = (p: UpgradeProblem): Key => ((CODES as readonly string[]).includes(p.code) ? `upgrade.problem.${p.code}` : "upgrade.problem.other") as Key
 
+/** A Latin name inside a sentence of any language: isolated as a left-to-right run, so `tasks.tasks › "due"` keeps its order in Arabic. */
+export const ltr = (s: string) => `\u2066${s}\u2069`
+
 /** Where the problem is, as a person reads it: `tasks.tasks › "due"`, or the collection alone. */
-export const where = (p: UpgradeProblem) => (p.path ? `${p.collection} › "${p.path}"` : p.collection)
+export const where = (p: UpgradeProblem) => ltr(p.path ? `${p.collection} › "${p.path}"` : p.collection)
+
+/** The report's heading: the releases when they differ, the data versions when only the data changed, or "some plugins". */
+export function titleOf(s: ReportState): { key: Key; params: Record<string, string | number> } {
+  const ids = Object.keys(s.plugins)
+  if (ids.length !== 1) return { key: "upgrade.titleMany", params: {} }
+  const v = s.plugins[ids[0]]
+  const base = { plugin: v.name, id: ltr(ids[0]) }
+  if (v.from_release && v.from_release !== v.to_release) return { key: "upgrade.title", params: { ...base, from: v.from_release, to: v.to_release } }
+  return { key: "upgrade.titleData", params: { ...base, from: v.from_version, to: v.to_version } }
+}
 
 export function problemParams(p: UpgradeProblem): Record<string, string | number> {
   const s = (k: string) => { const v = p.params[k]; return typeof v === "number" || typeof v === "string" ? v : v == null ? "" : JSON.stringify(v) }

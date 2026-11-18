@@ -26,14 +26,23 @@ use std::sync::Arc;
 pub fn report_state(store: &ProfileStore, refused: &Problem) -> Result<Value, String> {
     let profile = store.stored()?.ok_or_else(|| format!("{} does not exist", store.path.display()))?;
     let mut without_map = Map::new();
+    let mut mentioned: Vec<String> = refused.plugins.clone();
     for p in &refused.plugins {
-        without_map.insert(p.clone(), json!(without(&store.catalog, &profile, p).1));
+        let also = without(&store.catalog, &profile, p).1;
+        mentioned.extend(also.iter().cloned());
+        without_map.insert(p.clone(), json!(also));
+    }
+    // what people call each plugin the report mentions
+    let mut names = Map::new();
+    for m in store.catalog.0.iter().map(|pl| pl.manifest()).filter(|m| mentioned.contains(&m.id)) {
+        names.insert(m.id.clone(), json!(if m.name.is_empty() { m.id.clone() } else { m.name.clone() }));
     }
     Ok(json!({
         "product": store.product,
         "problems": refused.details["problems"],
         "plugins": refused.details["plugins"],
         "without": without_map,
+        "names": names,
     }))
 }
 

@@ -53,3 +53,21 @@ describe("what a plugin will have access to", () => {
     ])
   })
 })
+
+describe("the report in a right-to-left language", () => {
+  it("keeps a Latin name (collection, field, plugin id) in its own left-to-right run", () => {
+    const p = { plugin: "@t/p", collection: "tasks.tasks", path: "position", code: "field_missing", params: {} }
+    const at = String(problemParams(p).at)
+    expect(at.startsWith("⁦") && at.endsWith("⁩")).toBe(true)
+  })
+})
+
+describe("the report's title", () => {
+  it("names the releases when they differ, and the data versions when the release is the same", async () => {
+    const { titleOf } = await import("./report")
+    expect(titleOf(state)).toEqual({ key: "upgrade.title", params: { plugin: "Tasks", id: "⁦@madar/tasks⁩", from: "0.3.0", to: "0.4.0" } })
+    const same = { ...state, plugins: { "@madar/tasks": { ...state.plugins["@madar/tasks"], from_release: "0.4.0" } } }
+    expect(titleOf(same)).toEqual({ key: "upgrade.titleData", params: { plugin: "Tasks", id: "⁦@madar/tasks⁩", from: 1, to: 2 } })
+    expect(titleOf({ ...state, plugins: { ...state.plugins, "@x/y": state.plugins["@madar/tasks"] } }).key).toBe("upgrade.titleMany")
+  })
+})

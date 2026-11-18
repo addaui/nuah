@@ -49,6 +49,8 @@ fn report_lists_problems_versions_and_what_starting_without_takes_out() {
     assert_eq!(state["problems"][0]["path"], "level");
     assert_eq!(state["plugins"]["@t/base"]["to_release"], "0.4.0");
     assert_eq!(state["without"]["@t/base"], json!(["@t/mid"]));
+    assert_eq!(state["names"]["@t/mid"], "mid", "the plugins it would switch off are named as people see them");
+    assert_eq!(state["names"]["@t/base"], "base");
 }
 
 #[test]

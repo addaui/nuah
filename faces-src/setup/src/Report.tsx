@@ -5,7 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { send } from "./api"
 import { useI18n } from "./i18n"
 import { LangSwitch } from "./LangSwitch"
-import { problemKey, problemParams, reportText, type ReportState } from "./report"
+import { ltr, problemKey, problemParams, reportText, titleOf, type ReportState } from "./report"
 
 /** Shown instead of the app when a plugin's data cannot be upgraded (ADR 0091): nothing was changed, here is why, and what to do. */
 export function Report({ state }: { state: ReportState }) {
@@ -16,11 +16,8 @@ export function Report({ state }: { state: ReportState }) {
   const [started, setStarted] = useState(false)
   const ids = Object.keys(state.plugins)
   const name = (id: string) => state.plugins[id]?.name ?? id
-  const title = (() => {
-    if (ids.length !== 1) return t("upgrade.titleMany")
-    const v = state.plugins[ids[0]]
-    return v.from_release ? t("upgrade.title", { plugin: `${v.name} (${ids[0]})`, from: v.from_release, to: v.to_release }) : t("upgrade.titleNew", { plugin: `${v.name} (${ids[0]})`, to: v.to_release })
-  })()
+  const heading = titleOf(state)
+  const title = t(heading.key, heading.params)
   const copy = async () => {
     try { await navigator.clipboard.writeText(reportText(state)); setCopied(true); setTimeout(() => setCopied(false), 1600) } catch { setError(t("upgrade.failed", { error: "clipboard" })) }
   }
@@ -48,7 +45,7 @@ export function Report({ state }: { state: ReportState }) {
             <h2 className="m-0 text-sm font-semibold">{t("upgrade.wrong")}</h2>
             {ids.map((id) => (
               <div key={id} className="grid gap-1.5">
-                {ids.length > 1 && <h3 className="m-0 text-sm font-medium">{name(id)} <span dir="ltr" className="font-mono text-xs text-muted-foreground">{id}</span></h3>}
+                {ids.length > 1 && <h3 className="m-0 text-sm font-medium">{name(id)} <bdi dir="ltr" className="font-mono text-xs text-muted-foreground">{id}</bdi></h3>}
                 <ol className="m-0 grid list-decimal gap-1.5 ps-5 text-sm">
                   {state.problems.filter((p) => p.plugin === id).map((p, i) => <li key={i}>{t(problemKey(p), problemParams(p))}</li>)}
                 </ol>
@@ -65,7 +62,7 @@ export function Report({ state }: { state: ReportState }) {
               <div key={id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border p-3">
                 <div className="grid min-w-0 flex-1 gap-1 text-sm">
                   <p className="m-0">{t("upgrade.withoutText", { plugin: name(id) })}</p>
-                  {(state.without[id] ?? []).length > 0 && <p className="m-0 text-muted-foreground">{t("upgrade.withoutAlso", { list: state.without[id].join(", ") })}</p>}
+                  {(state.without[id] ?? []).length > 0 && <p className="m-0 text-muted-foreground">{t("upgrade.withoutAlso", { list: state.without[id].map((x) => state.names?.[x] ?? ltr(x)).join(", ") })}</p>}
                 </div>
                 <Button variant="secondary" disabled={busy !== null || started} onClick={() => without(id)}>{busy === id ? t("upgrade.starting") : t("upgrade.without")}</Button>
               </div>

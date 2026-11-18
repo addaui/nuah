@@ -218,8 +218,7 @@ export const en = {
   "pic.provides": "provides {what}",
   "pic.carries": "carries the Link",
   // the Upgrade report (ADR 0091)
-  "upgrade.title": "{plugin} can't be updated from {from} to {to}",
-  "upgrade.titleNew": "{plugin} can't be updated to {to}",
+  "upgrade.title": "{plugin} ({id}) can't be updated from {from} to {to}",
   "upgrade.titleMany": "Some plugins can't be updated",
   "upgrade.intro": "Your existing data can't be carried over to this version, so nothing was changed. Your data is exactly as it was.",
   "upgrade.wrong": "What's wrong",
@@ -250,4 +249,5 @@ export const en = {
   "upgrade.problem.other": "{at}: {code}",
   "plugins.accessTo": "Will have access to",
   "plugins.accessFields": "{fields} (in {collection})",
+  "upgrade.titleData": "{plugin} ({id}) can't move its data from version {from} to {to}",
 } as const
