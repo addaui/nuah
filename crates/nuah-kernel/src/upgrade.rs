@@ -163,6 +163,11 @@ impl UpgradeProblem {
             "below_floor" => format!("the stored data is at version {}, older than the oldest this version can upgrade from ({}); install version {} first", p["stored"], p["floor"], p["floor"]),
             "data_newer" => format!("the stored data is at version {}, newer than this version of the plugin ({})", p["stored"], p["version"]),
             "schema_changed_without_version" => format!("the schema changed but its version ({}) did not", p["version"]),
+            "data_without_schema" => "the stored data was written by a version from before schemas, so it cannot be carried over".to_string(),
+            "interrupted_upgrade" => format!("an earlier upgrade to version {} stopped half-way; finish it with that version first (this one is version {})", p["to"], p["version"]),
+            "names_merge" => format!("{at}: two stored names become this one name; one of them would overwrite the other"),
+            "documents_do_not_fit" => format!("{at}: {} stored document(s) do not fit the new schema after the declared changes (for example {}: {})", p["count"], p["example"], p["reason"]),
+            "unique_conflict" => format!("{at}: {} stored document(s) share values the new unique index on {} forbids (for example {})", p["count"], p["fields"], p["example"]),
             other => format!("{at}: {other}"),
         }
     }
@@ -297,10 +302,16 @@ pub fn plan(plugin: &str, stored: &SchemaFile, new: &SchemaFile) -> Result<Upgra
             }
         }
     }
+    let mut claimed: std::collections::BTreeMap<String, usize> = Default::default();
     for (sc, ss) in stored.collections.iter().filter(|(_, s)| !is_removed(s)) {
         let target = n.live.iter().find(|(name, _)| *name == sc.as_str()).or_else(|| n.earlier.iter().find(|(e, _)| *e == sc.as_str()).and_then(|(_, owner)| n.live.iter().find(|(name, _)| name == owner)));
         match target {
             Some((to, ns)) => {
+                *claimed.entry(to.to_string()).or_default() += 1;
+                if claimed[*to] == 2 {
+                    d.problems.push(UpgradeProblem::new(plugin, to, &[], "names_merge", serde_json::json!({})));
+                    continue;
+                }
                 d.collection = to.to_string();
                 let mut ops = vec![];
                 d.object(&[], ss, ns, &mut ops);
@@ -362,8 +373,16 @@ impl Diff<'_> {
             let target = n.live.iter().find(|(name, _)| *name == f.as_str()).or_else(|| n.earlier.iter().find(|(e, _)| *e == f.as_str()).and_then(|(_, owner)| n.live.iter().find(|(name, _)| name == owner)));
             match target {
                 Some((to, nf)) => {
-                    matched.push(to);
                     let there = [path, &[to.to_string()]].concat();
+                    if matched.contains(to) {
+                        self.problem(&there, "names_merge", serde_json::json!({}));
+                        continue;
+                    }
+                    matched.push(to);
+                    // a value stored without the field gets the default (a field that becomes required needs it)
+                    if let Some(dv) = nf.get("default") {
+                        ops.push(FieldOp::Default(there.clone(), dv.clone()));
+                    }
                     if *to != f.as_str() {
                         ops.push(FieldOp::Rename { from: here.clone(), to: there.clone() });
                     }
@@ -752,5 +771,34 @@ mod tests {
         let mut b = json!({"kind": null, "c": 2});
         apply(&mut b, &[FieldOp::Default(path(&["kind"]), json!("task")), FieldOp::Rename { from: path(&["a"]), to: path(&["c"]) }]);
         assert_eq!(b, json!({"kind": null, "c": 2}));
+    }
+
+    #[test]
+    fn two_stored_fields_onto_one_new_field_are_refused() {
+        let stored = v(1, json!({"t.a": obj(json!({"a": {"type": "string"}, "c": {"type": "string"}}))}));
+        let new = v(2, json!({"t.a": obj(json!({"c": {"type": "string", "renamed_from": ["a"]}}))}));
+        assert_eq!(codes(plan("@t/p", &stored, &new)), vec![("names_merge".into(), "c".into())]);
+    }
+
+    #[test]
+    fn two_stored_collections_onto_one_are_refused() {
+        let stored = v(1, json!({"t.a": obj(json!({})), "t.b": obj(json!({}))}));
+        let new = v(2, json!({"t.b": {"type": "object", "properties": {}, "renamed_from": ["t.a"]}}));
+        assert_eq!(codes(plan("@t/p", &stored, &new)), vec![("names_merge".into(), "".into())]);
+    }
+
+    #[test]
+    fn a_field_that_becomes_required_with_a_default_gets_it() {
+        let stored = v(1, json!({"t.a": obj(json!({"due": {"type": ["string", "null"]}}))}));
+        let new = v(2, json!({"t.a": {"type": "object", "required": ["due"], "properties": {"due": {"type": ["string", "null"], "default": null}}}}));
+        assert_eq!(ops(plan("@t/p", &stored, &new))[0].ops, vec![FieldOp::Default(path(&["due"]), json!(null))]);
+    }
+
+    #[test]
+    fn every_code_reads_as_a_sentence() {
+        for code in ["data_without_schema", "interrupted_upgrade", "names_merge", "documents_do_not_fit", "unique_conflict"] {
+            let p = UpgradeProblem { plugin: "@t/p".into(), collection: "t.a".into(), path: "".into(), code: code.into(), params: json!({"to": 2, "version": 3, "stored": 1, "count": 4, "example": "x", "reason": "r", "fields": ["k"]}) };
+            assert!(!p.message().ends_with(code), "{code}: {}", p.message());
+        }
     }
 }

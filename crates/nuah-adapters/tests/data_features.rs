@@ -348,6 +348,8 @@ struct Up {
     batches: Arc<AtomicUsize>,
     fail_at: Option<usize>,
     failed: Arc<AtomicUsize>,
+    /// The step also pushes a Document of its own (which the contract forbids).
+    adds: bool,
 }
 impl Plugin for Up {
     fn manifest(&self) -> Manifest {
@@ -367,6 +369,9 @@ impl Plugin for Up {
         if self.fail_at == Some(n) && self.failed.fetch_add(1, AtomicOrdering::SeqCst) == 0 {
             return Err(Error::internal("the step failed on purpose"));
         }
+        if self.adds {
+            batch.push(("zzz-new".into(), json!({})));
+        }
         for (_, body) in batch.iter_mut() {
             assert!(body.get("a").is_none(), "declared renames are applied before the step");
             body["stepped"] = json!(body["stepped"].as_i64().unwrap_or(0) + 1);
@@ -376,6 +381,7 @@ impl Plugin for Up {
 }
 
 struct Rig {
+    adds: bool,
     mem: Arc<MemoryDb>,
     backups: Arc<AtomicUsize>,
     batches: Arc<AtomicUsize>,
@@ -383,13 +389,13 @@ struct Rig {
 }
 impl Rig {
     fn new() -> Rig {
-        Rig { mem: Arc::new(MemoryDb::new()), backups: Default::default(), batches: Default::default(), failed: Default::default() }
+        Rig { adds: false, mem: Arc::new(MemoryDb::new()), backups: Default::default(), batches: Default::default(), failed: Default::default() }
     }
     fn boot(&self, file: Value, fail_at: Option<usize>) -> std::result::Result<Core, Vec<Problem>> {
         let clock = FixedClock::at(1_000_000);
         let seen = Default::default();
         let mut cat = catalog(&clock, &seen);
-        cat.0.push(Arc::new(Up { file, batches: self.batches.clone(), fail_at, failed: self.failed.clone() }));
+        cat.0.push(Arc::new(Up { file, batches: self.batches.clone(), fail_at, failed: self.failed.clone(), adds: self.adds }));
         cat.0.push(Arc::new(AdapterCounting(self.mem.clone(), self.backups.clone())));
         let mut p = profile(&["@nuah/db-counting", "@nuah/auth-local", "@nuah/policy-roles", "@nuah/clock-fixed", "@nuah/ids-sequential", "@test/up"]);
         p.grants.clear();
@@ -538,7 +544,7 @@ fn sqlite_drops_a_unique_index_the_schema_no_longer_asks_for() {
         let clock = FixedClock::at(1_000_000);
         let seen = Default::default();
         let mut cat = catalog(&clock, &seen);
-        cat.0.push(Arc::new(Up { file, batches: rig.batches.clone(), fail_at: None, failed: rig.failed.clone() }));
+        cat.0.push(Arc::new(Up { file, batches: rig.batches.clone(), fail_at: None, failed: rig.failed.clone(), adds: false }));
         cat.0.push(Arc::new(AdapterSqlite));
         let mut p = profile(&["@nuah/db-sqlite", "@nuah/auth-local", "@nuah/policy-roles", "@nuah/clock-fixed", "@nuah/ids-sequential", "@test/up"]);
         p.grants.clear();
@@ -622,4 +628,64 @@ fn a_plugin_that_owns_collections_without_a_schema_file_is_a_problem() {
     let ps = check_with_reader(json!({"collections": ["feat.docs"], "version": 1}), json!([]));
     let p = ps.iter().find(|p| p.code == "schema_missing").unwrap_or_else(|| panic!("{ps:?}"));
     assert_eq!(p.plugins, vec!["@test/feat".to_string()]);
+}
+
+// ---- the dry run, the step contract, leftovers (final review fixes) -------------------------------
+
+#[test]
+fn documents_that_would_not_fit_the_new_schema_are_refused_before_anything_is_written() {
+    let rig = Rig::new();
+    let f1 = json!({"version": 1, "collections": {"up.docs": {"type": "object", "properties": {"meta": {"type": "object"}}}}});
+    let c = rig.boot(f1, None).unwrap();
+    for i in 0..3 {
+        c.call_as(&person("a", &["member"]), "up.put", json!({"c": "up.docs", "id": format!("d{i}"), "body": {"meta": {"x": 1}}}), None).unwrap();
+    }
+    let f2 = json!({"version": 2, "collections": {"up.docs": {"type": "object", "properties": {"meta": {"type": "object", "properties": {"y": {"type": "string"}}}}}}});
+    let ps = rig.boot(f2, None).err().unwrap();
+    assert_eq!(ps[0].code, "upgrade_refused");
+    let p = &ps[0].details["problems"][0];
+    assert_eq!((p["code"].as_str(), p["params"]["count"].as_u64()), (Some("documents_do_not_fit"), Some(3)), "{p}");
+    assert_eq!(rig.meta("schema:@test/up").unwrap()["version"], 1);
+    assert_eq!(rig.backups.load(AtomicOrdering::SeqCst), 0, "refused before the backup");
+}
+
+#[test]
+fn a_new_unique_index_on_data_that_has_duplicates_is_refused() {
+    let rig = Rig::new();
+    let f1 = json!({"version": 1, "collections": {"up.docs": {"type": "object", "properties": {"k": {"type": "string"}}}}});
+    let c = rig.boot(f1, None).unwrap();
+    for i in 0..2 {
+        c.call_as(&person("a", &["member"]), "up.put", json!({"c": "up.docs", "id": format!("d{i}"), "body": {"k": "same"}}), None).unwrap();
+    }
+    let f2 = json!({"version": 2, "collections": {"up.docs": {"type": "object", "properties": {"k": {"type": "string", "unique": true}}}}});
+    let ps = rig.boot(f2, None).err().unwrap();
+    assert_eq!(ps[0].details["problems"][0]["code"], "unique_conflict", "{:?}", ps[0]);
+    assert_eq!(rig.meta("schema:@test/up").unwrap()["version"], 1);
+}
+
+#[test]
+fn an_upgrade_step_may_not_add_documents_to_its_batch() {
+    let mut rig = Rig::new();
+    seed(&rig.boot(v1(), None).unwrap(), 3);
+    rig.adds = true;
+    let ps = rig.boot(v2(json!([2])), None).err().unwrap();
+    assert!(ps.iter().any(|p| p.message.contains("may not add")), "{ps:?}");
+    assert!(rig.docs("up.docs").iter().all(|d| d.id != "zzz-new"));
+}
+
+#[test]
+fn the_indexes_of_a_renamed_collection_are_dropped() {
+    let rig = Rig::new();
+    seed(&rig.boot(v1(), None).unwrap(), 1);
+    let mut f = v1();
+    f["version"] = json!(2);
+    let s = f["collections"]["up.docs"].clone();
+    f["collections"] = json!({"up.items": s});
+    f["collections"]["up.items"]["renamed_from"] = json!(["up.docs"]);
+    rig.boot(f, None).unwrap();
+    rig.mem.write(&mut |w| {
+        w.put("up.docs", "x1", "t", json!({"k": "same"}), Expect::Any, 1)?;
+        w.put("up.docs", "x2", "t", json!({"k": "same"}), Expect::Any, 1)?;
+        Ok(())
+    }).expect("no unique index is left on the old name");
 }

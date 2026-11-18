@@ -100,6 +100,13 @@ impl Bindings {
     {
         self.listeners.insert(name.into(), Arc::new(f));
     }
+    /// Answer whether a Subject is in a Scope (an Event's audience).
+    ///
+    /// The resolver gets the database whole, not filtered by the plugin's Read declaration (it answers with grants, never
+    /// with data). Every field of another plugin's Collection it reads must still be named in the plugin's `data.reads`,
+    /// so the owner cannot rename or remove it without the Resolver saying so ([ADR 0091]).
+    ///
+    /// [ADR 0091]: https://docs.addaui.com/nuah/adr/0091-plugins-declare-one-schema-nuah-upgrades-their-data-from-it-and-refuses-changes-that-would-lose-data/
     pub fn scope<F>(&mut self, name: &str, f: F)
     where
         F: Fn(&dyn DbRead, &str, &str) -> Result<bool> + Send + Sync + 'static,
@@ -108,6 +115,12 @@ impl Bindings {
     }
     /// Answer for a resource type: the permissions this Identity holds on the resource, or `None` when
     /// it does not exist for them.
+    ///
+    /// The resolver gets the database whole, not filtered by the plugin's Read declaration (it answers with grants, never
+    /// with data). Every field of another plugin's Collection it reads must still be named in the plugin's `data.reads`,
+    /// so the owner cannot rename or remove it without the Resolver saying so ([ADR 0091]).
+    ///
+    /// [ADR 0091]: https://docs.addaui.com/nuah/adr/0091-plugins-declare-one-schema-nuah-upgrades-their-data-from-it-and-refuses-changes-that-would-lose-data/
     pub fn resource<F>(&mut self, kind: &str, f: F)
     where
         F: Fn(&dyn DbRead, &crate::ports::Identity, &str) -> Result<Option<Vec<String>>> + Send + Sync + 'static,

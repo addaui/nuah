@@ -237,4 +237,7 @@ export const ar: Record<keyof typeof en, string> = {
   "plugins.accessTo": "ستصل إلى",
   "plugins.accessFields": "{fields} (في {collection})",
   "upgrade.titleData": "لا يمكن لـ{plugin} ({id}) نقل بياناته من الإصدار {from} إلى {to}",
+  "upgrade.problem.names_merge": "{at}: اسمان مخزّنان يصبحان هذا الاسم الواحد، فيكتب أحدهما فوق الآخر.",
+  "upgrade.problem.documents_do_not_fit": "{at}: {count} من العناصر المخزنة لا تناسب الإصدار الجديد حتى بعد تغييراته المعلنة (مثلًا {example}: {reason}).",
+  "upgrade.problem.unique_conflict": "{at}: {count} من العناصر المخزنة تتشارك قيمة يقول الإصدار الجديد إنها يجب أن تكون فريدة ({fields}؛ مثلًا {example}).",
 }

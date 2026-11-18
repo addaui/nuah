@@ -17,6 +17,7 @@ export interface ReportState {
 export const CODES = [
   "field_missing", "collection_missing", "type_changed", "limit_tightened", "required_without_default", "name_reused", "earlier_name_twice",
   "earlier_name_dropped", "below_floor", "data_newer", "schema_changed_without_version", "data_without_schema", "interrupted_upgrade",
+  "names_merge", "documents_do_not_fit", "unique_conflict",
 ] as const
 
 export const problemKey = (p: UpgradeProblem): Key => ((CODES as readonly string[]).includes(p.code) ? `upgrade.problem.${p.code}` : "upgrade.problem.other") as Key
@@ -39,7 +40,9 @@ export function titleOf(s: ReportState): { key: Key; params: Record<string, stri
 
 export function problemParams(p: UpgradeProblem): Record<string, string | number> {
   const s = (k: string) => { const v = p.params[k]; return typeof v === "number" || typeof v === "string" ? v : v == null ? "" : JSON.stringify(v) }
-  return { at: where(p), code: p.code, from: s("from"), to: s("to"), limit: s("limit"), stored: s("stored"), floor: s("floor"), version: s("version") }
+  const fields = Array.isArray(p.params.fields) ? ltr((p.params.fields as string[]).join(", ")) : ""
+  return { at: where(p), code: p.code, from: s("from"), to: s("to"), limit: s("limit"), stored: s("stored"), floor: s("floor"), version: s("version"),
+    count: s("count"), example: ltr(String(s("example"))), reason: ltr(String(s("reason"))), fields }
 }
 
 /** The copied report: plain English, with everything a plugin maker needs to find the cause. */

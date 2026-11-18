@@ -15,7 +15,7 @@ const state: ReportState = {
 describe("the upgrade report", () => {
   it("has a sentence for every problem code, in English and Arabic, naming where", () => {
     for (const code of CODES) {
-      const p = { plugin: "@t/p", collection: "t.docs", path: "a.b", code, params: { from: "string", to: "integer", limit: "maxLength", stored: 1, floor: 3, version: 2, to_version: 4 } }
+      const p = { plugin: "@t/p", collection: "t.docs", path: "a.b", code, params: { from: "string", to: "integer", limit: "maxLength", stored: 1, floor: 3, version: 2, to_version: 4, count: 3, example: "d1", reason: "x is not allowed", fields: ["k"] } }
       for (const lang of ["en", "ar"] as const) {
         const text = translate(lang, problemKey(p), problemParams(p))
         expect(text, `${lang} ${code}`).not.toBe(problemKey(p))

@@ -487,6 +487,14 @@ impl Inner {
             match crate::upgrade::plan(id, &old, &new) {
                 Ok(plan) => {
                     let stepped = new.steps.iter().copied().filter(|s| *s > old.version && *s <= new.version).collect::<Vec<u32>>();
+                    // with no Upgrade step to fix values up, every stored Document must fit after the declared changes
+                    if old.version < new.version && stepped.is_empty() {
+                        let found = self.dry_run(id, &old, &new, &plan)?;
+                        if !found.is_empty() {
+                            refused.extend(found);
+                            continue;
+                        }
+                    }
                     if old.version < new.version {
                         upgrading.push(format!("{id} v{} to v{}", old.version, new.version));
                         work.insert(id, Upgrade { to: new.version, plan, stepped, stored: old.live_collections(), file: raw.clone() });
@@ -560,6 +568,63 @@ impl Inner {
         Ok(())
     }
 
+    /// Before an upgrade with no Upgrade step: apply the declared changes to every stored Document in memory and check
+    /// each against the new Collection schema and the new unique indexes. Each Collection with misfits gives one problem
+    /// with how many Documents break and one example, so the person sees it in the Upgrade report and nothing is written.
+    fn dry_run(&self, id: &str, old: &crate::upgrade::SchemaFile, new: &crate::upgrade::SchemaFile, plan: &crate::upgrade::UpgradePlan) -> Result<Vec<crate::upgrade::UpgradeProblem>> {
+        use crate::upgrade::{apply, index_specs, strict, UpgradeProblem, BATCH};
+        let mut out = vec![];
+        for from in old.live_collections() {
+            let (to, ops) = match plan.collections.iter().find(|c| c.from == from) {
+                Some(c) if c.removed => continue,
+                Some(c) => (c.to.clone(), c.ops.clone()),
+                None => (from.clone(), vec![]),
+            };
+            let Some(raw) = new.collections.get(&to) else { continue };
+            let schema = strict(raw);
+            let uniques: Vec<IndexSpec> = index_specs(&to, raw).into_iter().filter(|s| s.unique).collect();
+            let mut seen: Vec<std::collections::BTreeSet<String>> = vec![Default::default(); uniques.len()];
+            let (mut misfits, mut example, mut clashes, mut clash_example) = (0u64, None::<(String, String)>, vec![0u64; uniques.len()], vec![None::<String>; uniques.len()]);
+            let mut after = String::new();
+            loop {
+                let mut batch: Vec<Doc> = vec![];
+                self.db.read(&mut |r| {
+                    batch = r.scan(&from, &after, BATCH)?.into_iter().take_while(|d| d.collection == from).collect();
+                    Ok(())
+                })?;
+                let Some(last) = batch.last().map(|d| d.id.clone()) else { break };
+                for d in batch.into_iter().filter(|d| !d.deleted) {
+                    let mut b = d.body;
+                    apply(&mut b, &ops);
+                    if let Err(e) = crate::schema::validate(&schema, &b) {
+                        misfits += 1;
+                        example.get_or_insert((d.id.clone(), e.message.clone()));
+                    }
+                    for (n, u) in uniques.iter().enumerate() {
+                        let vals: Vec<&Value> = u.fields.iter().map(|f| f.split('.').fold(&b, |v, k| &v[k])).collect();
+                        if vals.iter().any(|v| v.is_null()) {
+                            continue;
+                        }
+                        if !seen[n].insert(serde_json::to_string(&vals).unwrap_or_default()) {
+                            clashes[n] += 1;
+                            clash_example[n].get_or_insert(d.id.clone());
+                        }
+                    }
+                }
+                after = last;
+            }
+            if let Some((doc, reason)) = example {
+                out.push(UpgradeProblem { plugin: id.into(), collection: to.clone(), path: String::new(), code: "documents_do_not_fit".into(), params: json!({"count": misfits, "example": doc, "reason": reason}) });
+            }
+            for (n, u) in uniques.iter().enumerate() {
+                if clashes[n] > 0 {
+                    out.push(UpgradeProblem { plugin: id.into(), collection: to.clone(), path: u.fields.join(","), code: "unique_conflict".into(), params: json!({"count": clashes[n], "fields": u.fields, "example": clash_example[n]}) });
+                }
+            }
+        }
+        Ok(out)
+    }
+
     /// Bring one plugin's stored Documents to its new schema ([ADR 0091]): every Collection with work, in name order,
     /// in batches of [`crate::upgrade::BATCH`], each batch one transaction together with the progress record, so a start
     /// that stops half-way continues where it stopped. The new schema and Data version are recorded last.
@@ -608,6 +673,9 @@ impl Inner {
                         for s in &u.stepped {
                             a.plugin.upgrade(*s, &w.to, &mut items, tx)?;
                         }
+                        if let Some((i, _)) = items.iter().find(|(i, _)| !live.iter().any(|(l, _)| l == i)) {
+                            return Err(Error::internal(format!("an Upgrade step may change or remove the Documents of its batch but may not add any (it added {i}); put other Documents in another Collection with tx.put")));
+                        }
                     }
                     let kept: std::collections::BTreeSet<&str> = if w.removed { Default::default() } else { items.iter().map(|(i, _)| i.as_str()).collect() };
                     // what moved to a new name, or what the step removed, goes from where it was
@@ -651,7 +719,12 @@ impl Inner {
             wr.put("_meta", &format!("version:{id}"), "kernel", json!({"version": u.to}), Expect::Any, now)?;
             wr.delete("_meta", &key, Expect::Any, now)?;
             Ok(())
-        })
+        })?;
+        // the indexes of a Collection that was renamed or removed go with its old name
+        for w in work.iter().filter(|w| w.removed || w.to != w.from) {
+            self.db.retain_indexes(&w.from, &[])?;
+        }
+        Ok(())
     }
 
     /// Run kernel-internal work as a plugin, in a write transaction, with no Subject.

@@ -250,4 +250,7 @@ export const en = {
   "plugins.accessTo": "Will have access to",
   "plugins.accessFields": "{fields} (in {collection})",
   "upgrade.titleData": "{plugin} ({id}) can't move its data from version {from} to {to}",
+  "upgrade.problem.names_merge": "{at}: two stored names become this one name, so one would overwrite the other.",
+  "upgrade.problem.documents_do_not_fit": "{at}: {count} stored item(s) don't fit the new version even after its declared changes (for example {example}: {reason}).",
+  "upgrade.problem.unique_conflict": "{at}: {count} stored item(s) share a value that the new version says must be unique ({fields}; for example {example}).",
 } as const
