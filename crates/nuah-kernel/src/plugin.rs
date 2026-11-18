@@ -264,10 +264,39 @@ impl<'a> Tx<'a> {
         if ok { Ok(()) } else { Err(Error::internal(format!("plugin {} does not own collection {collection}", self.plugin))) }
     }
 
-    /// A live document, or `None`.
+    /// The fields this plugin declared it reads from another plugin's Collection (its Read declaration), or `None`
+    /// for a Collection it owns (or kernel work), which it sees whole ([ADR 0091]).
+    ///
+    /// [ADR 0091]: https://docs.addaui.com/nuah/adr/0091-plugins-declare-one-schema-nuah-upgrades-their-data-from-it-and-refuses-changes-that-would-lose-data/
+    fn read_fields(&self, collection: &str) -> Option<&Vec<String>> {
+        let m = self.inner.manifest(&self.plugin)?;
+        if m.data.collections.iter().any(|c| c == collection) {
+            return None;
+        }
+        m.data.reads.get(collection)
+    }
+    /// A reader may filter and order only by fields it declared.
+    fn check_read_paths<'p>(&self, collection: &str, paths: impl Iterator<Item = &'p str>) -> Result<()> {
+        if let Some(fields) = self.read_fields(collection) {
+            for f in paths {
+                let top = f.split('.').next().unwrap_or("");
+                if !fields.iter().any(|x| x == top) {
+                    return Err(Error::internal(format!("plugin {} reads {collection} by the field {f}, which its Read declaration does not name", self.plugin)));
+                }
+            }
+        }
+        Ok(())
+    }
+    fn only_declared(&self, collection: &str, mut d: Doc) -> Doc {
+        if let (Some(fields), Some(o)) = (self.read_fields(collection), d.body.as_object_mut()) {
+            o.retain(|k, _| fields.iter().any(|f| f == k));
+        }
+        d
+    }
+    /// A live document, or `None`. From another plugin's Collection, only the declared fields.
     pub fn get(&self, collection: &str, id: &str) -> Result<Option<Doc>> {
         self.may_read(collection)?;
-        Ok(self.rd().get(collection, id)?.filter(|d| !d.deleted))
+        Ok(self.rd().get(collection, id)?.filter(|d| !d.deleted).map(|d| self.only_declared(collection, d)))
     }
     pub fn query(&self, collection: &str, q: &Query) -> Result<Page> {
         self.may_read(collection)?;
@@ -276,10 +305,14 @@ impl<'a> Tx<'a> {
                 return Err(Error::internal(format!("bad field path {}", c.field)));
             }
         }
-        self.rd().query(collection, q)
+        self.check_read_paths(collection, q.conds.iter().map(|c| c.field.as_str()).chain(q.order.iter().map(|(f, _)| f.as_str())))?;
+        let mut page = self.rd().query(collection, q)?;
+        page.items = page.items.into_iter().map(|d| self.only_declared(collection, d)).collect();
+        Ok(page)
     }
     pub fn count(&self, collection: &str, conds: &[Cond]) -> Result<u64> {
         self.may_read(collection)?;
+        self.check_read_paths(collection, conds.iter().map(|c| c.field.as_str()))?;
         self.rd().count(collection, conds)
     }
     /// Create or replace a document in a collection this plugin owns.

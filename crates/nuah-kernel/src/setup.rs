@@ -167,6 +167,12 @@ pub fn restore_profile(draft: &mut Profile, stored: &Profile, dist: &Distributio
 /// The Catalog and the current choices as JSON for a setup Face. Reads manifests only; secrets are
 /// redacted.
 pub fn catalog_info(dist: &Distribution) -> Value {
+    let manifests: Vec<_> = dist.catalog.0.iter().map(|pl| pl.manifest()).collect();
+    // who owns a Collection: the enabled plugin that does, else any in the catalog
+    let owner_of = |c: &str| {
+        let owns = |m: &&crate::manifest::Manifest| m.data.collections.iter().any(|x| x == c);
+        manifests.iter().filter(owns).find(|m| dist.profile.enabled.contains(&m.id)).or_else(|| manifests.iter().find(owns)).map(|m| m.id.clone())
+    };
     let mut plugins: Vec<Value> = dist
         .catalog
         .0
@@ -182,6 +188,8 @@ pub fn catalog_info(dist: &Distribution) -> Value {
                 "requires": {"plugins": m.requires.plugins, "ports": m.requires.ports, "extension_points": m.requires.extension_points, "capabilities": m.requires.capabilities},
                 "operations": m.operations.keys().collect::<Vec<_>>(),
                 "settings_schema": m.settings_schema,
+                // what a person is shown before switching it on: the fields of other plugins' data it reads (ADR 0091)
+                "reads": m.data.reads.iter().map(|(c, f)| json!({"owner": owner_of(c), "collection": c, "fields": f})).collect::<Vec<_>>(),
             })
         })
         .collect();

@@ -535,3 +535,64 @@ fn sqlite_drops_a_unique_index_the_schema_no_longer_asks_for() {
     drop(c);
     std::fs::remove_dir_all(dir).ok();
 }
+
+// ---- Read declarations (ADR 0091) ----------------------------------------------------------------
+
+/// Reads `feat.docs`, declaring only `title`.
+struct Peek;
+impl Plugin for Peek {
+    fn manifest(&self) -> Manifest {
+        serde_json::from_value(json!({"id": "@test/peek", "version": "1.0.0", "namespaces": ["peek"], "data": {"reads": {"feat.docs": ["title"]}},
+            "operations": {"peek.get": {"kind": "query", "input": {"type": "object", "required": ["id"]}},
+                           "peek.find": {"kind": "query", "input": {"type": "object", "required": ["field", "value"]}}}})).unwrap()
+    }
+    fn bind(&self, b: &mut Bindings) {
+        b.op("peek.get", |tx, i| Ok(tx.get("feat.docs", i["id"].as_str().unwrap())?.map(|d| d.body).unwrap_or(Value::Null)));
+        b.op("peek.find", |tx, i| {
+            let page = tx.query("feat.docs", &Query::new().eq(i["field"].as_str().unwrap(), i["value"].clone()))?;
+            Ok(json!(page.items.into_iter().map(|d| d.body).collect::<Vec<_>>()))
+        });
+    }
+}
+
+fn start_with_peek() -> Core {
+    let clock = FixedClock::at(1_000_000);
+    let seen = Default::default();
+    let mut cat = catalog(&clock, &seen);
+    cat.0.push(Arc::new(Feat(schema_data(json!({"feat.docs": {"type": "object", "properties": {"title": {"type": "string"}, "secret": {"type": "string"}}}})))));
+    cat.0.push(Arc::new(Peek));
+    let mut p = profile(&["@nuah/db-memory", "@nuah/auth-local", "@nuah/policy-roles", "@nuah/clock-fixed", "@nuah/ids-sequential", "@test/feat", "@test/peek"]);
+    p.grants.clear();
+    Core::start(&Distribution { name: "t".into(), catalog: cat, profile: p }).unwrap_or_else(|e| panic!("{e:?}"))
+}
+
+#[test]
+fn reader_sees_only_declared_fields() {
+    let c = start_with_peek();
+    put(&c, "a", json!({"title": "t", "secret": "s"})).unwrap();
+    let got = c.call_as(&person("a", &["member"]), "peek.get", json!({"id": "a"}), None).unwrap().output;
+    assert_eq!(got, json!({"title": "t"}));
+    let found = c.call_as(&person("a", &["member"]), "peek.find", json!({"field": "title", "value": "t"}), None).unwrap().output;
+    assert_eq!(found, json!([{"title": "t"}]));
+}
+
+#[test]
+fn reader_query_on_undeclared_field_is_refused() {
+    let c = start_with_peek();
+    put(&c, "a", json!({"title": "t", "secret": "s"})).unwrap();
+    let e = c.call_as(&person("a", &["member"]), "peek.find", json!({"field": "secret", "value": "s"}), None).unwrap_err();
+    assert_eq!(e.category, Category::Internal);
+}
+
+#[test]
+fn catalog_info_lists_reads_by_owner() {
+    let clock = FixedClock::at(1_000_000);
+    let seen = Default::default();
+    let mut cat = catalog(&clock, &seen);
+    cat.0.push(Arc::new(Feat(schema_data(json!({"feat.docs": {"type": "object", "properties": {"title": {"type": "string"}}}})))));
+    cat.0.push(Arc::new(Peek));
+    let p = profile(&["@nuah/db-memory", "@test/feat", "@test/peek"]);
+    let info = nuah_kernel::setup::catalog_info(&Distribution { name: "t".into(), catalog: cat, profile: p });
+    let peek = info["plugins"].as_array().unwrap().iter().find(|x| x["id"] == "@test/peek").unwrap_or_else(|| panic!("{info}"));
+    assert_eq!(peek["reads"], json!([{"owner": "@test/feat", "collection": "feat.docs", "fields": ["title"]}]));
+}
