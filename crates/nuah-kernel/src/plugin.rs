@@ -151,8 +151,19 @@ pub trait Plugin: Send + Sync {
     fn serve(&self, _ctx: ServiceContext) -> Result<Option<Box<dyn Service>>> {
         Ok(None)
     }
-    /// Move this plugin's data from `from` to the Manifest's `data.version`, one step at a time.
-    fn migrate(&self, _from: u32, _tx: &mut Tx) -> Result<()> {
+    /// Called once, when this plugin's data is new (nothing stored yet): put what a first start needs (seed accounts
+    /// from the Settings, for example). Not called on an upgrade.
+    fn init_data(&self, _tx: &mut Tx) -> Result<()> {
+        Ok(())
+    }
+    /// An Upgrade step ([ADR 0091]): called for every batch of every Collection when the data moves past a Data version
+    /// listed in `steps`, after the kernel applied the declared renames, removals and defaults. `batch` holds the
+    /// Documents (id, body) under their new Collection name `collection`; change bodies in place, remove an entry to
+    /// delete that Document, push one to create it. The kernel writes the batch afterwards and checks each body against
+    /// the new schema. The work for one batch and the runner's progress commit together.
+    ///
+    /// [ADR 0091]: https://docs.addaui.com/nuah/adr/0091-plugins-declare-one-schema-nuah-upgrades-their-data-from-it-and-refuses-changes-that-would-lose-data/
+    fn upgrade(&self, _to: u32, _collection: &str, _batch: &mut Vec<(String, Value)>, _tx: &mut Tx) -> Result<()> {
         Ok(())
     }
 }

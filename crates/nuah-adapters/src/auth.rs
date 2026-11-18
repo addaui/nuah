@@ -287,14 +287,12 @@ impl Plugin for AuthPassword {
         })).unwrap()
     }
 
-    fn migrate(&self, from: u32, tx: &mut Tx) -> Result<()> {
-        if from == 0 {
-            // The first time this data is set up, the accounts the Profile names become accounts in the database.
-            for a in tx.settings()["accounts"].as_array().cloned().unwrap_or_default() {
-                let name = username_of(&a);
-                let roles = if a["roles"].is_array() { roles_of(&a["roles"]) } else { vec!["member".into()] };
-                create_account(tx, name, a["display"].as_str().unwrap_or(name), a["password_hash"].as_str().unwrap_or(""), &roles, a["subject"].as_str())?;
-            }
+    fn init_data(&self, tx: &mut Tx) -> Result<()> {
+        // The first time this data is set up, the accounts the Profile names become accounts in the database.
+        for a in tx.settings()["accounts"].as_array().cloned().unwrap_or_default() {
+            let name = username_of(&a);
+            let roles = if a["roles"].is_array() { roles_of(&a["roles"]) } else { vec!["member".into()] };
+            create_account(tx, name, a["display"].as_str().unwrap_or(name), a["password_hash"].as_str().unwrap_or(""), &roles, a["subject"].as_str())?;
         }
         Ok(())
     }

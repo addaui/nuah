@@ -58,7 +58,7 @@ pub fn resolve_profile_refs(p: &Profile, problems: &mut Vec<crate::resolver::Pro
     for (id, v) in out.settings.iter_mut() {
         match resolve_refs(v) {
             Ok(r) => *v = r,
-            Err(m) => problems.push(crate::resolver::Problem { code: "bad_secret_ref".into(), plugins: vec![id.clone()], message: format!("settings of {id}: {m}") }),
+            Err(m) => problems.push(crate::resolver::Problem { code: "bad_secret_ref".into(), plugins: vec![id.clone()], message: format!("settings of {id}: {m}"), details: Default::default() }),
         }
     }
     out

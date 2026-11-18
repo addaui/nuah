@@ -60,6 +60,7 @@ fn features(db: &dyn Db) {
     }
     if f.has(feature::INDEX_UNIQUE) {
         index_unique(db);
+        retain_indexes(db);
     } else {
         assert_eq!(db.ensure_index(&IndexSpec::on("nu", "k").unique()).unwrap_err().category, Category::Unsupported);
     }
@@ -150,6 +151,28 @@ fn index_unique(db: &dyn Db) {
         put(w, "uq2", "4", json!({"a": 1}));
         put(w, "uq2", "5", json!({"a": 1}));
         conflict_unique(w.put("uq2", "6", "t", json!({"a": 1, "b": 2}), Expect::Any, 1));
+        Ok(())
+    })
+    .unwrap();
+}
+
+/// An index the schema no longer asks for is dropped; the ones kept still hold, and other Collections are untouched.
+fn retain_indexes(db: &dyn Db) {
+    let (gone, kept, other) = (IndexSpec::on("rt", "a").unique(), IndexSpec::on("rt", "b").unique(), IndexSpec::on("rt2", "a").unique());
+    for s in [&gone, &kept, &other] {
+        db.ensure_index(s).unwrap();
+    }
+    db.write(&mut |w| {
+        put(w, "rt", "1", json!({"a": 1, "b": 1}));
+        put(w, "rt2", "1", json!({"a": 1}));
+        Ok(())
+    })
+    .unwrap();
+    db.retain_indexes("rt", &[kept.clone()]).unwrap();
+    db.write(&mut |w| {
+        w.put("rt", "2", "t", json!({"a": 1, "b": 2}), Expect::Any, 1).expect("a is no longer unique");
+        conflict_unique(w.put("rt", "3", "t", json!({"a": 9, "b": 1}), Expect::Any, 1));
+        conflict_unique(w.put("rt2", "2", "t", json!({"a": 1}), Expect::Any, 1));
         Ok(())
     })
     .unwrap();

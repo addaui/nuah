@@ -116,6 +116,12 @@ fn fnv(s: &str) -> u64 {
     s.bytes().fold(0xcbf29ce484222325, |h, b| (h ^ b as u64).wrapping_mul(0x100000001b3))
 }
 
+/// The part of an index's name made of the exact spec, so two specs never share one (replacing '.' by '_' would let
+/// "a.b" and "a_b" collide).
+fn index_base(spec: &IndexSpec) -> String {
+    format!("{:016x}", fnv(&format!("{}|{}|{}", spec.collection, spec.fields.join(","), spec.unique)))
+}
+
 fn plain_name(s: &str) -> bool {
     !s.is_empty() && s.len() <= 80 && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-' | ':'))
 }
@@ -415,8 +421,7 @@ impl Db for SqliteDb {
         if !plain_name(collection) {
             return Err(Error::internal("bad index name"));
         }
-        // a name made of the exact spec, so two specs never share one (replacing '.' by '_' would let "a.b" and "a_b" collide)
-        let base = format!("{:016x}", fnv(&format!("{collection}|{}|{}", spec.fields.join(","), spec.unique)));
+        let base = index_base(spec);
         let mut cols = vec![];
         for f in &spec.fields {
             if spec.unique {
@@ -440,5 +445,21 @@ impl Db for SqliteDb {
             c if c.category == Category::Conflict => Error::internal(format!("cannot make a unique index on {collection}: existing documents already share values")),
             other => other,
         })
+    }
+    fn retain_indexes(&self, collection: &str, keep: &[IndexSpec]) -> Result<()> {
+        if !plain_name(collection) {
+            return Err(Error::internal("bad index name"));
+        }
+        let keep: Vec<String> = keep.iter().map(|s| format!("{}3_{}", if s.unique { "uq" } else { "ix" }, index_base(s))).collect();
+        let conn = self.conn.lock();
+        let names: Vec<String> = {
+            let mut st = conn.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='docs' AND sql LIKE ?1").map_err(db_err)?;
+            let rows = st.query_map(params![format!("%WHERE collection='{collection}'%")], |r| r.get::<_, String>(0)).map_err(db_err)?;
+            rows.collect::<std::result::Result<_, _>>().map_err(db_err)?
+        };
+        for n in names.into_iter().filter(|n| (n.starts_with("ix") || n.starts_with("uq")) && !keep.contains(n)) {
+            conn.execute_batch(&format!("DROP INDEX IF EXISTS \"{n}\"")).map_err(db_err)?;
+        }
+        Ok(())
     }
 }

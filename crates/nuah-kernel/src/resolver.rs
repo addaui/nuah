@@ -128,10 +128,13 @@ pub struct Problem {
     pub code: String,
     pub plugins: Vec<String>,
     pub message: String,
+    /// More for a Face to show; for `upgrade_refused`, the list of Upgrade problems ([`crate::upgrade::UpgradeProblem`]).
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub details: Value,
 }
 
 fn problem(code: &str, plugins: &[&str], message: String) -> Problem {
-    Problem { code: code.into(), plugins: plugins.iter().map(|p| p.to_string()).collect(), message }
+    Problem { code: code.into(), plugins: plugins.iter().map(|p| p.to_string()).collect(), message, details: Value::Null }
 }
 
 #[derive(Debug, Clone)]

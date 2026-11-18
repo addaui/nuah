@@ -76,8 +76,8 @@ impl Core {
                 Ok(Some(imp)) => {
                     ports.insert(port.as_str(), imp);
                 }
-                Ok(None) => problems.push(Problem { code: "adapter_filled_nothing".into(), plugins: vec![adapter.clone()], message: format!("{adapter} fills no {port}") }),
-                Err(e) => problems.push(Problem { code: "adapter_failed".into(), plugins: vec![adapter.clone()], message: format!("{adapter} could not start: {}", e.message) }),
+                Ok(None) => problems.push(Problem { code: "adapter_filled_nothing".into(), plugins: vec![adapter.clone()], message: format!("{adapter} fills no {port}"), details: Default::default() }),
+                Err(e) => problems.push(Problem { code: "adapter_failed".into(), plugins: vec![adapter.clone()], message: format!("{adapter} could not start: {}", e.message), details: Default::default() }),
             }
         }
         // The Ports that take every enabled Adapter (telemetry), in plugin id order.
@@ -91,9 +91,9 @@ impl Core {
                     Ok(Some(PortImpl::Trace(a))) if port == "trace" => traces.push(a),
                     Ok(Some(PortImpl::Metric(a))) if port == "metric" => metric.push(a),
                     Ok(Some(PortImpl::Heartbeat(a))) if port == "heartbeat" => beats.push(a),
-                    Ok(Some(_)) => problems.push(Problem { code: "wrong_port_type".into(), plugins: vec![adapter.clone()], message: format!("{adapter} returned the wrong kind of port for {port}") }),
-                    Ok(None) => problems.push(Problem { code: "adapter_filled_nothing".into(), plugins: vec![adapter.clone()], message: format!("{adapter} fills no {port}") }),
-                    Err(e) => problems.push(Problem { code: "adapter_failed".into(), plugins: vec![adapter.clone()], message: format!("{adapter} could not start: {}", e.message) }),
+                    Ok(Some(_)) => problems.push(Problem { code: "wrong_port_type".into(), plugins: vec![adapter.clone()], message: format!("{adapter} returned the wrong kind of port for {port}"), details: Default::default() }),
+                    Ok(None) => problems.push(Problem { code: "adapter_filled_nothing".into(), plugins: vec![adapter.clone()], message: format!("{adapter} fills no {port}"), details: Default::default() }),
+                    Err(e) => problems.push(Problem { code: "adapter_failed".into(), plugins: vec![adapter.clone()], message: format!("{adapter} could not start: {}", e.message), details: Default::default() }),
                 }
             }
         }
@@ -106,7 +106,7 @@ impl Core {
                 match ports.remove($port) {
                     Some(PortImpl::$variant(x)) => x,
                     _ => {
-                        return Err(vec![Problem { code: "wrong_port_type".into(), plugins: vec![plan.ports[$port].clone()], message: format!("the adapter for {} returned the wrong kind of port", $port) }])
+                        return Err(vec![Problem { code: "wrong_port_type".into(), plugins: vec![plan.ports[$port].clone()], message: format!("the adapter for {} returned the wrong kind of port", $port), details: Default::default() }])
                     }
                 }
             };
@@ -123,11 +123,17 @@ impl Core {
         let inner = Arc::new(Inner { db, features, auth, policy, clock, ids, net, plan, settings, wake, profile_name: dist.profile.name.clone(), telemetry, shell: std::sync::RwLock::new(None) });
         if inner.plan.ports.contains_key("db") {
             if let Err(e) = inner.prepare_storage() {
+                if e.key == "kernel.upgrade_refused" {
+                    let details = e.params["upgrade"].clone();
+                    let mut plugins: Vec<String> = details.as_array().into_iter().flatten().filter_map(|p| p["plugin"].as_str().map(String::from)).collect();
+                    plugins.dedup();
+                    return Err(vec![Problem { code: "upgrade_refused".into(), plugins, message: e.message, details }]);
+                }
                 let code = if e.category == Category::Unsupported { "unsupported" } else { "storage" };
-                return Err(vec![Problem { code: code.into(), plugins: e.params["plugin"].as_str().map(|p| vec![p.to_string()]).unwrap_or_default(), message: e.message }]);
+                return Err(vec![Problem { code: code.into(), plugins: e.params["plugin"].as_str().map(|p| vec![p.to_string()]).unwrap_or_default(), message: e.message, details: Default::default() }]);
             }
             if let Err(e) = inner.init_listener_cursors() {
-                return Err(vec![Problem { code: "storage".into(), plugins: vec![], message: e.message }]);
+                return Err(vec![Problem { code: "storage".into(), plugins: vec![], message: e.message, details: Default::default() }]);
             }
         }
         let latest = {
@@ -342,6 +348,18 @@ impl Core {
     }
 }
 
+/// The work an upgrade of one plugin's data has to do.
+struct Upgrade {
+    to: u32,
+    plan: crate::upgrade::UpgradePlan,
+    /// The Data versions with an Upgrade step between `from` and `to`.
+    stepped: Vec<u32>,
+    /// The Collections the stored schema had.
+    stored: Vec<String>,
+    /// The new schema file, recorded when the upgrade is done.
+    file: Value,
+}
+
 impl Inner {
     pub(crate) fn manifest(&self, plugin: &str) -> Option<&Manifest> {
         self.plan.active.get(plugin).map(|a| &a.manifest)
@@ -382,6 +400,8 @@ impl Inner {
     fn prepare_storage(&self) -> Result<()> {
         let mut have_of: BTreeMap<&String, u32> = BTreeMap::new();
         let mut upgrading = vec![];
+        let mut refused: Vec<crate::upgrade::UpgradeProblem> = vec![];
+        let mut work: BTreeMap<&String, Upgrade> = BTreeMap::new();
         for (id, a) in &self.plan.active {
             let data = &a.manifest.data;
             for f in &data.requires {
@@ -415,11 +435,15 @@ impl Inner {
             }
             let mut have = 0u32;
             let mut foreign = None;
+            let (mut stored, mut progress) = (None, None);
             self.db.read(&mut |r| {
-                have = r.get("_meta", &format!("version:{id}"))?.filter(|d| !d.deleted).and_then(|d| d.body["version"].as_u64()).unwrap_or(0) as u32;
+                let meta = |k: String| r.get("_meta", &k).map(|d| d.filter(|d| !d.deleted).map(|d| d.body));
+                have = meta(format!("version:{id}"))?.and_then(|b| b["version"].as_u64()).unwrap_or(0) as u32;
+                stored = meta(format!("schema:{id}"))?;
+                progress = meta(format!("upgrade:{id}"))?;
                 for c in &data.collections {
-                    if let Some(d) = r.get("_meta", &format!("collection:{c}"))?.filter(|d| !d.deleted) {
-                        let owner = d.body["owner"].as_str().unwrap_or("");
+                    if let Some(d) = meta(format!("collection:{c}"))? {
+                        let owner = d["owner"].as_str().unwrap_or("");
                         if owner != id {
                             foreign = Some(format!("the collection {c} belongs to the plugin {owner}, not {id}"));
                         }
@@ -430,15 +454,47 @@ impl Inner {
             if let Some(m) = foreign {
                 return Err(Error::internal(m));
             }
-            if have > data.version {
-                return Err(Error::internal(format!("the data of {id} is at version {have}, newer than the plugin's {}", data.version)));
-            }
-            if have > 0 && have < data.version {
-                upgrading.push(format!("{id} v{have} to v{}", data.version));
-            }
             have_of.insert(id, have);
+            let Some(raw) = &data.schema else {
+                // a plugin with no schema file: only its Data version is recorded
+                if have > data.version {
+                    return Err(Error::internal(format!("the data of {id} is at version {have}, newer than the plugin's {}", data.version)));
+                }
+                if have > 0 && have < data.version {
+                    upgrading.push(format!("{id} v{have} to v{}", data.version));
+                }
+                continue;
+            };
+            let new = crate::upgrade::SchemaFile::parse(raw).map_err(Error::internal)?;
+            let Some(stored) = stored else {
+                if have > 0 {
+                    refused.push(crate::upgrade::UpgradeProblem { plugin: id.clone(), collection: String::new(), path: String::new(), code: "data_without_schema".into(), params: json!({"stored": have}) });
+                }
+                continue;
+            };
+            let old = crate::upgrade::SchemaFile::parse(&stored["file"]).map_err(|e| Error::internal(format!("the stored schema of {id}: {e}")))?;
+            if let Some(p) = &progress {
+                if p["to"].as_u64() != Some(new.version as u64) {
+                    refused.push(crate::upgrade::UpgradeProblem { plugin: id.clone(), collection: String::new(), path: String::new(), code: "interrupted_upgrade".into(), params: json!({"to": p["to"], "version": new.version}) });
+                    continue;
+                }
+            }
+            match crate::upgrade::plan(id, &old, &new) {
+                Ok(plan) => {
+                    let stepped = new.steps.iter().copied().filter(|s| *s > old.version && *s <= new.version).collect::<Vec<u32>>();
+                    if old.version < new.version {
+                        upgrading.push(format!("{id} v{} to v{}", old.version, new.version));
+                        work.insert(id, Upgrade { to: new.version, plan, stepped, stored: old.live_collections(), file: raw.clone() });
+                    }
+                }
+                Err(ps) => refused.extend(ps),
+            }
         }
-        // before any migration of data that already exists, let the Adapter take a copy
+        if !refused.is_empty() {
+            let message = refused.iter().map(|p| format!("{}: {}", p.plugin, p.message())).collect::<Vec<_>>().join("; ");
+            return Err(Error::new(Category::Invalid, "kernel.upgrade_refused", message).with_params(json!({"upgrade": refused})));
+        }
+        // before any change to data that already exists, let the Adapter take a copy
         if !upgrading.is_empty() {
             self.db.before_migration(&upgrading.join(", "))?;
         }
@@ -460,28 +516,135 @@ impl Inner {
                 }
                 Ok(())
             })?;
-            for ix in &a.manifest.data.indexes {
+            if let Some(u) = work.get(id) {
+                self.upgrade(id, a, u)?;
+            }
+            let data = &a.manifest.data;
+            for ix in &data.indexes {
                 self.db.ensure_index(&ix.spec())?;
             }
-            // migrations, one step at a time, each in its own transaction
-            let (want, have) = (a.manifest.data.version, have_of[id]);
-            for from in have..want {
+            if data.schema.is_some() {
+                for c in &data.collections {
+                    let keep: Vec<IndexSpec> = data.indexes.iter().map(|i| i.spec()).filter(|s| &s.collection == c).collect();
+                    self.db.retain_indexes(c, &keep)?;
+                }
+            }
+            let (want, have) = (data.version, have_of[id]);
+            if have == 0 {
+                // new data: the plugin seeds what a first start needs, and the schema it was written under is recorded
                 self.run_kernel(id, &mut |tx| {
-                    a.plugin.migrate(from, tx)?;
+                    a.plugin.init_data(tx)?;
                     let now = tx.now();
-                    tx.wr()?.put("_meta", &format!("version:{id}"), "kernel", json!({"version": from + 1}), Expect::Any, now)?;
+                    let w = tx.wr()?;
+                    w.put("_meta", &format!("version:{id}"), "kernel", json!({"version": want}), Expect::Any, now)?;
+                    if let Some(file) = &data.schema {
+                        w.put("_meta", &format!("schema:{id}"), "kernel", json!({"version": want, "file": file}), Expect::Any, now)?;
+                    }
                     Ok(())
                 })?;
-            }
-            if want == 0 && have == 0 {
+            } else if have < want && data.schema.is_none() {
                 self.run_kernel(id, &mut |tx| {
                     let now = tx.now();
-                    tx.wr()?.put("_meta", &format!("version:{id}"), "kernel", json!({"version": 0}), Expect::Any, now)?;
+                    tx.wr()?.put("_meta", &format!("version:{id}"), "kernel", json!({"version": want}), Expect::Any, now)?;
                     Ok(())
                 })?;
             }
         }
         Ok(())
+    }
+
+    /// Bring one plugin's stored Documents to its new schema ([ADR 0091]): every Collection with work, in name order,
+    /// in batches of [`crate::upgrade::BATCH`], each batch one transaction together with the progress record, so a start
+    /// that stops half-way continues where it stopped. The new schema and Data version are recorded last.
+    ///
+    /// [ADR 0091]: https://docs.addaui.com/nuah/adr/0091-plugins-declare-one-schema-nuah-upgrades-their-data-from-it-and-refuses-changes-that-would-lose-data/
+    fn upgrade(&self, id: &str, a: &crate::resolver::ActivePlugin, u: &Upgrade) -> Result<()> {
+        use crate::upgrade::{apply, CollectionPlan, BATCH};
+        let mut work = u.plan.collections.clone();
+        if !u.stepped.is_empty() {
+            for c in &u.stored {
+                if !work.iter().any(|w| &w.from == c) {
+                    work.push(CollectionPlan { from: c.clone(), to: c.clone(), removed: false, ops: vec![] });
+                }
+            }
+        }
+        work.sort_by(|x, y| x.from.cmp(&y.from));
+        let key = format!("upgrade:{id}");
+        let mut progress = json!({"to": u.to, "done": [], "collection": "", "after": ""});
+        self.db.read(&mut |r| {
+            if let Some(d) = r.get("_meta", &key)?.filter(|d| !d.deleted) {
+                progress = d.body;
+            }
+            Ok(())
+        })?;
+        let stopped = |c: &str, e: Error| Error::internal(format!("upgrading {id} to version {} stopped in {c}: {}; the next start continues where it stopped", u.to, e.message));
+        for w in &work {
+            if progress["done"].as_array().is_some_and(|d| d.iter().any(|x| x == w.from.as_str())) {
+                continue;
+            }
+            let mut after = if progress["collection"] == w.from.as_str() { progress["after"].as_str().unwrap_or("").to_string() } else { String::new() };
+            loop {
+                let mut batch: Vec<Doc> = vec![];
+                self.db.read(&mut |r| {
+                    batch = r.scan(&w.from, &after, BATCH)?.into_iter().take_while(|d| d.collection == w.from).collect();
+                    Ok(())
+                })?;
+                let Some(last) = batch.last().map(|d| d.id.clone()) else { break };
+                let live: Vec<(String, Value)> = batch.into_iter().filter(|d| !d.deleted).map(|d| (d.id, d.body)).collect();
+                self.run_kernel(id, &mut |tx| {
+                    let now = tx.now();
+                    let mut items = live.clone();
+                    if !w.removed {
+                        for (_, b) in items.iter_mut() {
+                            apply(b, &w.ops);
+                        }
+                        for s in &u.stepped {
+                            a.plugin.upgrade(*s, &w.to, &mut items, tx)?;
+                        }
+                    }
+                    let kept: std::collections::BTreeSet<&str> = if w.removed { Default::default() } else { items.iter().map(|(i, _)| i.as_str()).collect() };
+                    // what moved to a new name, or what the step removed, goes from where it was
+                    for (i, _) in &live {
+                        if w.removed || w.to != w.from || !kept.contains(i.as_str()) {
+                            tx.wr()?.delete(&w.from, i, Expect::Any, now)?;
+                        }
+                    }
+                    if !w.removed {
+                        for (i, b) in &items {
+                            tx.put(&w.to, i, b.clone(), Expect::Any)?;
+                        }
+                    }
+                    let mut p = progress.clone();
+                    p["collection"] = json!(w.from);
+                    p["after"] = json!(last);
+                    tx.wr()?.put("_meta", &key, "kernel", p, Expect::Any, now)?;
+                    Ok(())
+                })
+                .map_err(|e| stopped(&w.from, e))?;
+                progress["collection"] = json!(w.from);
+                progress["after"] = json!(last);
+                after = last;
+            }
+            progress["done"].as_array_mut().expect("a list").push(json!(w.from));
+            progress["collection"] = json!("");
+            progress["after"] = json!("");
+            self.run_kernel(id, &mut |tx| {
+                let now = tx.now();
+                tx.wr()?.put("_meta", &key, "kernel", progress.clone(), Expect::Any, now)?;
+                Ok(())
+            })?;
+        }
+        self.run_kernel(id, &mut |tx| {
+            let now = tx.now();
+            let wr = tx.wr()?;
+            for w in work.iter().filter(|w| w.removed || w.to != w.from) {
+                wr.delete("_meta", &format!("collection:{}", w.from), Expect::Any, now)?;
+            }
+            wr.put("_meta", &format!("schema:{id}"), "kernel", json!({"version": u.to, "file": u.file}), Expect::Any, now)?;
+            wr.put("_meta", &format!("version:{id}"), "kernel", json!({"version": u.to}), Expect::Any, now)?;
+            wr.delete("_meta", &key, Expect::Any, now)?;
+            Ok(())
+        })
     }
 
     /// Run kernel-internal work as a plugin, in a write transaction, with no Subject.

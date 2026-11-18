@@ -140,7 +140,7 @@ pub const MIN_PASSWORD: usize = 8;
 /// The Problem for a first administrator that was not given properly, or None when it is fine.
 pub fn first_account_problem(plugin: &str, username: &str, password: &str) -> Option<Problem> {
     (!nuah_adapters::valid_username(username) || password.chars().count() < MIN_PASSWORD)
-        .then(|| Problem { code: "first_account_missing".into(), plugins: vec![plugin.into()], message: format!("Choose a username (2 to 32 letters, numbers, dots, dashes or underscores) and a password of at least {MIN_PASSWORD} characters for the first administrator.") })
+        .then(|| Problem { code: "first_account_missing".into(), plugins: vec![plugin.into()], message: format!("Choose a username (2 to 32 letters, numbers, dots, dashes or underscores) and a password of at least {MIN_PASSWORD} characters for the first administrator."), details: Default::default() })
 }
 
 /// Put the first administrator, with the password as a hash, into the settings of the plugin that keeps accounts.
@@ -172,7 +172,7 @@ pub fn has_settings_password(p: &Profile, plugin: &str, key: &str) -> bool {
 
 /// The Problem for a settings password that was not given properly, or None when it is fine.
 pub fn settings_password_problem(plugin: &str, password: &str) -> Option<Problem> {
-    (password.chars().count() < MIN_PASSWORD).then(|| Problem { code: "settings_password_missing".into(), plugins: vec![plugin.into()], message: format!("Choose a password of at least {MIN_PASSWORD} characters for the settings area.") })
+    (password.chars().count() < MIN_PASSWORD).then(|| Problem { code: "settings_password_missing".into(), plugins: vec![plugin.into()], message: format!("Choose a password of at least {MIN_PASSWORD} characters for the settings area."), details: Default::default() })
 }
 
 /// Put the hash of the password into that setting.

@@ -155,11 +155,6 @@ impl Plugin for Notes {
             Ok(())
         });
     }
-
-    fn migrate(&self, from: u32, _tx: &mut Tx) -> Result<()> {
-        assert!(from < 2);
-        Ok(())
-    }
 }
 
 /// Defines the extension point and a first provider.

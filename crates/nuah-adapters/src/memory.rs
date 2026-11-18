@@ -261,4 +261,14 @@ impl Db for MemoryDb {
         *self.state.lock() = Arc::new(next);
         Ok(())
     }
+    fn retain_indexes(&self, collection: &str, keep: &[IndexSpec]) -> Result<()> {
+        let _one_writer = self.writer.lock();
+        let mut next = (**self.state.lock()).clone();
+        let before = next.uniques.len();
+        next.uniques.retain(|u| u.collection != collection || keep.contains(u));
+        if next.uniques.len() != before {
+            *self.state.lock() = Arc::new(next);
+        }
+        Ok(())
+    }
 }

@@ -431,6 +431,61 @@ fn tightened(stored: &Value, new: &Value) -> Option<&'static str> {
     upper("maxLength").or(lower("minLength")).or(upper("maximum")).or(lower("minimum")).or(upper("maxItems")).or(lower("minItems")).or(enum_tighter.then_some("enum"))
 }
 
+// ---- applying a plan -----------------------------------------------------------------------------
+
+/// How many Documents the runner upgrades in one transaction.
+pub const BATCH: usize = 500;
+
+/// Apply the operations to one Document body, in order. A path that does not exist in this Document is skipped; a
+/// default never replaces a value that is there (an explicit `null` included).
+pub fn apply(body: &mut Value, ops: &[FieldOp]) {
+    for op in ops {
+        match op {
+            FieldOp::Rename { from, to } => {
+                let (parent, old, new) = (&from[..from.len() - 1], &from[from.len() - 1], &to[to.len() - 1]);
+                each_object(body, parent, &mut |o| {
+                    if let Some(v) = o.remove(old) {
+                        o.insert(new.clone(), v);
+                    }
+                });
+            }
+            FieldOp::Remove(path) => {
+                let (parent, name) = (&path[..path.len() - 1], &path[path.len() - 1]);
+                each_object(body, parent, &mut |o| {
+                    o.remove(name);
+                });
+            }
+            FieldOp::Default(path, value) => {
+                let (parent, name) = (&path[..path.len() - 1], &path[path.len() - 1]);
+                each_object(body, parent, &mut |o| {
+                    o.entry(name.clone()).or_insert_with(|| value.clone());
+                });
+            }
+        }
+    }
+}
+
+/// Call `f` on every object found at `path` (`[]` steps into each item of a list).
+fn each_object(v: &mut Value, path: &[String], f: &mut dyn FnMut(&mut Map<String, Value>)) {
+    match path.split_first() {
+        None => {
+            if let Some(o) = v.as_object_mut() {
+                f(o);
+            }
+        }
+        Some((seg, rest)) if seg == "[]" => {
+            for item in v.as_array_mut().into_iter().flatten() {
+                each_object(item, rest, f);
+            }
+        }
+        Some((seg, rest)) => {
+            if let Some(child) = v.get_mut(seg.as_str()) {
+                each_object(child, rest, f);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -675,5 +730,27 @@ mod tests {
     fn a_problem_reads_as_a_sentence() {
         let p = UpgradeProblem { plugin: "@t/p".into(), collection: "t.a".into(), path: "level".into(), code: "field_missing".into(), params: json!({}) };
         assert!(p.message().contains("t.a") && p.message().contains("level"), "{}", p.message());
+    }
+
+    #[test]
+    fn apply_renames_removes_and_defaults_at_any_depth() {
+        let mut b = json!({"a": 1, "notes": "x", "settings": {"font": "serif"}, "statuses": [{"colour": "red"}, {"colour": "blue"}, {"other": 1}]});
+        apply(&mut b, &[
+            FieldOp::Rename { from: path(&["a"]), to: path(&["c"]) },
+            FieldOp::Remove(path(&["notes"])),
+            FieldOp::Rename { from: path(&["settings", "font"]), to: path(&["settings", "face"]) },
+            FieldOp::Rename { from: path(&["statuses", "[]", "colour"]), to: path(&["statuses", "[]", "color"]) },
+            FieldOp::Default(path(&["kind"]), json!("task")),
+            FieldOp::Default(path(&["statuses", "[]", "color"]), json!("grey")),
+            FieldOp::Default(path(&["missing", "x"]), json!(1)),
+        ]);
+        assert_eq!(b, json!({"c": 1, "kind": "task", "settings": {"face": "serif"}, "statuses": [{"color": "red"}, {"color": "blue"}, {"other": 1, "color": "grey"}]}));
+    }
+
+    #[test]
+    fn apply_keeps_an_explicit_null_and_does_not_overwrite() {
+        let mut b = json!({"kind": null, "c": 2});
+        apply(&mut b, &[FieldOp::Default(path(&["kind"]), json!("task")), FieldOp::Rename { from: path(&["a"]), to: path(&["c"]) }]);
+        assert_eq!(b, json!({"kind": null, "c": 2}));
     }
 }

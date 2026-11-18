@@ -328,6 +328,12 @@ pub trait Db: Send + Sync {
     fn before_migration(&self, _what: &str) -> Result<()> {
         Ok(())
     }
+    /// Drop the indexes of `collection` that are not in `keep` (an upgrade renamed or removed what they were on, or the
+    /// schema no longer asks for them). Indexes are a speed hint, except unique ones, so an Adapter that keeps none may
+    /// leave this as it is.
+    fn retain_indexes(&self, _collection: &str, _keep: &[IndexSpec]) -> Result<()> {
+        Ok(())
+    }
     /// A consistent copy of the whole database at `path`, taken while it is in use (`backup.snapshot`).
     fn snapshot(&self, _path: &str) -> Result<()> {
         Err(Error::unsupported(feature::BACKUP_SNAPSHOT, self.name()))

@@ -102,6 +102,12 @@ fn tls() -> tokio_postgres_rustls::MakeRustlsConnect {
     tokio_postgres_rustls::MakeRustlsConnect::new(config)
 }
 
+/// An index's name, made of the exact spec so two specs never share one.
+fn index_name(spec: &IndexSpec) -> String {
+    let key = format!("{}|{}|{}", spec.collection, spec.fields.join(","), spec.unique);
+    format!("nuah_{}_{:016x}", if spec.unique { "uq" } else { "ix" }, fnv(&key))
+}
+
 fn connect(url: &str, schema: Option<&str>) -> Result<Client> {
     let mut c = Client::connect(url, tls()).map_err(|e| Error::internal(format!("postgres: cannot connect: {e}")))?;
     if let Some(s) = schema {
@@ -521,8 +527,7 @@ impl Db for PgDb {
         if !plain_name(&spec.collection) {
             return Err(Error::internal("bad index name"));
         }
-        let key = format!("{}|{}|{}", spec.collection, spec.fields.join(","), spec.unique);
-        let name = format!("nuah_{}_{:016x}", if spec.unique { "uq" } else { "ix" }, fnv(&key));
+        let name = index_name(spec);
         let mut cols = vec![];
         for f in &spec.fields {
             let j = jval(f)?;
@@ -543,6 +548,20 @@ impl Db for PgDb {
         })?;
         if spec.unique {
             self.uniques.store(true, Ordering::Relaxed);
+        }
+        Ok(())
+    }
+    fn retain_indexes(&self, collection: &str, keep: &[IndexSpec]) -> Result<()> {
+        if !plain_name(collection) {
+            return Err(Error::internal("bad index name"));
+        }
+        let keep: Vec<String> = keep.iter().map(index_name).collect();
+        let mut w = self.writer.lock();
+        let rows = w
+            .query("SELECT indexname FROM pg_indexes WHERE schemaname=current_schema() AND tablename='nuah_docs' AND (indexname LIKE 'nuah\\_uq\\_%' OR indexname LIKE 'nuah\\_ix\\_%') AND indexdef LIKE $1", &[&format!("%collection = '{collection}'::text%")])
+            .map_err(pg_err)?;
+        for n in rows.iter().map(|r| r.get::<_, String>(0)).filter(|n| !keep.contains(n)) {
+            w.batch_execute(&format!("DROP INDEX IF EXISTS {n}")).map_err(pg_err)?;
         }
         Ok(())
     }
