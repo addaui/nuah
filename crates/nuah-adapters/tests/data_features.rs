@@ -60,7 +60,30 @@ impl Plugin for AdapterBare {
     }
 }
 
+/// `{"collections": [..], ..}` written the old way, as a schema file with open Collection schemas at `version` (default 1).
+fn legacy(mut data: Value) -> Value {
+    let o = data.as_object_mut().unwrap();
+    let Some(cols) = o.remove("collections") else { return data };
+    let version = o.remove("version").and_then(|v| v.as_u64()).unwrap_or(1);
+    let indexes = o.remove("indexes").unwrap_or(json!([]));
+    let schemas = o.remove("schemas").unwrap_or(json!({}));
+    let mut colls = serde_json::Map::new();
+    for c in cols.as_array().unwrap() {
+        let c = c.as_str().unwrap();
+        let mut s = schemas.get(c).cloned().unwrap_or(json!({"type": "object", "additionalProperties": true}));
+        let ix: Vec<Value> = indexes.as_array().unwrap().iter().filter(|i| i["collection"] == c)
+            .map(|i| json!({"fields": if i["fields"].is_array() { i["fields"].clone() } else { json!([i["field"]]) }, "unique": i["unique"] == true})).collect();
+        if !ix.is_empty() {
+            s["indexes"] = json!(ix);
+        }
+        colls.insert(c.to_string(), s);
+    }
+    o.insert("schema".into(), json!({"version": version, "collections": colls}));
+    data
+}
+
 fn start(db: &str, data: Value) -> std::result::Result<Core, Vec<Problem>> {
+    let data = legacy(data);
     let clock = FixedClock::at(1_000_000);
     let seen = Default::default();
     let mut cat = catalog(&clock, &seen);
@@ -119,11 +142,6 @@ fn a_unique_or_composite_index_needs_the_feature() {
     assert!(start("@nuah/db-bare", json!({"collections": ["feat.docs"], "indexes": [{"collection": "feat.docs", "field": "e"}]})).is_ok());
 }
 
-#[test]
-fn an_index_on_a_collection_the_plugin_does_not_own_is_refused() {
-    let p = start("@nuah/db-memory", json!({"collections": ["feat.docs"], "indexes": [{"collection": "other.docs", "field": "e"}]})).err().unwrap();
-    assert_eq!(p[0].code, "storage");
-}
 
 #[test]
 fn the_kernel_checks_a_declared_collection_schema_on_every_put() {
@@ -180,7 +198,7 @@ fn the_adapter_is_told_before_data_that_exists_is_migrated_and_never_for_a_new_d
         let clock = FixedClock::at(1_000_000);
         let seen = Default::default();
         let mut cat = catalog(&clock, &seen);
-        cat.0.push(Arc::new(Feat(json!({"collections": ["feat.docs"], "version": version}))));
+        cat.0.push(Arc::new(Feat(legacy(json!({"collections": ["feat.docs"], "version": version})))));
         cat.0.push(Arc::new(AdapterCounting(mem.clone(), calls.clone())));
         let mut p = profile(&["@nuah/db-counting", "@nuah/auth-local", "@nuah/policy-roles", "@nuah/clock-fixed", "@nuah/ids-sequential", "@test/feat"]);
         p.grants.clear();
@@ -202,7 +220,7 @@ fn sqlite_writes_a_copy_before_migrating_when_asked() {
         let clock = FixedClock::at(1_000_000);
         let seen = Default::default();
         let mut cat = catalog(&clock, &seen);
-        cat.0.push(Arc::new(Feat(json!({"collections": ["feat.docs"], "version": version}))));
+        cat.0.push(Arc::new(Feat(legacy(json!({"collections": ["feat.docs"], "version": version})))));
         cat.0.push(Arc::new(AdapterSqlite));
         let mut p = profile(&["@nuah/db-sqlite", "@nuah/auth-local", "@nuah/policy-roles", "@nuah/clock-fixed", "@nuah/ids-sequential", "@test/feat"]);
         p.grants.clear();
@@ -231,7 +249,7 @@ impl Plugin for Pair {
         let mut m = json!({"id": format!("@test/{}", self.0), "version": "1", "namespaces": [self.0]});
         let mut d = self.2.clone();
         d["version"] = json!(self.1);
-        m["data"] = d;
+        m["data"] = legacy(d);
         serde_json::from_value(m).unwrap()
     }
 }
@@ -595,4 +613,11 @@ fn catalog_info_lists_reads_by_owner() {
     let info = nuah_kernel::setup::catalog_info(&Distribution { name: "t".into(), catalog: cat, profile: p });
     let peek = info["plugins"].as_array().unwrap().iter().find(|x| x["id"] == "@test/peek").unwrap_or_else(|| panic!("{info}"));
     assert_eq!(peek["reads"], json!([{"owner": "@test/feat", "collection": "feat.docs", "fields": ["title"]}]));
+}
+
+#[test]
+fn a_plugin_that_owns_collections_without_a_schema_file_is_a_problem() {
+    let ps = check_with_reader(json!({"collections": ["feat.docs"], "version": 1}), json!([]));
+    let p = ps.iter().find(|p| p.code == "schema_missing").unwrap_or_else(|| panic!("{ps:?}"));
+    assert_eq!(p.plugins, vec!["@test/feat".to_string()]);
 }

@@ -21,8 +21,9 @@ impl Plugin for Notes {
         m(json!({
             "id": "@test/notes", "version": "1.0.0", "namespaces": ["notes"],
             "requires": {"capabilities": ["emit", "call"], "extension_points": ["tell.channel"], "plugins": ["@test/tell"]},
-            "data": {"collections": ["notes.books", "notes.notes"], "reads": {}, "version": 2,
-                     "indexes": [{"collection": "notes.notes", "field": "book"}]},
+            "data": {"schema": {"version": 2, "collections": {
+                "notes.books": {"type": "object", "properties": {"title": {"type": "string"}, "owner": {"type": "string"}, "readers": {"type": "array", "items": {"type": "string"}}}},
+                "notes.notes": {"type": "object", "properties": {"book": {"type": "string", "index": true}, "text": {"type": "string"}}}}}},
             "permissions": {
                 "notes.read": {"default": ["member", "viewer"]},
                 "notes.write": {"default": ["member"]}

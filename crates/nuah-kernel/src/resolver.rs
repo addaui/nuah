@@ -264,6 +264,9 @@ pub fn resolve(dist: &Distribution) -> (Vec<Problem>, Plan) {
                 ps.push(problem("reserved_name", &[id], format!("{id}: collections starting with _ belong to the kernel ({c})")));
             }
         }
+        if !m.data.collections.is_empty() && m.data.schema.is_none() {
+            ps.push(problem("schema_missing", &[id], format!("{id} owns collections ({}) but has no schema file (`data.schema`)", m.data.collections.join(", "))));
+        }
         // the name rules inside the plugin's schema file (ADR 0091)
         if let Some(file) = m.data.schema.as_ref().and_then(|s| crate::upgrade::SchemaFile::parse(s).ok()) {
             for u in crate::upgrade::static_problems(id, &file) {

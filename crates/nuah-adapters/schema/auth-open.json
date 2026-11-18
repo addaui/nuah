@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "collections": {
+    "auth.admin_sessions": {
+      "type": "object",
+      "required": ["expires_at"],
+      "properties": {
+        "expires_at": {"type": "integer"}
+      }
+    }
+  }
+}

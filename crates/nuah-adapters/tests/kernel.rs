@@ -433,7 +433,7 @@ fn a_distribution_with_no_database_starts_when_no_plugin_needs_one() {
 
 #[test]
 fn a_plugin_that_owns_data_makes_the_database_needed_and_the_problem_names_it() {
-    let dist = Distribution { name: "t".into(), catalog: Catalog(vec![hello(json!({"data":{"collections":["hello.things"],"version":1}}))]), profile: profile(&["@test/hello"]) };
+    let dist = Distribution { name: "t".into(), catalog: Catalog(vec![hello(json!({"data":{"schema":{"version":1,"collections":{"hello.things":{"type":"object","properties":{}}}}}}))]), profile: profile(&["@test/hello"]) };
     let problems = Core::check(&dist);
     let p = problems.iter().find(|p| p.code == "port_unfilled").expect("db is needed");
     assert!(p.message.contains("hello") && p.message.contains("db"), "{}", p.message);
@@ -471,7 +471,7 @@ impl Plugin for Fetchy {
         serde_json::from_value(json!({
             "id": "@test/fetchy", "version": "1", "namespaces": ["fetchy"],
             "requires": {"capabilities": caps},
-            "data": {"collections": ["fetchy.seen"], "version": 1},
+            "data": {"schema": {"version": 1, "collections": {"fetchy.seen": {"type": "object", "properties": {}}}}},
             "permissions": {"fetchy.use": {"default": ["member"]}},
             "operations": {
                 "fetchy.get": {"kind": "outbound", "permission": "fetchy.use", "input": {"type":"object","required":["url"],"properties":{"url":{"type":"string"}},"additionalProperties":false}, "output": {"type":"object","required":["body"]}},

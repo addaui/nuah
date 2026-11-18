@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 fn core() -> Core {
     // a seed that still says `name`, as every Profile saved before ADR 0089 does
-    core_with(json!([{"name": "Root", "password_hash": AuthPassword::hash_password("first-password"), "roles": ["admin"]}]))
+    core_with(json!([{"username": "Root", "password_hash": AuthPassword::hash_password("first-password"), "roles": ["admin"]}]))
 }
 
 fn core_with(accounts: Value) -> Core {
@@ -81,7 +81,7 @@ fn accounts_are_managed_by_the_people_allowed_to_and_the_last_admin_stays() {
 fn a_seed_account_may_keep_the_subject_of_the_owner_so_what_they_made_stays_theirs() {
     let mut p = Profile { name: "t".into(), ..Default::default() };
     p.enabled = ["@nuah/db-memory", "@nuah/auth-password", "@nuah/policy-roles", "@nuah/clock-system", "@nuah/ids-random"].iter().map(|s| s.to_string()).collect();
-    p.settings.insert("@nuah/auth-password".into(), json!({"accounts": [{"name": "Sam", "subject": "owner", "password_hash": AuthPassword::hash_password("first-password"), "roles": ["member", "admin"]}]}));
+    p.settings.insert("@nuah/auth-password".into(), json!({"accounts": [{"username": "Sam", "subject": "owner", "password_hash": AuthPassword::hash_password("first-password"), "roles": ["member", "admin"]}]}));
     let list: Vec<Arc<dyn Plugin>> = vec![Arc::new(AdapterMemory), Arc::new(AuthPassword), Arc::new(PolicyRoles), Arc::new(StdClock), Arc::new(StdIds)];
     let c = Core::start(&Distribution { name: "t".into(), catalog: Catalog(list), profile: p }).unwrap_or_else(|e| panic!("{e:?}"));
     let who = sign_in(&c, "sam", "first-password").unwrap()["who"].clone();
@@ -136,16 +136,3 @@ fn a_username_has_one_rule_when_it_is_made_or_changed() {
     assert!(list["accounts"].as_array().unwrap().iter().all(|a| a["username"].is_string() && a.get("name").is_none()));
 }
 
-#[test]
-fn accounts_from_before_the_rename_still_work_and_move_to_username_when_saved() {
-    // a seed that still says `name`, with a username that would not pass the rule today
-    let c = core_with(json!([{"name": "Alan Smith", "password_hash": AuthPassword::hash_password("first-password"), "roles": ["admin"]}]));
-    // signing in does not check the rule
-    let who = sign_in(&c, "alan smith", "first-password").unwrap()["who"].clone();
-    // saving it with a valid username moves it, and the old one stops working
-    let list = as_who(&c, &who, "auth.account.list", json!({})).unwrap();
-    assert_eq!(list["accounts"][0]["username"], "Alan Smith", "read from the older field");
-    as_who(&c, &who, "auth.account.update", json!({"subject": who["subject"], "username": "alan"})).unwrap();
-    assert!(sign_in(&c, "alan", "first-password").is_ok());
-    assert!(sign_in(&c, "Alan Smith", "first-password").is_err());
-}

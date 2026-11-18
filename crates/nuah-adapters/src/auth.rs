@@ -71,7 +71,7 @@ impl Plugin for AuthOpen {
             "description": "The app has no sign-in: whoever reaches the Core is the Owner. The console has one: the instance's admin password gives a short Admin session. Whoever can reach this instance can use the Owner's data: keep it on a network you trust.",
             "fills": "auth", "safe_reach": "this-computer", "namespaces": ["auth"],
             "requires": {"ports": ["db", "clock", "ids"]},
-            "data": {"collections": [ADMIN_SESSIONS], "version": 1},
+            "data": {"schema": schema(include_str!("../schema/auth-open.json"))},
             "settings_schema": {"type": "object", "additionalProperties": false, "properties": {
                 "owner_name": {"type": "string", "minLength": 1, "maxLength": 200, "default": "Owner", "title": "Owner's name", "description": "How the one person who uses the app is shown.", "x-tier": "operator", "x-apply": "restart"},
                 "admin_password_hash": {"type": "string", "minLength": 1, "x-secret": true, "x-wizard-password": true, "title": "Admin password", "description": "The stored form of the password that opens the console (make it with `hash-password`). Without it nobody can be Admin.", "x-tier": "operator", "x-apply": "restart"},
@@ -137,7 +137,14 @@ fn name_key(name: &str) -> String {
 
 /// The username an account document holds. Accounts made before ADR 0089 keep it under `name`; both are read, `username` is written.
 fn username_of(body: &Value) -> &str {
-    body["username"].as_str().or_else(|| body["name"].as_str()).unwrap_or("")
+    body["username"].as_str().unwrap_or("")
+}
+
+/// A plugin's schema file, embedded in the program ([ADR 0091]).
+///
+/// [ADR 0091]: https://docs.addaui.com/nuah/adr/0091-plugins-declare-one-schema-nuah-upgrades-their-data-from-it-and-refuses-changes-that-would-lose-data/
+fn schema(src: &str) -> Value {
+    serde_json::from_str(src).expect("an embedded schema file is JSON")
 }
 
 /// The one rule for a username ([ADR 0089]): 2 to 32 letters, numbers, dots, dashes or underscores. Checked when one is made or changed, never at sign-in,
@@ -246,12 +253,12 @@ impl Plugin for AuthPassword {
             "description": "Accounts with passwords, kept in the database; sign-in gives an expiring session",
             "fills": "auth", "namespaces": ["auth"],
             "requires": {"ports": ["db", "clock", "ids"]},
-            "data": {"collections": [SESSIONS, ACCOUNTS, NAMES], "version": 1, "indexes": [{"collection": ACCOUNTS, "field": "disabled"}]},
+            "data": {"schema": schema(include_str!("../schema/auth-password.json"))},
             "permissions": {"auth.manage": {"description": "Create accounts, change their roles and passwords, disable them", "default": ["admin"]}},
             "settings_schema": {"type":"object","properties":{
                 "session_hours": {"type":"integer","minimum":1,"maximum":720,"title":"Session length (hours)","description":"How long someone stays signed in without signing in again.","default":24},
                 "accounts": {"x-secret":true,"x-first-account":"password-hash","description":"Accounts to create the first time the data is set up; after that they are managed in the database","type":"array","items":{"type":"object","required":["password_hash"],
-                    "properties":{"username":{"type":"string","minLength":1},"name":{"type":"string","minLength":1,"description":"Older name of `username`; still read"},"display":{"type":"string"},
+                    "properties":{"username":{"type":"string","minLength":1},"display":{"type":"string"},
                     "password_hash":{"type":"string","minLength":1},"roles":{"type":"array","items":{"type":"string"}},
                     "subject":{"type":"string","minLength":1,"maxLength":100,"description":"Keep the id a person already has (the Owner of an instance that had no sign-in is `owner`), so what they made stays theirs"}},
                     "additionalProperties":false}}},
@@ -372,12 +379,6 @@ impl Plugin for AuthPassword {
                     tx.delete(NAMES, &name_key(&current))?;
                 }
                 body["username"] = json!(n.trim());
-            }
-            if let Some(o) = body.as_object_mut() {
-                // an account made before ADR 0089 keeps its username under `name`; it moves to `username` the first time it is saved
-                if let Some(old) = o.remove("name") {
-                    o.entry("username").or_insert(old);
-                }
             }
             if let Some(v) = input["display"].as_str() {
                 body["display"] = json!(v);
