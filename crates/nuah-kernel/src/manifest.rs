@@ -170,22 +170,75 @@ impl IndexDecl {
     }
 }
 
+/// What a plugin stores. Written as `{"schema": <the plugin's schema file>, "reads": {..}, "requires": [..], "prefers": [..]}`:
+/// `collections`, `version`, `indexes` and `schemas` are worked out from the schema file ([ADR 0091]) and may not be
+/// written beside it.
+///
+/// [ADR 0091]: https://docs.addaui.com/nuah/adr/0091-plugins-declare-one-schema-nuah-upgrades-their-data-from-it-and-refuses-changes-that-would-lose-data/
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, try_from = "RawDataDecl")]
 pub struct DataDecl {
-    /// Collections this plugin owns.
+    /// The plugin's schema file, as written.
+    pub schema: Option<Value>,
+    /// Collections this plugin owns (the live Collections of the schema file).
     pub collections: Vec<String>,
-    /// Other plugins' collections it may read.
-    pub reads: Vec<String>,
+    /// Read declarations: the fields of other plugins' Collections this plugin reads.
+    pub reads: BTreeMap<String, Vec<String>>,
+    /// The Data version.
     pub version: u32,
+    /// The Upgrade floor.
+    pub upgrades_from: Option<u32>,
+    /// The Data versions that have an Upgrade step.
+    pub steps: Vec<u32>,
     pub indexes: Vec<IndexDecl>,
     /// Features of the data Adapter the plugin cannot work without (see `nuah_kernel::feature`). The Core
     /// refuses to start when the Adapter lacks one.
     pub requires: Vec<String>,
     /// Features the plugin uses when there, and works without; a warning is logged when absent.
     pub prefers: Vec<String>,
-    /// A JSON Schema per owned collection, checked by the kernel on every put.
+    /// The strict Collection schema per owned Collection, checked by the kernel on every put.
     pub schemas: BTreeMap<String, Value>,
+}
+
+/// `DataDecl` as written in a Manifest, before the schema file is unpacked.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct RawDataDecl {
+    schema: Option<Value>,
+    collections: Vec<String>,
+    reads: BTreeMap<String, Vec<String>>,
+    version: u32,
+    indexes: Vec<IndexDecl>,
+    requires: Vec<String>,
+    prefers: Vec<String>,
+    schemas: BTreeMap<String, Value>,
+    upgrades_from: Option<u32>,
+    steps: Vec<u32>,
+}
+
+impl TryFrom<RawDataDecl> for DataDecl {
+    type Error = String;
+    fn try_from(r: RawDataDecl) -> Result<DataDecl, String> {
+        let mut d = DataDecl { schema: None, collections: r.collections, reads: r.reads, version: r.version, upgrades_from: r.upgrades_from, steps: r.steps, indexes: r.indexes, requires: r.requires, prefers: r.prefers, schemas: r.schemas };
+        let Some(schema) = r.schema else { return Ok(d) };
+        if !d.collections.is_empty() || d.version != 0 || !d.indexes.is_empty() || !d.schemas.is_empty() || d.upgrades_from.is_some() || !d.steps.is_empty() {
+            return Err("collections, version, indexes, upgrades_from and steps are written in the schema file only".into());
+        }
+        let file = crate::upgrade::SchemaFile::parse(&schema)?;
+        d.collections = file.live_collections();
+        d.version = file.version;
+        d.upgrades_from = file.upgrades_from;
+        d.steps = file.steps.clone();
+        for c in &d.collections {
+            let s = &file.collections[c];
+            d.schemas.insert(c.clone(), crate::upgrade::strict(s));
+            for ix in crate::upgrade::index_specs(c, s) {
+                d.indexes.push(IndexDecl { collection: ix.collection, field: String::new(), fields: ix.fields, unique: ix.unique });
+            }
+        }
+        d.schema = Some(schema);
+        Ok(d)
+    }
 }
 
 /// The thing an Operation acts on, so the policy can see it ([ADR 0005]).
@@ -678,5 +731,45 @@ mod class_tests {
     fn the_settings_annotation_check_accepts_the_owner_tier() {
         let schema = json!({"properties": {"a": {"x-tier": "owner", "x-apply": "live"}}});
         assert!(crate::setup::settings_annotation_problems(&schema).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod data_schema_tests {
+    use super::*;
+
+    fn parse(data: Value) -> Result<Manifest, String> {
+        Manifest::parse(&json!({"id": "@t/p", "version": "1.0.0", "namespaces": ["t"], "data": data}).to_string())
+    }
+
+    #[test]
+    fn the_schema_file_fills_collections_version_indexes_and_strict_schemas() {
+        let m = parse(json!({"schema": {"version": 3, "collections": {
+            "t.tasks": {"type": "object", "properties": {"project": {"type": "string", "index": true}}},
+            "t.gone": {"removed": true}
+        }}})).unwrap();
+        assert_eq!(m.data.collections, vec!["t.tasks".to_string()]);
+        assert_eq!(m.data.version, 3);
+        assert_eq!(m.data.indexes.iter().map(|i| i.spec()).collect::<Vec<_>>(), vec![crate::db::IndexSpec { collection: "t.tasks".into(), fields: vec!["project".into()], unique: false }]);
+        assert_eq!(m.data.schemas["t.tasks"]["additionalProperties"], json!(false));
+        assert!(m.data.schema.is_some());
+    }
+
+    #[test]
+    fn hand_written_collections_beside_schema_is_refused() {
+        let e = parse(json!({"schema": {"version": 1, "collections": {"t.a": {"type": "object"}}}, "collections": ["t.a"]})).unwrap_err();
+        assert!(e.contains("schema file"), "{e}");
+        assert!(parse(json!({"schema": {"version": 1, "collections": {}}, "version": 2})).is_err());
+    }
+
+    #[test]
+    fn a_bad_schema_file_is_refused_when_the_manifest_is_read() {
+        assert!(parse(json!({"schema": {"collections": {}}})).is_err());
+    }
+
+    #[test]
+    fn reads_name_the_fields_of_each_collection() {
+        let m = parse(json!({"reads": {"o.pages": ["title", "body"]}})).unwrap();
+        assert_eq!(m.data.reads["o.pages"], vec!["title".to_string(), "body".to_string()]);
     }
 }

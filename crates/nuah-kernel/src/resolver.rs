@@ -413,7 +413,7 @@ pub fn resolve(dist: &Distribution) -> (Vec<Problem>, Plan) {
                 plan.providers.entry(pr.extension_point.clone()).or_default().push((pr.priority, id.clone()));
             }
         }
-        for r in &m.data.reads {
+        for r in m.data.reads.keys() {
             if !coll_owner.contains_key(r) {
                 ps.push(problem("unknown_collection", &[id], format!("{id} reads the collection {r}, which no enabled plugin owns")));
             }

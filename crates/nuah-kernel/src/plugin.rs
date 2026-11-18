@@ -245,7 +245,7 @@ impl<'a> Tx<'a> {
             return Ok(());
         }
         let m = self.inner.manifest(&self.plugin);
-        let ok = m.is_some_and(|m| m.data.collections.iter().any(|c| c == collection) || m.data.reads.iter().any(|c| c == collection));
+        let ok = m.is_some_and(|m| m.data.collections.iter().any(|c| c == collection) || m.data.reads.contains_key(collection));
         if ok { Ok(()) } else { Err(Error::internal(format!("plugin {} did not declare collection {collection}", self.plugin))) }
     }
     fn may_write(&self, collection: &str) -> Result<()> {

@@ -256,3 +256,26 @@ fn a_refused_start_writes_nothing() {
     .unwrap();
     assert!(boot(json!({"collections": ["zzz.docs"]})).is_ok());
 }
+
+// ---- Collection schemas (ADR 0091) ---------------------------------------------------------------
+
+fn schema_data(collections: Value) -> Value {
+    json!({"schema": {"version": 1, "collections": collections}})
+}
+
+#[test]
+fn a_document_with_a_field_its_schema_does_not_declare_is_refused_naming_collection_and_field() {
+    let c = start("@nuah/db-memory", schema_data(json!({"feat.docs": {"type": "object", "properties": {"title": {"type": "string"}}}}))).unwrap();
+    assert!(put(&c, "a", json!({"title": "ok"})).is_ok());
+    let e = put(&c, "b", json!({"title": "ok", "colour": "red"})).unwrap_err();
+    assert_eq!(e.category, Category::Internal);
+    assert!(e.message.contains("feat.docs") && e.message.contains("colour"), "{}", e.message);
+}
+
+#[test]
+fn indexes_come_from_the_schema_file() {
+    let c = start("@nuah/db-memory", schema_data(json!({"feat.docs": {"type": "object", "properties": {"key": {"type": "string", "unique": true}}}}))).unwrap();
+    put(&c, "a", json!({"key": "k"})).unwrap();
+    let e = put(&c, "b", json!({"key": "k"})).unwrap_err();
+    assert_eq!(e.reason.as_deref(), Some("kernel.unique"));
+}
