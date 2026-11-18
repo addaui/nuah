@@ -206,3 +206,20 @@ fn starting_without_a_plugin_also_leaves_out_the_plugins_that_need_it() {
     assert!(!q.enabled.iter().any(|x| x.starts_with("@t/") && x != "@t/free"));
     assert!(q.enabled.contains(&"@t/free".to_string()));
 }
+
+#[test]
+fn schema_check_prints_every_problem_and_says_whether_it_passes() {
+    let old = json!({"version": 1, "collections": {"t.a": {"type": "object", "properties": {"a": {"type": "string"}, "b": {"type": "string"}}}}});
+    let ok = json!({"version": 2, "collections": {"t.a": {"type": "object", "properties": {"c": {"type": "string", "renamed_from": ["a"]}, "b": {"type": "string"}}}}});
+    let (text, pass) = nuah_shell::schema_check(&old, &ok);
+    assert!(pass, "{text}");
+    assert!(text.contains("t.a") && text.contains("rename a → c"), "{text}");
+    let bad = json!({"version": 2, "collections": {"t.a": {"type": "object", "properties": {"b": {"type": "integer"}, "x": {"type": "string", "renamed_from": ["q"]}, "q": {"type": "string"}}}}});
+    let (text, pass) = nuah_shell::schema_check(&old, &bad);
+    assert!(!pass);
+    for want in ["field_missing", "t.a › a", "type_changed", "name_reused"] {
+        assert!(text.contains(want), "{want} missing from:\n{text}");
+    }
+    let (text, pass) = nuah_shell::schema_check(&old, &json!({"collections": {}}));
+    assert!(!pass && text.contains("version"), "{text}");
+}

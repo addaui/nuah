@@ -130,6 +130,16 @@ enum Cmd {
         #[arg(long, env = "NUAH_HOME")]
         home: Option<PathBuf>,
     },
+    /// Compare a plugin's released schema file with its new one, as the Core would at start ([ADR 0091]); prints every
+    /// problem and exits 1 when there is one. For a plugin's CI: `schema-check <released.json> <new.json>`.
+    ///
+    /// [ADR 0091]: https://docs.addaui.com/nuah/adr/0091-plugins-declare-one-schema-nuah-upgrades-their-data-from-it-and-refuses-changes-that-would-lose-data/
+    SchemaCheck {
+        /// The schema file as last released.
+        released: PathBuf,
+        /// The schema file now.
+        new: PathBuf,
+    },
     /// Exit 0 if a running shell answers on /healthz (for container health checks; no curl needed).
     Healthcheck {
         #[arg(long, env = "NUAH_LISTEN", default_value = "127.0.0.1:3000")]
@@ -147,6 +157,15 @@ pub fn run(product: impl Product) -> ! {
             let mut s = String::new();
             std::io::stdin().read_to_string(&mut s).expect("read stdin");
             println!("{}", AuthPassword::hash_password(s.trim_end_matches(['\r', '\n'])));
+        }
+        Cmd::SchemaCheck { released, new } => {
+            let read = |p: &PathBuf| -> Value {
+                let text = std::fs::read_to_string(p).unwrap_or_else(|e| die(&format!("cannot read {}: {e}", p.display())));
+                serde_json::from_str(&text).unwrap_or_else(|e| die(&format!("{} is not JSON: {e}", p.display())))
+            };
+            let (text, pass) = schema_check(&read(&released), &read(&new));
+            print!("{text}");
+            std::process::exit(if pass { 0 } else { 1 });
         }
         Cmd::Healthcheck { listen } => {
             use std::io::Write;
@@ -263,6 +282,53 @@ pub fn run(product: impl Product) -> ! {
         }
     }
     std::process::exit(0)
+}
+
+/// The Schema check between two schema files of one plugin, without a database ([ADR 0091]): the name rules of the new
+/// file, then what an upgrade from the released one would do or why it would be refused. Returns the report and whether
+/// it passes.
+///
+/// [ADR 0091]: https://docs.addaui.com/nuah/adr/0091-plugins-declare-one-schema-nuah-upgrades-their-data-from-it-and-refuses-changes-that-would-lose-data/
+pub fn schema_check(released: &Value, new: &Value) -> (String, bool) {
+    use nuah_kernel::upgrade::{plan, static_problems, FieldOp, SchemaFile};
+    let parse = |v: &Value, which: &str| SchemaFile::parse(v).map_err(|e| format!("the {which} schema file: {e}\n"));
+    let (old, new) = match (parse(released, "released"), parse(new, "new")) {
+        (Ok(o), Ok(n)) => (o, n),
+        (Err(e), _) | (_, Err(e)) => return (e, false),
+    };
+    let mut out = String::new();
+    let line = |p: &nuah_kernel::upgrade::UpgradeProblem| {
+        let at = if p.path.is_empty() { p.collection.clone() } else { format!("{} › {}", p.collection, p.path) };
+        let params = if p.params.as_object().is_some_and(|o| !o.is_empty()) { format!(" {}", p.params) } else { String::new() };
+        format!("- {at} — {}{params}: {}\n", p.code, p.message())
+    };
+    let mut problems = static_problems("", &new);
+    match plan("", &old, &new) {
+        Ok(pl) => {
+            out.push_str(&format!("data version {} → {}\n", old.version, new.version));
+            for c in &pl.collections {
+                let head = if c.removed { format!("{}: removed", c.from) } else if c.from != c.to { format!("{} → {}", c.from, c.to) } else { c.to.clone() };
+                out.push_str(&format!("{head}\n"));
+                for op in &c.ops {
+                    out.push_str(&match op {
+                        FieldOp::Rename { from, to } => format!("  rename {} → {}\n", from.join("."), to.join(".")),
+                        FieldOp::Remove(p) => format!("  remove {}\n", p.join(".")),
+                        FieldOp::Default(p, v) => format!("  default {} = {v}\n", p.join(".")),
+                    });
+                }
+            }
+        }
+        Err(ps) => problems.extend(ps),
+    }
+    if problems.is_empty() {
+        out.push_str("ok\n");
+        return (out, true);
+    }
+    out.push_str(&format!("refused: {} problem(s)\n", problems.len()));
+    for p in &problems {
+        out.push_str(&line(p));
+    }
+    (out, false)
 }
 
 /// What the command line says about the `http` plugin; each piece overrides the Profile only when given, and
