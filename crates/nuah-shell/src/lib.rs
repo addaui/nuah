@@ -47,6 +47,15 @@ pub trait Bootstrap {
     /// Returns once a Profile that resolves has been saved to `ctx.identity_file`. With `ctx.until_saved`
     /// false (the `setup` command) it may keep running until the operator stops it.
     fn run(&self, ctx: SetupContext) -> Result<(), String>;
+    /// Show an Upgrade report ([ADR 0091]): the Core refused to start because a plugin's stored data cannot be upgraded
+    /// (`refused.code` is `upgrade_refused`; its `details` hold the problems). Returns after the operator chose to start
+    /// without a plugin and the identity file was saved; the shell then starts the Core again. A bootstrap that cannot
+    /// show a page leaves this as it is, and the shell prints the report and stops.
+    ///
+    /// [ADR 0091]: https://docs.addaui.com/nuah/adr/0091-plugins-declare-one-schema-nuah-upgrades-their-data-from-it-and-refuses-changes-that-would-lose-data/
+    fn report(&self, _ctx: SetupContext, _refused: nuah_kernel::Problem) -> Result<(), String> {
+        Err("this product cannot show the upgrade report; see the problems above".into())
+    }
 }
 
 pub struct SetupContext {
@@ -190,6 +199,12 @@ pub fn run(product: impl Product) -> ! {
                     Err(problems) => {
                         for p in &problems {
                             eprintln!("{}: {}", p.code, p.message);
+                        }
+                        // a refused upgrade changed nothing: show the report, and start again if the operator leaves a plugin out
+                        if let Some(refused) = problems.into_iter().find(|p| p.code == "upgrade_refused") {
+                            let Some(bootstrap) = product.bootstrap() else { die("the upgrade was refused; nothing was changed") };
+                            bootstrap.report(context(&product, path.clone(), flags.listen.clone(), flags.allow_host.clone(), flags.faces.clone(), true), refused).unwrap_or_else(|e| die(&e));
+                            continue;
                         }
                         die("the profile does not resolve")
                     }

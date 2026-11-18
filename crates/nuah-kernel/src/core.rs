@@ -124,8 +124,8 @@ impl Core {
         if inner.plan.ports.contains_key("db") {
             if let Err(e) = inner.prepare_storage() {
                 if e.key == "kernel.upgrade_refused" {
-                    let details = e.params["upgrade"].clone();
-                    let mut plugins: Vec<String> = details.as_array().into_iter().flatten().filter_map(|p| p["plugin"].as_str().map(String::from)).collect();
+                    let details = json!({"problems": e.params["upgrade"], "plugins": e.params["plugins"]});
+                    let mut plugins: Vec<String> = e.params["upgrade"].as_array().into_iter().flatten().filter_map(|p| p["plugin"].as_str().map(String::from)).collect();
                     plugins.dedup();
                     return Err(vec![Problem { code: "upgrade_refused".into(), plugins, message: e.message, details }]);
                 }
@@ -401,6 +401,8 @@ impl Inner {
         let mut have_of: BTreeMap<&String, u32> = BTreeMap::new();
         let mut upgrading = vec![];
         let mut refused: Vec<crate::upgrade::UpgradeProblem> = vec![];
+        // for an Upgrade report: each plugin's name and versions, stored and new
+        let mut versions = serde_json::Map::new();
         let mut work: BTreeMap<&String, Upgrade> = BTreeMap::new();
         for (id, a) in &self.plan.active {
             let data = &a.manifest.data;
@@ -466,6 +468,9 @@ impl Inner {
                 continue;
             };
             let new = crate::upgrade::SchemaFile::parse(raw).map_err(Error::internal)?;
+            let name = if a.manifest.name.is_empty() { id.clone() } else { a.manifest.name.clone() };
+            versions.insert(id.clone(), json!({"name": name, "from_release": stored.as_ref().map(|s| s["release"].clone()).unwrap_or(Value::Null), "to_release": a.manifest.version,
+                "from_version": stored.as_ref().map(|s| s["version"].clone()).unwrap_or(json!(have)), "to_version": new.version}));
             let Some(stored) = stored else {
                 if have > 0 {
                     refused.push(crate::upgrade::UpgradeProblem { plugin: id.clone(), collection: String::new(), path: String::new(), code: "data_without_schema".into(), params: json!({"stored": have}) });
@@ -492,7 +497,9 @@ impl Inner {
         }
         if !refused.is_empty() {
             let message = refused.iter().map(|p| format!("{}: {}", p.plugin, p.message())).collect::<Vec<_>>().join("; ");
-            return Err(Error::new(Category::Invalid, "kernel.upgrade_refused", message).with_params(json!({"upgrade": refused})));
+            let named: std::collections::BTreeSet<&str> = refused.iter().map(|p| p.plugin.as_str()).collect();
+            versions.retain(|k, _| named.contains(k.as_str()));
+            return Err(Error::new(Category::Invalid, "kernel.upgrade_refused", message).with_params(json!({"upgrade": refused, "plugins": versions})));
         }
         // before any change to data that already exists, let the Adapter take a copy
         if !upgrading.is_empty() {
@@ -538,7 +545,7 @@ impl Inner {
                     let w = tx.wr()?;
                     w.put("_meta", &format!("version:{id}"), "kernel", json!({"version": want}), Expect::Any, now)?;
                     if let Some(file) = &data.schema {
-                        w.put("_meta", &format!("schema:{id}"), "kernel", json!({"version": want, "file": file}), Expect::Any, now)?;
+                        w.put("_meta", &format!("schema:{id}"), "kernel", json!({"version": want, "release": a.manifest.version, "file": file}), Expect::Any, now)?;
                     }
                     Ok(())
                 })?;
@@ -640,7 +647,7 @@ impl Inner {
             for w in work.iter().filter(|w| w.removed || w.to != w.from) {
                 wr.delete("_meta", &format!("collection:{}", w.from), Expect::Any, now)?;
             }
-            wr.put("_meta", &format!("schema:{id}"), "kernel", json!({"version": u.to, "file": u.file}), Expect::Any, now)?;
+            wr.put("_meta", &format!("schema:{id}"), "kernel", json!({"version": u.to, "release": a.manifest.version, "file": u.file}), Expect::Any, now)?;
             wr.put("_meta", &format!("version:{id}"), "kernel", json!({"version": u.to}), Expect::Any, now)?;
             wr.delete("_meta", &key, Expect::Any, now)?;
             Ok(())

@@ -182,3 +182,27 @@ fn a_settings_password_is_asked_for_hashed_and_stored_where_the_plugin_says() {
     let off = profile(false);
     assert!(settings_password_slot(&cat, &off).is_none());
 }
+
+/// A plugin with nothing but an id and the plugins it requires.
+struct Bare(&'static str, &'static [&'static str]);
+impl Plugin for Bare {
+    fn manifest(&self) -> Manifest {
+        let ns = self.0.trim_start_matches("@t/");
+        serde_json::from_value(json!({"id": self.0, "version": "1.0.0", "namespaces": [ns], "requires": {"plugins": self.1}})).unwrap()
+    }
+}
+
+#[test]
+fn starting_without_a_plugin_also_leaves_out_the_plugins_that_need_it() {
+    let mut list = catalog().0;
+    list.push(Arc::new(Bare("@t/base", &[])));
+    list.push(Arc::new(Bare("@t/mid", &["@t/base"])));
+    list.push(Arc::new(Bare("@t/top", &["@t/mid"])));
+    list.push(Arc::new(Bare("@t/free", &[])));
+    let mut p = profile(false);
+    p.enabled.extend(["@t/base", "@t/mid", "@t/top", "@t/free"].map(String::from));
+    let (q, removed) = nuah_shell::edit::without(&Catalog(list), &p, "@t/base");
+    assert_eq!(removed, vec!["@t/mid".to_string(), "@t/top".to_string()]);
+    assert!(!q.enabled.iter().any(|x| x.starts_with("@t/") && x != "@t/free"));
+    assert!(q.enabled.contains(&"@t/free".to_string()));
+}

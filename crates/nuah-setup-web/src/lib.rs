@@ -6,12 +6,14 @@
 //! [ADR 0014]: https://docs.addaui.com/nuah/adr/0014-setup-wizard-is-a-separate-mode-with-a-setup-code-and-no-secrets/
 //! [ADR 0039]: https://docs.addaui.com/nuah/adr/0039-accounts-belong-to-the-auth-plugin-and-live-in-the-database-faces-setup-and-console-are-plugins/
 
+mod report;
 mod wizard;
 
 use nuah_shell::edit::ProfileStore;
 use nuah_shell::{wait_for_stop, Bootstrap, SetupContext};
 use std::path::PathBuf;
 
+pub use report::{report_router, report_state, start_without, ReportConfig};
 pub use wizard::{setup_router, SetupConfig};
 
 pub struct SetupWeb {
@@ -40,6 +42,35 @@ impl Bootstrap for SetupWeb {
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
         rt.block_on(serve(self, ctx))
     }
+    fn report(&self, ctx: SetupContext, refused: nuah_kernel::Problem) -> Result<(), String> {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
+        rt.block_on(serve_report(self, ctx, refused))
+    }
+}
+
+/// Serve the Upgrade report until the operator starts without a plugin (then return, so the shell starts the Core again)
+/// or stops the process.
+async fn serve_report(me: &SetupWeb, ctx: SetupContext, refused: nuah_kernel::Problem) -> Result<(), String> {
+    let listen = ctx.listen.clone().unwrap_or_else(|| "127.0.0.1:3000".into());
+    let addr: std::net::SocketAddr = listen.parse().map_err(|_| format!("{listen} is not an address like 127.0.0.1:3000"))?;
+    let code = uuid::Uuid::new_v4().simple().to_string()[..12].to_string();
+    let mut server = nuah_http::Config::default();
+    server.hosts.extend(ctx.allow_hosts.iter().filter(|h| !h.is_empty()).map(|h| h.to_lowercase()));
+    let face = me.faces_dir.clone().unwrap_or_else(|| ctx.faces_dir.clone()).join("nuah").join("setup-web");
+    if !face.is_dir() {
+        return Err(format!("the setup Face, which shows the upgrade report, is not at {}", face.display()));
+    }
+    server.faces.push(("/faces/setup".to_string(), face));
+    let store = std::sync::Arc::new(ProfileStore::new(&ctx.product, ctx.catalog, ctx.starting_point, ctx.identity_file));
+    let saved = store.saved.clone();
+    let listener = tokio::net::TcpListener::bind(addr).await.map_err(|e| format!("cannot listen on {listen}: {e}"))?;
+    eprintln!("the upgrade was refused and nothing was changed; the report is on http://{listen}/\nsetup code: {code}   (type it into the page; it changes every start)");
+    axum::serve(listener, report_router(ReportConfig { store, refused, code, server }))
+        .with_graceful_shutdown(async move {
+            tokio::select! { _ = saved.notified() => {}, _ = wait_for_stop() => std::process::exit(1) }
+        })
+        .await
+        .map_err(|e| e.to_string())
 }
 
 async fn serve(me: &SetupWeb, ctx: SetupContext) -> Result<(), String> {

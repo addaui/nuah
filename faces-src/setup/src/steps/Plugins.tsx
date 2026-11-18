@@ -12,6 +12,7 @@ import { Pill, type W } from "@/common"
 import { useI18n, type Key } from "@/i18n"
 import { fieldsOf, SchemaForm, settingsError } from "@/schema"
 import { brief, byId, label, chosenElsewhere, dependents, locked, toggle } from "@/wizard"
+import { accessGroups } from "../report"
 
 type Filter = "all" | "on" | "off"
 const FILTERS: [Filter, Key][] = [["all", "plugins.all"], ["on", "plugins.on"], ["off", "plugins.off"]]
@@ -70,6 +71,17 @@ function Inspector({ w, p, onPick }: { w: W; p: Plugin | null; onPick: (id: stri
         <h4 className="m-0 text-xs font-medium uppercase tracking-wide text-muted-foreground">{t("plugins.mayDo")}</h4>
         {p.powers.length === 0 ? <p className="m-0 text-sm text-muted-foreground">{t("plugins.nothing")}</p> : p.powers.map((x) => <p key={x} className="m-0 flex items-start gap-2 text-sm"><span className="mt-0.5 shrink-0"><Pill w={x} /></span>{t(`power.${x}Long` as "power.storesLong")}</p>)}
       </section>
+      {(p.reads ?? []).length > 0 && (
+        <section className="grid gap-1.5">
+          <h4 className="m-0 text-xs font-medium uppercase tracking-wide text-muted-foreground">{t("plugins.accessTo")}</h4>
+          {accessGroups(p.reads ?? [], Object.fromEntries(info.plugins.map((x) => [x.id, label(x)]))).map((g) => (
+            <div key={g.owner} className="grid gap-0.5 text-sm">
+              <span className="font-medium">{g.owner}</span>
+              {g.items.map((it) => <span key={it.collection} className="text-muted-foreground">{t("plugins.accessFields", { fields: it.fields.join(", "), collection: it.collection })}</span>)}
+            </div>
+          ))}
+        </section>
+      )}
       {p.requires.extension_points.length > 0 && (
         <section className="grid gap-1.5">
           <h4 className="m-0 text-xs font-medium uppercase tracking-wide text-muted-foreground">{t("plugins.needs", { what: p.requires.extension_points.join(", ") })}</h4>

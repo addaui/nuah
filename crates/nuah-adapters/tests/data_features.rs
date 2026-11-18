@@ -434,6 +434,7 @@ fn new_data_is_recorded_with_its_schema() {
     let s = rig.meta("schema:@test/up").unwrap();
     assert_eq!(s["version"], 1);
     assert_eq!(s["file"], v1());
+    assert_eq!(s["release"], "1.0.0");
     assert_eq!(rig.backups.load(AtomicOrdering::SeqCst), 0, "a new database has nothing to lose");
 }
 
@@ -481,8 +482,9 @@ fn refused_upgrade_writes_nothing_and_lists_details() {
     assert_eq!(ps.len(), 1);
     assert_eq!(ps[0].code, "upgrade_refused");
     assert_eq!(ps[0].plugins, vec!["@test/up".to_string()]);
-    let paths: Vec<&str> = ps[0].details.as_array().unwrap().iter().map(|d| d["path"].as_str().unwrap()).collect();
+    let paths: Vec<&str> = ps[0].details["problems"].as_array().unwrap().iter().map(|d| d["path"].as_str().unwrap()).collect();
     assert_eq!(paths, vec!["a", "notes"]);
+    assert_eq!(ps[0].details["plugins"]["@test/up"], json!({"name": "@test/up", "from_release": "1.0.0", "to_release": "1.0.0", "from_version": 1, "to_version": 2}));
     assert_eq!(rig.backups.load(AtomicOrdering::SeqCst), 0);
     assert_eq!(rig.meta("schema:@test/up").unwrap()["version"], 1);
     assert!(rig.docs("up.docs").iter().all(|d| d.body.get("a").is_some()));
@@ -523,7 +525,7 @@ fn a_schema_change_without_a_new_version_is_refused() {
     let mut f = v1();
     f["collections"]["up.docs"]["properties"]["extra"] = json!({"type": "string"});
     let ps = rig.boot(f, None).err().unwrap();
-    assert_eq!(ps[0].details[0]["code"], "schema_changed_without_version");
+    assert_eq!(ps[0].details["problems"][0]["code"], "schema_changed_without_version");
 }
 
 #[test]

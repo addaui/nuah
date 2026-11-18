@@ -21,6 +21,8 @@ export interface Plugin {
   provides: string[]
   requires: { plugins: string[]; ports: string[]; extension_points: string[]; capabilities: string[] }
   settings_schema: { properties?: Record<string, import("./schema").Prop>; required?: string[] } | null
+  /** The fields of other plugins' data it reads (ADR 0091). */
+  reads?: import("./report").Read[]
 }
 
 export interface Entry { enabled: boolean; grants?: string[]; settings?: Record<string, unknown> }

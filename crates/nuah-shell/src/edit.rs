@@ -204,3 +204,33 @@ pub fn write_profile(path: &Path, p: &Profile) -> std::io::Result<()> {
     f.sync_all()?;
     std::fs::rename(&tmp, path)
 }
+
+/// The Profile with `plugin` switched off, and every enabled plugin that needs it (directly or through another) switched
+/// off too; returns the new Profile and the plugins taken out besides `plugin`, in the order found. Their data is kept:
+/// switching them back on finds it ([ADR 0091]).
+///
+/// [ADR 0091]: https://docs.addaui.com/nuah/adr/0091-plugins-declare-one-schema-nuah-upgrades-their-data-from-it-and-refuses-changes-that-would-lose-data/
+pub fn without(catalog: &Catalog, p: &Profile, plugin: &str) -> (Profile, Vec<String>) {
+    let mut q = p.clone();
+    let mut gone = vec![plugin.to_string()];
+    let mut removed = vec![];
+    loop {
+        q.enabled.retain(|x| !gone.contains(x));
+        let dist = Distribution { name: String::new(), catalog: Catalog(catalog.0.clone()), profile: q.clone() };
+        let next: Vec<String> = Core::check(&dist)
+            .into_iter()
+            .filter(|pr| pr.code == "missing_dependency" && pr.plugins.get(1).is_some_and(|d| gone.contains(d)))
+            .filter_map(|pr| pr.plugins.first().cloned())
+            .filter(|x| !gone.contains(x))
+            .collect();
+        if next.is_empty() {
+            return (q, removed);
+        }
+        for x in next {
+            if !gone.contains(&x) {
+                removed.push(x.clone());
+                gone.push(x);
+            }
+        }
+    }
+}
