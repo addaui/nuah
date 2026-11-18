@@ -261,6 +261,12 @@ pub fn resolve(dist: &Distribution) -> (Vec<Problem>, Plan) {
                 ps.push(problem("reserved_name", &[id], format!("{id}: collections starting with _ belong to the kernel ({c})")));
             }
         }
+        // the name rules inside the plugin's schema file (ADR 0091)
+        if let Some(file) = m.data.schema.as_ref().and_then(|s| crate::upgrade::SchemaFile::parse(s).ok()) {
+            for u in crate::upgrade::static_problems(id, &file) {
+                ps.push(problem(&u.code, &[id], format!("{id}: {}", u.message())));
+            }
+        }
     }
 
     let mut resource_kinds: BTreeMap<String, String> = BTreeMap::new();
@@ -413,9 +419,17 @@ pub fn resolve(dist: &Distribution) -> (Vec<Problem>, Plan) {
                 plan.providers.entry(pr.extension_point.clone()).or_default().push((pr.priority, id.clone()));
             }
         }
-        for r in m.data.reads.keys() {
-            if !coll_owner.contains_key(r) {
+        for (r, fields) in &m.data.reads {
+            let Some(owner) = coll_owner.get(r) else {
                 ps.push(problem("unknown_collection", &[id], format!("{id} reads the collection {r}, which no enabled plugin owns")));
+                continue;
+            };
+            // a Read declaration names fields the owner's Collection schema has (ADR 0091)
+            let props = enabled.iter().find(|(o, _, _)| o == owner).and_then(|(_, _, om)| om.data.schemas.get(r)).and_then(|s| s.get("properties")).and_then(|p| p.as_object());
+            if let Some(props) = props {
+                for f in fields.iter().filter(|f| !props.contains_key(f.as_str())) {
+                    ps.push(problem("reader_breaks", &[id, owner], format!("{id} reads the field {f} of {r}, which {owner} does not have (renamed or removed); {id} needs a version that follows it")));
+                }
             }
         }
         if !m.settings_schema.is_null() {

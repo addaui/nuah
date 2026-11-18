@@ -279,3 +279,39 @@ fn indexes_come_from_the_schema_file() {
     let e = put(&c, "b", json!({"key": "k"})).unwrap_err();
     assert_eq!(e.reason.as_deref(), Some("kernel.unique"));
 }
+
+/// A plugin that reads `feat.docs` with the fields the test names.
+struct Reader(Value);
+impl Plugin for Reader {
+    fn manifest(&self) -> Manifest {
+        serde_json::from_value(json!({"id": "@test/reader", "version": "1.0.0", "namespaces": ["reader"], "data": {"reads": {"feat.docs": self.0.clone()}}})).unwrap()
+    }
+}
+
+fn check_with_reader(data: Value, fields: Value) -> Vec<Problem> {
+    let clock = FixedClock::at(1_000_000);
+    let seen = Default::default();
+    let mut cat = catalog(&clock, &seen);
+    cat.0.push(Arc::new(Feat(data)));
+    cat.0.push(Arc::new(Reader(fields)));
+    let mut p = profile(&["@nuah/db-memory", "@nuah/auth-local", "@nuah/policy-roles", "@nuah/clock-fixed", "@nuah/ids-sequential", "@test/feat", "@test/reader"]);
+    p.grants.clear();
+    Core::check(&Distribution { name: "t".into(), catalog: cat, profile: p })
+}
+
+#[test]
+fn a_reader_of_a_field_the_owner_does_not_have_is_a_problem_naming_both() {
+    let data = schema_data(json!({"feat.docs": {"type": "object", "properties": {"title": {"type": "string"}, "old": {"removed": true}}}}));
+    assert!(check_with_reader(data.clone(), json!(["title"])).is_empty());
+    let ps = check_with_reader(data, json!(["title", "old"]));
+    let p = ps.iter().find(|p| p.code == "reader_breaks").unwrap_or_else(|| panic!("{ps:?}"));
+    assert_eq!(p.plugins, vec!["@test/reader".to_string(), "@test/feat".to_string()]);
+    assert!(p.message.contains("old"));
+}
+
+#[test]
+fn the_name_rules_of_a_schema_file_are_problems_at_check_time() {
+    let data = schema_data(json!({"feat.docs": {"type": "object", "properties": {"c": {"type": "string", "renamed_from": ["a"]}, "a": {"type": "string"}}}}));
+    let ps = check_with_reader(data, json!([]));
+    assert!(ps.iter().any(|p| p.code == "name_reused" && p.message.contains("feat.docs")), "{ps:?}");
+}
