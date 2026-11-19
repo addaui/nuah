@@ -26,7 +26,7 @@ pub use crate::db::*;
 pub use crate::error::{Category, Error, Result};
 pub use crate::manifest::*;
 pub use crate::pipeline::{CallRequest, CallResponse};
-pub use crate::pulse::{PulseBatch, PulseEvent};
+pub use crate::pulse::{PulseBatch, PulseEvent, PulseSignal};
 pub use crate::plugin::*;
 pub use crate::ports::*;
 pub use crate::resolver::*;

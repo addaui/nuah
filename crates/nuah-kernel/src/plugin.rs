@@ -196,6 +196,8 @@ pub struct Tx<'a> {
     pub(crate) h: Handle<'a>,
     pub(crate) events: &'a mut Vec<Event>,
     pub(crate) docs: &'a mut Vec<DocRef>,
+    /// Signals sent in this transaction: handed to Pulse after the commit, never stored.
+    pub(crate) signals: Vec<Event>,
     pub(crate) depth: u32,
 }
 
@@ -396,6 +398,25 @@ impl<'a> Tx<'a> {
             crate::schema::validate(&decl.data, &data).map_err(|e| Error::internal(format!("event {kind}: {}", e.message)))?;
         }
         self.events.push(Event { kind: kind.into(), audience, data });
+        Ok(())
+    }
+
+    /// Tell an Audience something that matters only now (a [Signal](https://docs.addaui.com/nuah/references/glossary/#signal), such
+    /// as Presence): Pulse delivers it to whoever is following when the Command commits, and it is never stored. The kind is in one of
+    /// the plugin's namespaces; the data is at most 16 kB.
+    pub fn signal(&mut self, kind: &str, audience: Audience, data: Value) -> Result<()> {
+        if self.is_query() {
+            return Err(Error::internal("a Query may not send Signals"));
+        }
+        self.inner.check_capability(&self.plugin, "emit")?;
+        let owned = self.inner.plan.active.get(&self.plugin).is_some_and(|a| a.manifest.namespaces.iter().any(|n| kind.starts_with(&format!("{n}."))));
+        if !owned {
+            return Err(Error::internal(format!("signal {kind} is outside the namespaces of {}", self.plugin)));
+        }
+        if serde_json::to_vec(&data).map(|b| b.len()).unwrap_or(usize::MAX) > crate::pulse::SIGNAL_MAX {
+            return Err(Error::internal(format!("signal {kind} is larger than 16 kB")));
+        }
+        self.signals.push(Event { kind: kind.into(), audience, data });
         Ok(())
     }
 

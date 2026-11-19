@@ -57,7 +57,10 @@ impl Plugin for Notes {
                 "notes.sneaky_write": {"kind": "query"},
                 "notes.list": {"kind": "query", "permission": "notes.read", "resource": {"type":"notes.book","id":"book"},
                     "input": {"type":"object","required":["book"],"properties":{"book":{"type":"string"}}}},
-                "notes.tell_all": {"kind": "command", "permission": "notes.write", "input": {"type":"object","properties":{"text":{"type":"string"}}}}
+                "notes.tell_all": {"kind": "command", "permission": "notes.write", "input": {"type":"object","properties":{"text":{"type":"string"}}}},
+                "notes.here": {"kind": "command", "permission": "notes.read", "resource": {"type":"notes.book","id":"book"},
+                    "input": {"type":"object","required":["book"],"properties":{"book":{"type":"string"},"kind":{"type":"string"},"fail":{"type":"boolean"},"size":{"type":"integer"}}}},
+                "notes.here_query": {"kind": "query", "input": {"type":"object","properties":{"book":{"type":"string"}}}}
             },
             "hooks": [
                 {"stage": "before", "on": "notes.add", "order": 10, "handler": "notes.no_spam"},
@@ -137,6 +140,21 @@ impl Plugin for Notes {
         b.op("notes.list", |tx, i| {
             let p = tx.query("notes.notes", &Query::new().eq("book", i["book"].clone()).asc("text"))?;
             Ok(json!({"notes": p.items.iter().map(|d| d.body["text"].clone()).collect::<Vec<_>>()}))
+        });
+        // A Signal (ADR 0093): who is looking at a book right now, not stored.
+        b.op("notes.here", |tx, i| {
+            let book = i["book"].as_str().unwrap();
+            let kind = i["kind"].as_str().unwrap_or("notes.here");
+            let pad = "x".repeat(i["size"].as_u64().unwrap_or(0) as usize);
+            tx.signal(kind, Audience::scope("notes.readers", book), json!({"book": book, "pad": pad}))?;
+            if i["fail"] == true {
+                return Err(Error::invalid("fail", "asked to fail"));
+            }
+            Ok(json!({}))
+        });
+        b.op("notes.here_query", |tx, _| {
+            tx.signal("notes.here", Audience::subject("x"), json!({}))?;
+            Ok(json!({}))
         });
         b.op("notes.tell_all", |tx, i| tx.extension_call("tell.channel", json!({"text": i.get("text").cloned().unwrap_or(json!("hi"))})));
         b.before("notes.no_spam", |_tx, _op, input| {

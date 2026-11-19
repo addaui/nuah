@@ -463,6 +463,8 @@ async fn pulse(
     let mut wake = core.subscribe();
     let mut shutdown = app.shutdown.clone();
     let who0 = who.subject.clone();
+    // Signals (ADR 0093) are followed from now: they are never stored, so there is nothing to catch up on.
+    let mut signal_at = core.signal_now();
     let stream = async_stream::stream! {
         let slot = slot;
         let mut cursor = start.clone();
@@ -495,6 +497,19 @@ async fn pulse(
                 }
                 cursor = batch.cursor;
                 if !batch.more { break; }
+            }
+            let (c, cr, after) = (core.clone(), cred.clone(), signal_at);
+            if let Ok(Ok((list, next))) = tokio::task::spawn_blocking(move || {
+                let who = c.authenticate(cr.as_deref())?;
+                c.signals(&who, after)
+            })
+            .await
+            {
+                signal_at = next;
+                for sig in &list {
+                    // no id: a Signal never moves the Pulse cursor
+                    yield Ok(Sse::default().event("signal").data(serde_json::to_string(sig).unwrap_or_default()));
+                }
             }
             // A commit wakes the stream at once; the tick covers another process writing the same database.
             tokio::select! {

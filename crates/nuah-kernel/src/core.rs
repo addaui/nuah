@@ -25,6 +25,7 @@ pub(crate) struct Inner {
     pub(crate) plan: Plan,
     pub(crate) settings: BTreeMap<String, Value>,
     pub(crate) wake: watch::Sender<u64>,
+    pub(crate) signals: std::sync::Mutex<crate::pulse::Signals>,
     pub(crate) profile_name: String,
     pub(crate) telemetry: crate::telemetry::Telemetry,
     pub(crate) shell: std::sync::RwLock<Option<Arc<dyn crate::plugin::ShellServices>>>,
@@ -126,7 +127,7 @@ impl Core {
         let (wake, _) = watch::channel(0u64);
         let settings = plan.settings.clone();
         let features = db.features();
-        let inner = Arc::new(Inner { db, features, auth, policy, clock, ids, net, plan, settings, wake, profile_name: dist.profile.name.clone(), telemetry, shell: std::sync::RwLock::new(None) });
+        let inner = Arc::new(Inner { db, features, auth, policy, clock, ids, net, plan, settings, wake, signals: Default::default(), profile_name: dist.profile.name.clone(), telemetry, shell: std::sync::RwLock::new(None) });
         if inner.plan.ports.contains_key("db") {
             if let Err(e) = inner.prepare_storage(watch) {
                 if e.key == "kernel.upgrade_refused" {
@@ -798,7 +799,7 @@ impl Inner {
         self.db.write(&mut |w| {
             let mut events = vec![];
             let mut docs = vec![];
-            let mut tx = Tx { inner: self, plugin: plugin.into(), who: &system, request: "kernel", h: Handle::W(w), events: &mut events, docs: &mut docs, depth: 0 };
+            let mut tx = Tx { inner: self, plugin: plugin.into(), who: &system, request: "kernel", h: Handle::W(w), events: &mut events, docs: &mut docs, signals: vec![], depth: 0 };
             out = f(&mut tx);
             if out.is_err() {
                 return Err(Error::internal("rolled back"));

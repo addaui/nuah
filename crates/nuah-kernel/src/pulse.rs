@@ -12,6 +12,28 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 const SCAN: usize = 200;
+/// The largest Signal, serialized.
+pub const SIGNAL_MAX: usize = 16 * 1024;
+/// How long a Signal waits in memory for a stream to pick it up.
+pub const SIGNAL_KEEP_MS: Millis = 10_000;
+
+/// A [Signal](https://docs.addaui.com/nuah/references/glossary/#signal) as one Subject receives it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PulseSignal {
+    /// Its place among Signals (not a Pulse cursor).
+    pub seq: u64,
+    pub kind: String,
+    pub data: Value,
+    pub at: Millis,
+    pub actor: String,
+}
+
+/// The Signals of the last few seconds, in memory only.
+#[derive(Default)]
+pub(crate) struct Signals {
+    next: u64,
+    items: std::collections::VecDeque<(u64, Millis, String, Event)>,
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PulseEvent {
@@ -51,7 +73,57 @@ impl Inner {
     }
 }
 
+impl Inner {
+    pub(crate) fn send_signals(&self, actor: &str, list: Vec<Event>) {
+        let now = self.clock.now();
+        {
+            let mut s = self.signals.lock().unwrap_or_else(|e| e.into_inner());
+            while s.items.front().is_some_and(|(_, at, _, _)| now - at > SIGNAL_KEEP_MS) {
+                s.items.pop_front();
+            }
+            for ev in list {
+                s.next += 1;
+                let seq = s.next;
+                s.items.push_back((seq, now, actor.to_string(), ev));
+            }
+        }
+        // Wake the streams; the value is the log's own, unchanged.
+        self.wake.send_modify(|_| {});
+    }
+}
+
 impl Core {
+    /// Where a stream starts following Signals: only those sent from now on.
+    pub fn signal_now(&self) -> u64 {
+        self.inner.signals.lock().unwrap_or_else(|e| e.into_inner()).next
+    }
+
+    /// The Signals after `after` that `who` may receive (resolved now, as Pulse resolves an Audience), and where to continue.
+    /// Signals older than ten seconds are gone.
+    pub fn signals(&self, who: &Identity, after: u64) -> Result<(Vec<PulseSignal>, u64)> {
+        let inner = &*self.inner;
+        let now = inner.clock.now();
+        let (list, next) = {
+            let s = inner.signals.lock().unwrap_or_else(|e| e.into_inner());
+            let list: Vec<_> = s.items.iter().filter(|(seq, at, _, _)| *seq > after && now - at <= SIGNAL_KEEP_MS).cloned().collect();
+            (list, s.next)
+        };
+        if list.is_empty() {
+            return Ok((vec![], next.max(after)));
+        }
+        let mut out = vec![];
+        inner.db.read(&mut |r| {
+            out.clear();
+            for (seq, at, actor, ev) in &list {
+                if inner.visible(r, &ev.audience, &who.subject)? {
+                    out.push(PulseSignal { seq: *seq, kind: ev.kind.clone(), data: ev.data.clone(), at: *at, actor: actor.clone() });
+                }
+            }
+            Ok(())
+        })?;
+        Ok((out, next.max(after)))
+    }
+
     /// The newest cursor: where a Face that has just loaded its state starts following.
     pub fn pulse_now(&self) -> Result<String> {
         let mut latest = 0;
@@ -175,17 +247,19 @@ impl Inner {
         let mut delivered = 0usize;
         let mut failure: Option<Error> = None;
         let mut committed: Option<u64> = None;
+        let mut signals: Vec<Event> = vec![];
         let write = self.db.write(&mut |w| {
             delivered = 0;
             failure = None;
             committed = None;
+            signals.clear();
             let from = w.get("_cursors", &cursor_id)?.and_then(|d| d.body["seq"].as_u64()).unwrap_or(0);
             let records = w.changes_after(from, 50)?;
             let Some(last) = records.last().map(|r| r.seq) else { return Ok(()) };
             let request = self.ids.new_id();
             let (mut events, mut docs) = (vec![], vec![]);
             {
-                let mut tx = Tx { inner: self, plugin: plugin.into(), who: &who, request: &request, h: Handle::W(&mut *w), events: &mut events, docs: &mut docs, depth: 0 };
+                let mut tx = Tx { inner: self, plugin: plugin.into(), who: &who, request: &request, h: Handle::W(&mut *w), events: &mut events, docs: &mut docs, signals: vec![], depth: 0 };
                 for rec in &records {
                     for ev in rec.events.iter().filter(|e| pattern_matches(on, &e.kind)) {
                         let d = Delivery { seq: rec.seq, at: rec.at, actor: rec.actor.clone(), operation: rec.operation.clone(), event: ev.clone() };
@@ -203,6 +277,7 @@ impl Inner {
                         }
                     }
                 }
+                signals = std::mem::take(&mut tx.signals);
             }
             let now = self.clock.now();
             w.put("_cursors", &cursor_id, "kernel", json!({"seq": last}), Expect::Any, now)?;
@@ -219,6 +294,9 @@ impl Inner {
             return Err(e);
         }
         write?;
+        if !signals.is_empty() {
+            self.send_signals(&who.subject, signals);
+        }
         if let Some(seq) = committed {
             let _ = self.wake.send(seq);
         }

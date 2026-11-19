@@ -122,7 +122,7 @@ impl Core {
                 let mut out: Option<Value> = None;
                 inner.db.read(&mut |r| {
                     let (mut events, mut docs) = (vec![], vec![]);
-                    let mut tx = Tx { inner, plugin: String::new(), who, request: &request, h: Handle::R(r), events: &mut events, docs: &mut docs, depth: 0 };
+                    let mut tx = Tx { inner, plugin: String::new(), who, request: &request, h: Handle::R(r), events: &mut events, docs: &mut docs, signals: vec![], depth: 0 };
                     out = Some(guarded(|| inner.execute(&mut tx, op, input.clone()))?);
                     Ok(())
                 })?;
@@ -136,7 +136,7 @@ impl Core {
                 let mut prepared: Option<Value> = None;
                 inner.db.read(&mut |r| {
                     let (mut events, mut docs) = (vec![], vec![]);
-                    let mut tx = Tx { inner, plugin: String::new(), who, request: &request, h: Handle::R(r), events: &mut events, docs: &mut docs, depth: 0 };
+                    let mut tx = Tx { inner, plugin: String::new(), who, request: &request, h: Handle::R(r), events: &mut events, docs: &mut docs, signals: vec![], depth: 0 };
                     prepared = Some(guarded(|| inner.prepare_outbound(&mut tx, op, input.clone()))?);
                     Ok(())
                 })?;
@@ -162,13 +162,15 @@ impl Core {
                 let mut committed: Option<u64> = None;
                 let idem_id = key.map(|k| idem_id(&who.subject, op, k));
                 let input_hash = hash_value(&input);
+                let mut signals: Vec<Event> = vec![];
                 inner.db.write(&mut |w| {
                     res = None;
                     committed = None;
+                    signals.clear();
                     let now = inner.clock.now();
                     if let Some(id) = &idem_id {
                         // Authorization comes first, so a removed member cannot read an old result by replaying a key.
-                        let probe = Tx { inner, plugin: String::new(), who, request: &request, h: Handle::R(&*w), events: &mut vec![], docs: &mut vec![], depth: 0 };
+                        let probe = Tx { inner, plugin: String::new(), who, request: &request, h: Handle::R(&*w), events: &mut vec![], docs: &mut vec![], signals: vec![], depth: 0 };
                         schema::validate(&decl.input, &input)?;
                         inner.authorize(&probe, decl, &input)?;
                         drop(probe);
@@ -184,8 +186,10 @@ impl Core {
                     }
                     let (mut events, mut docs) = (vec![], vec![]);
                     let output = {
-                        let mut tx = Tx { inner, plugin: String::new(), who, request: &request, h: Handle::W(&mut *w), events: &mut events, docs: &mut docs, depth: 0 };
-                        guarded(|| inner.execute(&mut tx, op, input.clone()))?
+                        let mut tx = Tx { inner, plugin: String::new(), who, request: &request, h: Handle::W(&mut *w), events: &mut events, docs: &mut docs, signals: vec![], depth: 0 };
+                        let out = guarded(|| inner.execute(&mut tx, op, input.clone()))?;
+                        signals = std::mem::take(&mut tx.signals);
+                        out
                     };
                     if let Some(id) = &idem_id {
                         let body = json!({"input": input_hash, "output": output, "expires_at": now + IDEMPOTENCY_TTL_MS});
@@ -201,6 +205,9 @@ impl Core {
                     res = Some(CallResponse { output, replayed: false });
                     Ok(())
                 })?;
+                if !signals.is_empty() {
+                    inner.send_signals(&who.subject, signals);
+                }
                 if let Some(seq) = committed {
                     let _ = inner.wake.send(seq);
                 }

@@ -582,3 +582,65 @@ fn any_plugin_can_declare_how_far_it_is_safe() {
     p.reach = Some(Reach::Internet);
     assert!(Core::check(&Distribution { name: "t".into(), catalog: cat, profile: p }).iter().any(|p| p.code == "exceeds_reach" && p.plugins == vec!["@third/careful".to_string()]));
 }
+
+// ---- Signals (ADR 0093): delivered by Pulse to the Audience, never stored ----
+
+#[test]
+fn a_signal_reaches_its_audience_and_is_not_stored() {
+    let w = world();
+    let (alice, bob, carol) = (person("alice", &["member"]), person("bob", &["member"]), person("carol", &["member"]));
+    let b = book(&w, &alice);
+    call(&w, &alice, "notes.book.share", json!({"book": b, "with": "bob"})).unwrap();
+    let (cursor, from) = (w.core.pulse_now().unwrap(), w.core.signal_now());
+    call(&w, &bob, "notes.here", json!({"book": b})).unwrap();
+    let (got, next) = w.core.signals(&alice, from).unwrap();
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].kind, "notes.here");
+    assert_eq!(got[0].actor, "bob");
+    assert_eq!(got[0].data["book"], json!(b));
+    assert!(next > from);
+    assert_eq!(w.core.signals(&bob, from).unwrap().0.len(), 1, "the sender is in the Audience too");
+    assert!(w.core.signals(&carol, from).unwrap().0.is_empty(), "outside the Audience");
+    assert!(w.core.signals(&alice, next).unwrap().0.is_empty(), "each Signal once");
+    assert_eq!(w.core.pulse_now().unwrap(), cursor, "nothing stored, the cursor did not move");
+    assert!(w.core.pulse(&alice, Some(&cursor), 50).unwrap().events.is_empty());
+}
+
+#[test]
+fn a_signal_from_a_failed_command_is_not_sent() {
+    let w = world();
+    let alice = person("alice", &["member"]);
+    let b = book(&w, &alice);
+    let from = w.core.signal_now();
+    assert!(call(&w, &alice, "notes.here", json!({"book": b, "fail": true})).is_err());
+    assert!(w.core.signals(&alice, from).unwrap().0.is_empty());
+}
+
+#[test]
+fn signals_older_than_ten_seconds_are_forgotten() {
+    let w = world();
+    let alice = person("alice", &["member"]);
+    let b = book(&w, &alice);
+    let from = w.core.signal_now();
+    call(&w, &alice, "notes.here", json!({"book": b})).unwrap();
+    w.clock.advance(10_001);
+    assert!(w.core.signals(&alice, from).unwrap().0.is_empty());
+}
+
+#[test]
+fn a_signal_kind_outside_the_plugins_namespace_is_refused() {
+    let w = world();
+    let alice = person("alice", &["member"]);
+    let b = book(&w, &alice);
+    let e = call(&w, &alice, "notes.here", json!({"book": b, "kind": "tell.here"})).unwrap_err();
+    assert_eq!(e.category, Category::Internal);
+}
+
+#[test]
+fn a_signal_is_small_and_only_sent_by_a_command() {
+    let w = world();
+    let alice = person("alice", &["member"]);
+    let b = book(&w, &alice);
+    assert!(call(&w, &alice, "notes.here", json!({"book": b, "size": 17_000})).is_err(), "data over 16 kB");
+    assert!(call(&w, &alice, "notes.here_query", json!({})).is_err(), "a Query may not send Signals");
+}

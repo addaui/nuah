@@ -11,10 +11,17 @@ struct Echo;
 impl Plugin for Echo {
     fn manifest(&self) -> Manifest {
         serde_json::from_value(json!({"id":"@test/echo","version":"1","namespaces":["echo"],
-            "operations":{"echo.say":{"kind":"query","input":{"type":"object","properties":{"text":{"type":"string"}}}}}})).unwrap()
+            "requires":{"capabilities":["emit"]},
+            "operations":{"echo.say":{"kind":"query","input":{"type":"object","properties":{"text":{"type":"string"}}}},
+                "echo.wave":{"kind":"command","input":{"type":"object"}}}})).unwrap()
     }
     fn bind(&self, b: &mut Bindings) {
         b.op("echo.say", |tx, i| Ok(json!({"text": i["text"], "who": tx.who().subject})));
+        b.op("echo.wave", |tx, _| {
+            let me = tx.who().subject.clone();
+            tx.signal("echo.here", Audience::subject(&me), json!({"hand": "up"}))?;
+            Ok(json!({}))
+        });
     }
 }
 
@@ -29,6 +36,7 @@ fn start(port: u16) -> (Core, Services) {
     p.settings.insert("@nuah/auth-password".into(), json!({"accounts": [{"username": "alice", "password_hash": hash, "roles": ["member"]}]}));
     p.settings.insert("@nuah/http".into(), json!({"listen": format!("127.0.0.1:{port}")}));
     p.grants.insert("@nuah/http".into(), vec!["serve".into()]);
+    p.grants.insert("@test/echo".into(), vec!["emit".into()]);
     let mut catalog = vec![];
     let list: Vec<std::sync::Arc<dyn Plugin>> = vec![
         std::sync::Arc::new(AdapterMemory), std::sync::Arc::new(AuthPassword), std::sync::Arc::new(PolicyRoles), std::sync::Arc::new(StdClock), std::sync::Arc::new(StdIds),
@@ -433,5 +441,42 @@ fn a_stored_font_is_served_to_anyone_and_cached_for_good() {
         let status = match r { Ok(r) => r.status().as_u16(), Err(ureq::Error::StatusCode(c)) => c, Err(e) => panic!("{e}") };
         assert_eq!(status, 404, "{bad}");
     }
+    services.stop();
+}
+
+#[test]
+fn the_event_stream_carries_signals_without_an_id() {
+    use std::io::{BufRead, BufReader, Write};
+    let port = free_port();
+    let base = format!("http://127.0.0.1:{port}");
+    let (_core, services) = start(port);
+    let token = post(&base, "auth.sign_in", json!({"username": "alice", "password": "pw"}), None, None).1["output"]["token"].as_str().unwrap().to_string();
+    let mut sock = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    sock.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    write!(sock, "GET /pulse HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {token}\r\nX-Nuah-Face: test\r\nAccept: text/event-stream\r\n\r\n").unwrap();
+    let mut lines = BufReader::new(sock.try_clone().unwrap()).lines();
+    // wait until the stream is ready, then wave
+    while !lines.next().unwrap().unwrap().contains("event: ready") {}
+    let ready: Value = serde_json::from_str(lines.next().unwrap().unwrap().strip_prefix("data: ").unwrap()).unwrap();
+    let me = ready["subject"].as_str().unwrap().to_string();
+    assert_eq!(post(&base, "echo.wave", json!({}), Some(&token), None).0, 200);
+    let mut block = vec![];
+    loop {
+        let l = lines.next().expect("the stream ended").expect("no Signal within 5 s");
+        if l.contains("event: signal") {
+            block.push(l);
+            loop {
+                let l = lines.next().unwrap().unwrap();
+                if l.is_empty() { break; }
+                block.push(l);
+            }
+            break;
+        }
+    }
+    assert!(!block.iter().any(|l| l.starts_with("id:")), "a Signal never moves the cursor: {block:?}");
+    let data = block.iter().find_map(|l| l.strip_prefix("data: ")).expect("data line");
+    let v: Value = serde_json::from_str(data).unwrap();
+    assert_eq!((v["kind"].as_str(), v["data"]["hand"].as_str(), v["actor"].as_str()), (Some("echo.here"), Some("up"), Some(me.as_str())), "{v}");
+    drop(sock);
     services.stop();
 }
