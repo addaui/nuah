@@ -328,6 +328,27 @@ async fn font_file(State(app): State<App>, Path(file): Path<String>) -> Result<R
     Ok(([(header::CONTENT_TYPE, "font/woff2"), (header::CACHE_CONTROL, "public, max-age=31536000, immutable")], bytes).into_response())
 }
 
+/// A file of an enabled plugin's Browser modules (ADR 0095). The address `describe` gives carries the file's hash; with that hash
+/// the answer is kept for a year, without it the browser asks again each time.
+async fn browser_file(State(app): State<App>, Path((scope, name, file)): Path<(String, String, String)>, Query(q): Query<HashMap<String, String>>) -> Response {
+    if !nuah_kernel::valid_browser_file(&file) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let Some((bytes, hash)) = app.core.browser_file(&format!("@{scope}/{name}"), &file) else { return StatusCode::NOT_FOUND.into_response() };
+    let kind = match file.rsplit_once('.').map(|(_, e)| e) {
+        Some("js" | "mjs") => "text/javascript; charset=utf-8",
+        Some("wasm") => "application/wasm",
+        Some("css") => "text/css; charset=utf-8",
+        Some("json") => "application/json",
+        Some("woff2") => "font/woff2",
+        Some("svg") => "image/svg+xml",
+        Some("png") => "image/png",
+        _ => "application/octet-stream",
+    };
+    let cache = if q.get("v") == Some(&hash) { "public, max-age=31536000, immutable" } else { "no-cache" };
+    ([(header::CONTENT_TYPE, kind), (header::CACHE_CONTROL, cache)], bytes).into_response()
+}
+
 async fn describe(State(app): State<App>, headers: HeaderMap) -> Result<Response, ApiError> {
     let (core, cred) = (app.core.clone(), credential(&headers));
     let body = blocking(move || match core.authenticate(cred.as_deref()) {
@@ -686,6 +707,7 @@ pub fn router_with(core: Core, mut cfg: Config, extra: &[RouteFn], shutdown: tok
         .route("/link/client.ts", get(client_ts))
         .route("/pulse", get(pulse))
         .route("/fonts/{file}", get(font_file))
+        .route("/plugins/{scope}/{name}/{*file}", get(browser_file))
         .with_state(App { core: core.clone(), cfg: cfg.clone(), throttle: Default::default(), streams: Default::default(), shutdown });
     for f in extra {
         r = r.merge(f(core.clone()));

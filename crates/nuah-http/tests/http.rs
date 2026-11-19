@@ -500,3 +500,100 @@ fn a_faces_service_worker_may_look_after_the_whole_site_and_nothing_else_may() {
     assert_eq!(raw_get(&format!("http://127.0.0.1:{port}/faces/web/other.js"), "identity").header("service-worker-allowed"), None);
     services.stop();
 }
+
+// ---- Browser modules (ADR 0095) ---------------------------------------------------------------------
+
+struct Mod;
+impl Plugin for Mod {
+    fn manifest(&self) -> Manifest {
+        serde_json::from_value(json!({"id": "@test/mod", "version": "1.0.0", "namespaces": ["mod"],
+            "defines": {"extension_points": {"mod.view": {"policy": "many", "browser": true, "input": {}}}},
+            "provides": [{"extension_point": "mod.view"}], "browser": {"mod.view": "index.js"}})).unwrap()
+    }
+    fn browser_files(&self) -> &'static [(&'static str, &'static [u8])] {
+        &[("index.js", b"export default function register() {}\n"), ("lib/py.wasm", b"\0asm")]
+    }
+}
+
+fn start_mod(on: bool) -> (Core, Services, u16) {
+    let port = free_port();
+    let mut p = Profile { name: "t".into(), ..Default::default() };
+    p.enabled = ["@nuah/db-memory", "@nuah/auth-local", "@nuah/policy-roles", "@nuah/clock-system", "@nuah/ids-random", "@nuah/http"].iter().map(|s| s.to_string()).collect();
+    if on {
+        p.enabled.push("@test/mod".into());
+    }
+    p.settings.insert("@nuah/http".into(), json!({"listen": format!("127.0.0.1:{port}")}));
+    p.grants.insert("@nuah/http".into(), vec!["serve".into()]);
+    let list: Vec<std::sync::Arc<dyn Plugin>> = vec![
+        std::sync::Arc::new(AdapterMemory), std::sync::Arc::new(AuthLocal), std::sync::Arc::new(PolicyRoles), std::sync::Arc::new(StdClock), std::sync::Arc::new(StdIds), std::sync::Arc::new(Http::new()), std::sync::Arc::new(Mod),
+    ];
+    let core = Core::start(&Distribution { name: "t".into(), catalog: Catalog(list), profile: p }).unwrap_or_else(|e| panic!("{e:?}"));
+    let services = core.start_services().unwrap();
+    (core, services, port)
+}
+
+/// Status, lower-cased headers and body of a GET sent as written (no path clean-up by a client).
+fn get_raw(port: u16, path: &str) -> (u16, Vec<(String, String)>, Vec<u8>) {
+    use std::io::{Read, Write};
+    let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    write!(s, "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n").unwrap();
+    let mut buf = Vec::new();
+    s.read_to_end(&mut buf).unwrap();
+    let end = buf.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+    let head = String::from_utf8_lossy(&buf[..end]).to_string();
+    let status: u16 = head.split_whitespace().nth(1).unwrap().parse().unwrap();
+    let headers = head.lines().skip(1).filter_map(|l| l.split_once(':')).map(|(k, v)| (k.trim().to_lowercase(), v.trim().to_string())).collect();
+    (status, headers, buf[end + 4..].to_vec())
+}
+fn hdr<'a>(h: &'a [(String, String)], n: &str) -> Option<&'a str> {
+    h.iter().find(|(k, _)| k == n).map(|(_, v)| v.as_str())
+}
+
+#[test]
+fn browser_module_served_with_hash_cache() {
+    let (core, services, port) = start_mod(true);
+    let url = core.describe_public()["browser"][0]["url"].as_str().unwrap().to_string();
+    let (st, h, body) = get_raw(port, &url);
+    assert_eq!(st, 200);
+    assert_eq!(hdr(&h, "content-type"), Some("text/javascript; charset=utf-8"));
+    assert_eq!(hdr(&h, "cache-control"), Some("public, max-age=31536000, immutable"));
+    assert_eq!(body, b"export default function register() {}\n");
+    let (st, h, _) = get_raw(port, "/plugins/test/mod/lib/py.wasm");
+    assert_eq!((st, hdr(&h, "content-type")), (200, Some("application/wasm")));
+    services.stop();
+}
+
+#[test]
+fn browser_module_wrong_hash_not_cached() {
+    let (_core, services, port) = start_mod(true);
+    let (st, h, _) = get_raw(port, "/plugins/test/mod/index.js?v=000000000000");
+    assert_eq!((st, hdr(&h, "cache-control")), (200, Some("no-cache")));
+    let (st, h, _) = get_raw(port, "/plugins/test/mod/index.js");
+    assert_eq!((st, hdr(&h, "cache-control")), (200, Some("no-cache")));
+    services.stop();
+}
+
+#[test]
+fn browser_module_of_disabled_plugin_404() {
+    let (_core, services, port) = start_mod(false);
+    assert_eq!(get_raw(port, "/plugins/test/mod/index.js").0, 404);
+    services.stop();
+}
+
+#[test]
+fn browser_module_path_traversal_404() {
+    let (_core, services, port) = start_mod(true);
+    assert_eq!(get_raw(port, "/plugins/test/mod/../mod/index.js").0, 404);
+    assert_eq!(get_raw(port, "/plugins/test/mod/lib/../index.js").0, 404);
+    assert_eq!(get_raw(port, "/plugins/test/mod/nothing.js").0, 404);
+    services.stop();
+}
+
+#[test]
+fn csp_unchanged_by_browser_modules() {
+    let (_core, services, port) = start_mod(true);
+    let (_, h, _) = get_raw(port, "/plugins/test/mod/index.js");
+    assert_eq!(hdr(&h, "content-security-policy").map(String::from), Some(nuah_http::csp(&[], &[], &[])));
+    services.stop();
+}
