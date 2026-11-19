@@ -221,6 +221,8 @@ export const en = {
   "starting.title": "{product} is upgrading its data",
   "starting.text": "This happens once after an update and can take a few minutes. This page opens the app by itself when it's done. Closing it doesn't stop the upgrade.",
   "starting.preparing": "Getting ready…",
+  "starting.checking": "Checking {name} before changing anything: part {n} of {m}",
+  "starting.copying": "Saving a copy of the data first…",
   "starting.part": "{name}: part {n} of {m}",
   "starting.count": "{done} of {total} items ({percent}%)",
   "starting.label": "Upgrade progress",

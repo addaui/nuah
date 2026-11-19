@@ -493,6 +493,10 @@ fn filled(schema: &Value, default: &Value) -> Value {
 /// [ADR 0091]: https://docs.addaui.com/nuah/adr/0091-plugins-declare-one-schema-nuah-upgrades-their-data-from-it-and-refuses-changes-that-would-lose-data/
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct UpgradeProgress {
+    /// `checking` (every stored Document tried against the new schema before anything is written), `copying` (the
+    /// Adapter's copy of the database before the first change), or `upgrading`.
+    pub phase: String,
+    /// The plugin and Collection (empty while `copying`).
     pub plugin: String,
     /// The Collection being upgraded, by its stored name.
     pub collection: String,

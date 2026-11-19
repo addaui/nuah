@@ -35,7 +35,7 @@ fn the_starting_page_says_how_far_the_upgrade_is_and_frees_the_address_when_stop
         identity_file: std::env::temp_dir().join("nuah-starting-unused.json"), listen: Some(addr.clone()), allow_hosts: vec![],
         faces_dir: faces, until_saved: true,
     };
-    let progress = Arc::new(Mutex::new(Some(UpgradeProgress { plugin: "@t/tasks".into(), collection: "tasks.tasks".into(), done: 500, total: 2000, collection_number: 1, collections: 2 })));
+    let progress = Arc::new(Mutex::new(Some(UpgradeProgress { phase: "upgrading".into(), plugin: "@t/tasks".into(), collection: "tasks.tasks".into(), done: 500, total: 2000, collection_number: 1, collections: 2 })));
     let stop = SetupWeb::new().starting(ctx, progress.clone()).expect("the setup Face can show the page");
 
     let (status, body) = get(&addr, "/upgrade/progress");

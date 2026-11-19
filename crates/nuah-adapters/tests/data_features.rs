@@ -470,9 +470,14 @@ fn an_upgrade_reports_its_progress_while_it_runs() {
     let into = seen.clone();
     rig.boot_watched(v2(json!([])), None, Some(&move |p: &nuah_kernel::upgrade::UpgradeProgress| into.lock().unwrap().push(p.clone()))).unwrap();
     let seen = seen.lock().unwrap();
-    let done: Vec<u64> = seen.iter().map(|p| p.done).collect();
+    let phases: Vec<&str> = seen.iter().map(|p| p.phase.as_str()).collect();
+    let first = |ph: &str| phases.iter().position(|x| *x == ph).unwrap_or_else(|| panic!("no {ph} in {phases:?}"));
+    assert!(first("checking") < first("copying") && first("copying") < first("upgrading"), "the dry run, the copy, then the upgrade: {phases:?}");
+    let checked: Vec<u64> = seen.iter().filter(|p| p.phase == "checking").map(|p| p.done).collect();
+    assert_eq!(checked.last(), Some(&2501), "the dry run counts too");
+    let done: Vec<u64> = seen.iter().filter(|p| p.phase == "upgrading").map(|p| p.done).collect();
     assert_eq!(done, vec![0, 500, 1000, 1500, 2000, 2500, 2501], "one report before the first batch and after each");
-    let last = seen.last().unwrap();
+    let last = seen.iter().rev().find(|p| p.phase == "upgrading").unwrap();
     assert_eq!((last.plugin.as_str(), last.collection.as_str(), last.total, last.collection_number, last.collections), ("@test/up", "up.docs", 2501, 1, 1));
 }
 
@@ -516,7 +521,7 @@ fn interrupted_upgrade_resumes_and_steps_each_document_once() {
     assert!(rig.meta("upgrade:@test/up").is_some());
     let seen: Arc<std::sync::Mutex<Vec<u64>>> = Default::default();
     let into = seen.clone();
-    rig.boot_watched(v2(json!([2])), Some(4), Some(&move |p: &nuah_kernel::upgrade::UpgradeProgress| into.lock().unwrap().push(p.done))).unwrap();
+    rig.boot_watched(v2(json!([2])), Some(4), Some(&move |p: &nuah_kernel::upgrade::UpgradeProgress| if p.phase == "upgrading" { into.lock().unwrap().push(p.done) })).unwrap();
     assert_eq!(*seen.lock().unwrap(), vec![1500, 2000, 2500, 2501], "the count goes on from where the upgrade stopped");
     let docs = rig.docs("up.docs");
     assert_eq!(docs.len(), 2501);

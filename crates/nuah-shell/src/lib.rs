@@ -222,7 +222,10 @@ pub fn run(product: impl Product) -> ! {
                     }
                     if p.done == p.total || printed.get().is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(2)) {
                         printed.set(Some(std::time::Instant::now()));
-                        eprintln!("upgrading {} ({} of {}): {} of {} done", p.collection, p.collection_number, p.collections, p.done, p.total);
+                        match p.phase.as_str() {
+                            "copying" => eprintln!("saving a copy of the database before upgrading"),
+                            phase => eprintln!("{phase} {} ({} of {}): {} of {} done", p.collection, p.collection_number, p.collections, p.done, p.total),
+                        }
                     }
                 };
                 let started = start_core(&product, &path, &flags, Some(&store), Some(&watch));

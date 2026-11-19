@@ -208,6 +208,8 @@ export const ar: Record<keyof typeof en, string> = {
   "starting.title": "يحدّث {product} بياناته",
   "starting.text": "يحدث هذا مرة واحدة بعد كل تحديث وقد يستغرق بضع دقائق. ستفتح هذه الصفحة التطبيق تلقائيًا عند الانتهاء. إغلاقها لا يوقف التحديث.",
   "starting.preparing": "جارٍ التجهيز…",
+  "starting.checking": "فحص {name} قبل تغيير أي شيء: الجزء {n} من {m}",
+  "starting.copying": "حفظ نسخة من البيانات أولًا…",
   "starting.part": "{name}: الجزء {n} من {m}",
   "starting.count": "{done} من {total} عنصر ({percent}٪)",
   "starting.label": "تقدّم التحديث",

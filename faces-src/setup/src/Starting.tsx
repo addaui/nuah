@@ -39,7 +39,7 @@ export function Starting({ first }: { first: Now }) {
         <CardContent className="grid gap-2" aria-live="polite">
           <p className="m-0 text-sm font-medium">{t(l.part.key, l.part.params)}</p>
           <Progress value={l.percent} aria-label={t("starting.label")} />
-          <p className="m-0 text-sm text-muted-foreground tabular-nums">{t(l.count.key, l.count.params)}</p>
+          {l.count && <p className="m-0 text-sm text-muted-foreground tabular-nums">{t(l.count.key, l.count.params)}</p>}
         </CardContent>
       </Card>
     </div>

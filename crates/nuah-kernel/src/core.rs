@@ -495,7 +495,7 @@ impl Inner {
                     let stepped = new.steps.iter().copied().filter(|s| *s > old.version && *s <= new.version).collect::<Vec<u32>>();
                     // with no Upgrade step to fix values up, every stored Document must fit after the declared changes
                     if old.version < new.version && stepped.is_empty() {
-                        let found = self.dry_run(id, &old, &new, &plan)?;
+                        let found = self.dry_run(id, &old, &new, &plan, watch)?;
                         if !found.is_empty() {
                             refused.extend(found);
                             continue;
@@ -517,6 +517,9 @@ impl Inner {
         }
         // before any change to data that already exists, let the Adapter take a copy
         if !upgrading.is_empty() {
+            if let Some(f) = watch {
+                f(&crate::upgrade::UpgradeProgress { phase: "copying".into(), plugin: String::new(), collection: String::new(), done: 0, total: 0, collection_number: 0, collections: 0 });
+            }
             self.db.before_migration(&upgrading.join(", "))?;
         }
         for (id, a) in &self.plan.active {
@@ -596,10 +599,23 @@ impl Inner {
     /// Before an upgrade with no Upgrade step: apply the declared changes to every stored Document in memory and check
     /// each against the new Collection schema and the new unique indexes. Each Collection with misfits gives one problem
     /// with how many Documents break and one example, so the person sees it in the Upgrade report and nothing is written.
-    fn dry_run(&self, id: &str, old: &crate::upgrade::SchemaFile, new: &crate::upgrade::SchemaFile, plan: &crate::upgrade::UpgradePlan) -> Result<Vec<crate::upgrade::UpgradeProblem>> {
+    fn dry_run(&self, id: &str, old: &crate::upgrade::SchemaFile, new: &crate::upgrade::SchemaFile, plan: &crate::upgrade::UpgradePlan, watch: Option<crate::upgrade::OnUpgrade>) -> Result<Vec<crate::upgrade::UpgradeProblem>> {
         use crate::upgrade::{apply, index_specs, strict, UpgradeProblem, BATCH};
         let mut out = vec![];
-        for from in old.live_collections() {
+        let live = old.live_collections();
+        for (number, from) in live.iter().cloned().enumerate() {
+            let mut total = 0;
+            self.db.read(&mut |r| {
+                total = r.count(&from, &[])?;
+                Ok(())
+            })?;
+            let mut checked = 0u64;
+            let report = |done: u64| {
+                if let Some(f) = watch {
+                    f(&crate::upgrade::UpgradeProgress { phase: "checking".into(), plugin: id.to_string(), collection: from.clone(), done, total, collection_number: number + 1, collections: live.len() });
+                }
+            };
+            report(0);
             let (to, ops) = match plan.collections.iter().find(|c| c.from == from) {
                 Some(c) if c.removed => continue,
                 Some(c) => (c.to.clone(), c.ops.clone()),
@@ -618,7 +634,9 @@ impl Inner {
                     Ok(())
                 })?;
                 let Some(last) = batch.last().map(|d| d.id.clone()) else { break };
-                for d in batch.into_iter().filter(|d| !d.deleted) {
+                let alive: Vec<Doc> = batch.into_iter().filter(|d| !d.deleted).collect();
+                checked += alive.len() as u64;
+                for d in alive {
                     let mut b = d.body;
                     apply(&mut b, &ops);
                     if let Err(e) = crate::schema::validate(&schema, &b) {
@@ -637,6 +655,7 @@ impl Inner {
                     }
                 }
                 after = last;
+                report(checked);
             }
             if let Some((doc, reason)) = example {
                 out.push(UpgradeProblem { plugin: id.into(), collection: to.clone(), path: String::new(), code: "documents_do_not_fit".into(), params: json!({"count": misfits, "example": doc, "reason": reason}) });
@@ -691,7 +710,7 @@ impl Inner {
             let total = if w.removed || w.to != w.from { left + done } else { left };
             let report = |done: u64| {
                 if let Some(f) = watch {
-                    f(&crate::upgrade::UpgradeProgress { plugin: id.to_string(), collection: w.from.clone(), done, total, collection_number: number + 1, collections: work.len() });
+                    f(&crate::upgrade::UpgradeProgress { phase: "upgrading".into(), plugin: id.to_string(), collection: w.from.clone(), done, total, collection_number: number + 1, collections: work.len() });
                 }
             };
             report(done);
