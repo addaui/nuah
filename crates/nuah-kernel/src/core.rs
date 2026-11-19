@@ -64,6 +64,12 @@ impl Core {
 
     /// Resolve, open the Adapters, record who owns which collection, migrate data, and be ready.
     pub fn start(dist: &Distribution) -> std::result::Result<Core, Vec<Problem>> {
+        Core::start_watched(dist, None)
+    }
+
+    /// [`Core::start`], telling `watch` how far each data upgrade has come, so the program running the Core can show
+    /// a "starting" page while it is not answering yet.
+    pub fn start_watched(dist: &Distribution, watch: Option<crate::upgrade::OnUpgrade>) -> std::result::Result<Core, Vec<Problem>> {
         let (mut problems, plan) = resolve(dist);
         if !problems.is_empty() {
             return Err(problems);
@@ -122,7 +128,7 @@ impl Core {
         let features = db.features();
         let inner = Arc::new(Inner { db, features, auth, policy, clock, ids, net, plan, settings, wake, profile_name: dist.profile.name.clone(), telemetry, shell: std::sync::RwLock::new(None) });
         if inner.plan.ports.contains_key("db") {
-            if let Err(e) = inner.prepare_storage() {
+            if let Err(e) = inner.prepare_storage(watch) {
                 if e.key == "kernel.upgrade_refused" {
                     let details = json!({"problems": e.params["upgrade"], "plugins": e.params["plugins"]});
                     let mut plugins: Vec<String> = e.params["upgrade"].as_array().into_iter().flatten().filter_map(|p| p["plugin"].as_str().map(String::from)).collect();
@@ -397,7 +403,7 @@ impl Inner {
     /// Record collection ownership, make indexes, and bring each plugin's data to its declared version.
     /// Everything that can be refused is checked first, before anything is written, so a start that fails
     /// leaves the data as it was.
-    fn prepare_storage(&self) -> Result<()> {
+    fn prepare_storage(&self, watch: Option<crate::upgrade::OnUpgrade>) -> Result<()> {
         let mut have_of: BTreeMap<&String, u32> = BTreeMap::new();
         let mut upgrading = vec![];
         let mut refused: Vec<crate::upgrade::UpgradeProblem> = vec![];
@@ -532,7 +538,7 @@ impl Inner {
                 Ok(())
             })?;
             if let Some(u) = work.get(id) {
-                self.upgrade(id, a, u)?;
+                self.upgrade(id, a, u, watch)?;
             }
             let data = &a.manifest.data;
             for ix in &data.indexes {
@@ -643,7 +649,7 @@ impl Inner {
     /// that stops half-way continues where it stopped. The new schema and Data version are recorded last.
     ///
     /// [ADR 0091]: https://docs.addaui.com/nuah/adr/0091-plugins-declare-one-schema-nuah-upgrades-their-data-from-it-and-refuses-changes-that-would-lose-data/
-    fn upgrade(&self, id: &str, a: &crate::resolver::ActivePlugin, u: &Upgrade) -> Result<()> {
+    fn upgrade(&self, id: &str, a: &crate::resolver::ActivePlugin, u: &Upgrade, watch: Option<crate::upgrade::OnUpgrade>) -> Result<()> {
         use crate::upgrade::{apply, CollectionPlan, BATCH};
         let mut work = u.plan.collections.clone();
         if !u.stepped.is_empty() {
@@ -663,11 +669,26 @@ impl Inner {
             Ok(())
         })?;
         let stopped = |c: &str, e: Error| Error::internal(format!("upgrading {id} to version {} stopped in {c}: {}; the next start continues where it stopped", u.to, e.message));
-        for w in &work {
+        for (number, w) in work.iter().enumerate() {
             if progress["done"].as_array().is_some_and(|d| d.iter().any(|x| x == w.from.as_str())) {
                 continue;
             }
-            let mut after = if progress["collection"] == w.from.as_str() { progress["after"].as_str().unwrap_or("").to_string() } else { String::new() };
+            let resuming = progress["collection"] == w.from.as_str();
+            let mut after = if resuming { progress["after"].as_str().unwrap_or("").to_string() } else { String::new() };
+            // how many are done counts across an interruption; what has moved away is no longer counted where it was
+            let mut done = if resuming { progress["count"].as_u64().unwrap_or(0) } else { 0 };
+            let mut left = 0;
+            self.db.read(&mut |r| {
+                left = r.count(&w.from, &[])?;
+                Ok(())
+            })?;
+            let total = if w.removed || w.to != w.from { left + done } else { left };
+            let report = |done: u64| {
+                if let Some(f) = watch {
+                    f(&crate::upgrade::UpgradeProgress { plugin: id.to_string(), collection: w.from.clone(), done, total, collection_number: number + 1, collections: work.len() });
+                }
+            };
+            report(done);
             loop {
                 let mut batch: Vec<Doc> = vec![];
                 self.db.read(&mut |r| {
@@ -705,17 +726,22 @@ impl Inner {
                     let mut p = progress.clone();
                     p["collection"] = json!(w.from);
                     p["after"] = json!(last);
+                    p["count"] = json!(done + live.len() as u64);
                     tx.wr()?.put("_meta", &key, "kernel", p, Expect::Any, now)?;
                     Ok(())
                 })
                 .map_err(|e| stopped(&w.from, e))?;
+                done += live.len() as u64;
                 progress["collection"] = json!(w.from);
                 progress["after"] = json!(last);
+                progress["count"] = json!(done);
                 after = last;
+                report(done);
             }
             progress["done"].as_array_mut().expect("a list").push(json!(w.from));
             progress["collection"] = json!("");
             progress["after"] = json!("");
+            progress["count"] = json!(0);
             self.run_kernel(id, &mut |tx| {
                 let now = tx.now();
                 tx.wr()?.put("_meta", &key, "kernel", progress.clone(), Expect::Any, now)?;

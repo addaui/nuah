@@ -473,6 +473,26 @@ fn filled(schema: &Value, default: &Value) -> Value {
     Value::Object(o)
 }
 
+/// How far an upgrade at start has come ([ADR 0091], point 6), for the page a person sees while the Core is not yet
+/// answering: reported before a Collection's first batch and after each batch.
+///
+/// [ADR 0091]: https://docs.addaui.com/nuah/adr/0091-plugins-declare-one-schema-nuah-upgrades-their-data-from-it-and-refuses-changes-that-would-lose-data/
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct UpgradeProgress {
+    pub plugin: String,
+    /// The Collection being upgraded, by its stored name.
+    pub collection: String,
+    /// Documents of this Collection upgraded so far, and how many it holds.
+    pub done: u64,
+    pub total: u64,
+    /// Which of the plugin's Collections this is (from 1), of how many have work.
+    pub collection_number: usize,
+    pub collections: usize,
+}
+
+/// Called with each [`UpgradeProgress`], on the thread that starts the Core; it must return quickly (the upgrade waits for it).
+pub type OnUpgrade<'a> = &'a dyn Fn(&UpgradeProgress);
+
 // ---- applying a plan -----------------------------------------------------------------------------
 
 /// How many Documents the runner upgrades in one transaction.

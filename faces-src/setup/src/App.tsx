@@ -8,11 +8,13 @@ import { LangSwitch } from "./LangSwitch"
 import type { W } from "./common"
 import { Gate } from "./Gate"
 import { Report } from "./Report"
+import { Starting } from "./Starting"
+import type { Progress } from "./starting"
 import type { ReportState } from "./report"
 import { STEPS, Shell } from "./Shell"
 import { draft, initial, type Choices } from "./wizard"
 
-type Load = { at: "loading" } | { at: "gate"; wrong: boolean } | { at: "error"; message: string } | { at: "ready"; info: Info } | { at: "report"; report: ReportState }
+type Load = { at: "loading" } | { at: "gate"; wrong: boolean } | { at: "error"; message: string } | { at: "ready"; info: Info } | { at: "report"; report: ReportState } | { at: "starting"; progress: Progress }
 type Start = "choose" | "default" | "custom"
 
 const CHOICES: { id: Exclude<Start, "choose">; name: Key; time: Key; blurb: Key; Icon: typeof Zap }[] = [
@@ -37,6 +39,10 @@ function Setup() {
     let live = true
     ;(async () => {
       // the same Face shows the Upgrade report when the server runs it for one (ADR 0091); in setup the route does not exist
+      // while the server upgrades data at start, this route says how far it has come; elsewhere it does not exist
+      const going = await send<Progress>("/upgrade/progress").catch(() => null)
+      if (!live) return
+      if (going?.status === 200 && going.body.product) return setLoad({ at: "starting", progress: going.body })
       const up = await send<ReportState>("/upgrade/state")
       if (!live) return
       if (up.status === 200) return setLoad({ at: "report", report: up.body })
@@ -53,6 +59,7 @@ function Setup() {
   if (load.at === "loading") return <div className="grid min-h-svh place-items-center text-sm text-muted-foreground" role="status">{t("app.loading")}</div>
   if (load.at === "gate") return <Gate wrong={load.wrong} onCode={again} />
   if (load.at === "report") return <Report state={load.report} />
+  if (load.at === "starting") return <Starting first={load.progress} />
   if (load.at === "error") return <div className="grid min-h-svh place-items-center px-4"><p role="alert" className="m-0 max-w-md text-sm text-destructive">{load.message}</p></div>
   return <Wizard info={load.info} />
 }

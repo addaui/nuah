@@ -205,6 +205,12 @@ export const ar: Record<keyof typeof en, string> = {
   "pic.provides": "توفّر {what}",
   "pic.carries": "ينقل الرابط",
   // the Upgrade report (ADR 0091)
+  "starting.title": "يحدّث {product} بياناته",
+  "starting.text": "يحدث هذا مرة واحدة بعد كل تحديث وقد يستغرق بضع دقائق. ستفتح هذه الصفحة التطبيق تلقائيًا عند الانتهاء. إغلاقها لا يوقف التحديث.",
+  "starting.preparing": "جارٍ التجهيز…",
+  "starting.part": "{name}: الجزء {n} من {m}",
+  "starting.count": "{done} من {total} عنصر ({percent}٪)",
+  "starting.label": "تقدّم التحديث",
   "upgrade.title": "لا يمكن تحديث {plugin} ({id}) من {from} إلى {to}",
   "upgrade.titleMany": "لا يمكن تحديث بعض الإضافات",
   "upgrade.intro": "لا يمكن نقل بياناتك الحالية إلى هذا الإصدار، لذلك لم يتغير شيء. بياناتك كما كانت تمامًا.",

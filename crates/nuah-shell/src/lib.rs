@@ -56,6 +56,14 @@ pub trait Bootstrap {
     fn report(&self, _ctx: SetupContext, _refused: nuah_kernel::Problem) -> Result<(), String> {
         Err("this product cannot show the upgrade report; see the problems above".into())
     }
+    /// While the Core upgrades data at start ([ADR 0091], point 6) it is not answering yet: serve a page on its address
+    /// that says how far the upgrade has come (`progress` is updated as it runs). Returns what stops the page and
+    /// frees the address for the Core; `None` when the product has no such page (the shell then only prints progress).
+    ///
+    /// [ADR 0091]: https://docs.addaui.com/nuah/adr/0091-plugins-declare-one-schema-nuah-upgrades-their-data-from-it-and-refuses-changes-that-would-lose-data/
+    fn starting(&self, _ctx: SetupContext, _progress: std::sync::Arc<std::sync::Mutex<Option<nuah_kernel::upgrade::UpgradeProgress>>>) -> Option<Box<dyn FnOnce()>> {
+        None
+    }
 }
 
 pub struct SetupContext {
@@ -199,7 +207,30 @@ pub fn run(product: impl Product) -> ! {
             let store = std::sync::Arc::new(edit::ProfileStore::new(product.name(), product.catalog(), product.starting_point(&home_of(&path)), path.clone()));
             let mut restarted = false;
             loop {
-                let (core, file_changed) = match start_core(&product, &path, &flags, Some(&store)) {
+                // the address the Core will answer on, for the pages shown before it does
+                let listen = flags.listen.clone().or_else(|| read_profile(&path).settings["@nuah/http"]["listen"].as_str().map(String::from));
+                let bootstrap = product.bootstrap();
+                let progress = std::sync::Arc::new(std::sync::Mutex::new(None));
+                let page: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = Default::default();
+                let (shown, printed) = (std::cell::Cell::new(false), std::cell::Cell::new(None::<std::time::Instant>));
+                let watch = |p: &nuah_kernel::upgrade::UpgradeProgress| {
+                    *progress.lock().unwrap_or_else(|e| e.into_inner()) = Some(p.clone());
+                    if !shown.replace(true) {
+                        if let Some(b) = &bootstrap {
+                            *page.borrow_mut() = b.starting(context(&product, path.clone(), listen.clone(), flags.allow_host.clone(), flags.faces.clone(), true), progress.clone());
+                        }
+                    }
+                    if p.done == p.total || printed.get().is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(2)) {
+                        printed.set(Some(std::time::Instant::now()));
+                        eprintln!("upgrading {} ({} of {}): {} of {} done", p.collection, p.collection_number, p.collections, p.done, p.total);
+                    }
+                };
+                let started = start_core(&product, &path, &flags, Some(&store), Some(&watch));
+                // the starting page gives the address back before the Core, or the report, listens on it
+                if let Some(stop) = page.borrow_mut().take() {
+                    stop();
+                }
+                let (core, file_changed) = match started {
                     Ok(x) => x,
                     Err(problems) if restarted => {
                         // A saved change did not start: put the file as it was back, once, and run that.
@@ -222,7 +253,7 @@ pub fn run(product: impl Product) -> ! {
                         // a refused upgrade changed nothing: show the report, and start again if the operator leaves a plugin out
                         if let Some(refused) = problems.into_iter().find(|p| p.code == "upgrade_refused") {
                             let Some(bootstrap) = product.bootstrap() else { die("the upgrade was refused; nothing was changed") };
-                            bootstrap.report(context(&product, path.clone(), flags.listen.clone(), flags.allow_host.clone(), flags.faces.clone(), true), refused).unwrap_or_else(|e| die(&e));
+                            bootstrap.report(context(&product, path.clone(), listen.clone(), flags.allow_host.clone(), flags.faces.clone(), true), refused).unwrap_or_else(|e| die(&e));
                             continue;
                         }
                         die("the profile does not resolve")
@@ -271,7 +302,7 @@ pub fn run(product: impl Product) -> ! {
             let mut pw = String::new();
             std::io::stdin().read_to_string(&mut pw).expect("read stdin");
             let pw = pw.trim_end_matches(['\r', '\n']);
-            let core = start_core(&product, &path, &ServeFlags::default(), None).unwrap_or_else(|problems| {
+            let core = start_core(&product, &path, &ServeFlags::default(), None, None).unwrap_or_else(|problems| {
                 for p in &problems {
                     eprintln!("{}: {}", p.code, p.message);
                 }
@@ -380,7 +411,7 @@ struct ServeFlags {
 
 /// Read the file, apply the flags, resolve and start a Core (no services). Also returns the contract the file
 /// was locked to when that differs from the contract now.
-fn start_core(product: &impl Product, path: &std::path::Path, f: &ServeFlags, store: Option<&edit::ProfileStore>) -> Result<(Core, Option<String>), Vec<nuah_kernel::Problem>> {
+fn start_core(product: &impl Product, path: &std::path::Path, f: &ServeFlags, store: Option<&edit::ProfileStore>, watch: Option<nuah_kernel::upgrade::OnUpgrade>) -> Result<(Core, Option<String>), Vec<nuah_kernel::Problem>> {
     let mut profile = read_profile(path);
     // The lock is checked against the file as it was saved, before this run's command-line changes.
     let changed = profile.contract.clone().filter(|c| *c != Core::contract_for(&Distribution { name: product.name().to_string(), catalog: product.catalog(), profile: profile.clone() }));
@@ -396,7 +427,7 @@ fn start_core(product: &impl Product, path: &std::path::Path, f: &ServeFlags, st
         s.set_default_reach(from_address);
     }
     profile.reach = profile.reach.or(from_address);
-    Core::start(&Distribution { name: product.name().to_string(), catalog: product.catalog(), profile }).map(|c| (c, changed))
+    Core::start_watched(&Distribution { name: product.name().to_string(), catalog: product.catalog(), profile }, watch).map(|c| (c, changed))
 }
 
 fn home_of(identity_file: &std::path::Path) -> PathBuf {

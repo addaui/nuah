@@ -218,6 +218,12 @@ export const en = {
   "pic.provides": "provides {what}",
   "pic.carries": "carries the Link",
   // the Upgrade report (ADR 0091)
+  "starting.title": "{product} is upgrading its data",
+  "starting.text": "This happens once after an update and can take a few minutes. This page opens the app by itself when it's done. Closing it doesn't stop the upgrade.",
+  "starting.preparing": "Getting ready…",
+  "starting.part": "{name}: part {n} of {m}",
+  "starting.count": "{done} of {total} items ({percent}%)",
+  "starting.label": "Upgrade progress",
   "upgrade.title": "{plugin} ({id}) can't be updated from {from} to {to}",
   "upgrade.titleMany": "Some plugins can't be updated",
   "upgrade.intro": "Your existing data can't be carried over to this version, so nothing was changed. Your data is exactly as it was.",

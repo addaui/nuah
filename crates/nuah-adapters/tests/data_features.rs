@@ -394,6 +394,9 @@ impl Rig {
         Rig { adds: false, release: std::cell::RefCell::new("1.0.0".into()), mem: Arc::new(MemoryDb::new()), backups: Default::default(), batches: Default::default(), failed: Default::default() }
     }
     fn boot(&self, file: Value, fail_at: Option<usize>) -> std::result::Result<Core, Vec<Problem>> {
+        self.boot_watched(file, fail_at, None)
+    }
+    fn boot_watched(&self, file: Value, fail_at: Option<usize>, watch: Option<nuah_kernel::upgrade::OnUpgrade<'_>>) -> std::result::Result<Core, Vec<Problem>> {
         let clock = FixedClock::at(1_000_000);
         let seen = Default::default();
         let mut cat = catalog(&clock, &seen);
@@ -401,7 +404,7 @@ impl Rig {
         cat.0.push(Arc::new(AdapterCounting(self.mem.clone(), self.backups.clone())));
         let mut p = profile(&["@nuah/db-counting", "@nuah/auth-local", "@nuah/policy-roles", "@nuah/clock-fixed", "@nuah/ids-sequential", "@test/up"]);
         p.grants.clear();
-        Core::start(&Distribution { name: "t".into(), catalog: cat, profile: p })
+        Core::start_watched(&Distribution { name: "t".into(), catalog: cat, profile: p }, watch)
     }
     fn docs(&self, collection: &str) -> Vec<Doc> {
         let mut out = vec![];
@@ -457,6 +460,30 @@ fn a_new_release_with_the_same_schema_is_recorded_without_a_backup() {
 }
 
 #[test]
+fn an_upgrade_reports_its_progress_while_it_runs() {
+    let rig = Rig::new();
+    seed(&rig.boot(v1(), None).unwrap(), 2501);
+    let seen: Arc<std::sync::Mutex<Vec<nuah_kernel::upgrade::UpgradeProgress>>> = Default::default();
+    let into = seen.clone();
+    rig.boot_watched(v2(json!([])), None, Some(&move |p: &nuah_kernel::upgrade::UpgradeProgress| into.lock().unwrap().push(p.clone()))).unwrap();
+    let seen = seen.lock().unwrap();
+    let done: Vec<u64> = seen.iter().map(|p| p.done).collect();
+    assert_eq!(done, vec![0, 500, 1000, 1500, 2000, 2500, 2501], "one report before the first batch and after each");
+    let last = seen.last().unwrap();
+    assert_eq!((last.plugin.as_str(), last.collection.as_str(), last.total, last.collection_number, last.collections), ("@test/up", "up.docs", 2501, 1, 1));
+}
+
+#[test]
+fn a_start_with_nothing_to_upgrade_reports_nothing() {
+    let rig = Rig::new();
+    rig.boot(v1(), None).unwrap();
+    let seen: Arc<AtomicUsize> = Default::default();
+    let n = seen.clone();
+    rig.boot_watched(v1(), None, Some(&move |_: &nuah_kernel::upgrade::UpgradeProgress| { n.fetch_add(1, AtomicOrdering::SeqCst); })).unwrap();
+    assert_eq!(seen.load(AtomicOrdering::SeqCst), 0);
+}
+
+#[test]
 fn rename_default_remove_applied_to_every_document() {
     let rig = Rig::new();
     seed(&rig.boot(v1(), None).unwrap(), 2501);
@@ -484,7 +511,10 @@ fn interrupted_upgrade_resumes_and_steps_each_document_once() {
     let done: Vec<_> = rig.docs("up.docs").into_iter().filter(|d| d.body.get("stepped").is_some()).collect();
     assert_eq!(done.len(), 1500, "three batches of 500 were finished");
     assert!(rig.meta("upgrade:@test/up").is_some());
-    rig.boot(v2(json!([2])), Some(4)).unwrap();
+    let seen: Arc<std::sync::Mutex<Vec<u64>>> = Default::default();
+    let into = seen.clone();
+    rig.boot_watched(v2(json!([2])), Some(4), Some(&move |p: &nuah_kernel::upgrade::UpgradeProgress| into.lock().unwrap().push(p.done))).unwrap();
+    assert_eq!(*seen.lock().unwrap(), vec![1500, 2000, 2500, 2501], "the count goes on from where the upgrade stopped");
     let docs = rig.docs("up.docs");
     assert_eq!(docs.len(), 2501);
     assert!(docs.iter().all(|d| d.body["stepped"] == 1), "every Document stepped exactly once");

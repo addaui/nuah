@@ -7,6 +7,7 @@
 //! [ADR 0039]: https://docs.addaui.com/nuah/adr/0039-accounts-belong-to-the-auth-plugin-and-live-in-the-database-faces-setup-and-console-are-plugins/
 
 mod report;
+mod starting;
 mod wizard;
 
 use nuah_shell::edit::ProfileStore;
@@ -14,6 +15,7 @@ use nuah_shell::{wait_for_stop, Bootstrap, SetupContext};
 use std::path::PathBuf;
 
 pub use report::{report_router, report_state, start_without, ReportConfig};
+pub use starting::{starting_router, Starting};
 pub use wizard::{setup_router, SetupConfig};
 
 pub struct SetupWeb {
@@ -45,6 +47,42 @@ impl Bootstrap for SetupWeb {
     fn report(&self, ctx: SetupContext, refused: nuah_kernel::Problem) -> Result<(), String> {
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
         rt.block_on(serve_report(self, ctx, refused))
+    }
+
+    fn starting(&self, ctx: SetupContext, progress: std::sync::Arc<std::sync::Mutex<Option<nuah_kernel::upgrade::UpgradeProgress>>>) -> Option<Box<dyn FnOnce()>> {
+        let listen = ctx.listen.clone().unwrap_or_else(|| "127.0.0.1:3000".into());
+        let face = self.faces_dir.clone().unwrap_or_else(|| ctx.faces_dir.clone()).join("nuah").join("setup-web");
+        if !face.is_dir() {
+            eprintln!("the setup Face, which shows the upgrade's progress, is not at {}", face.display());
+            return None;
+        }
+        // bound here, before returning, so the page is there by the time the caller goes on
+        let listener = match std::net::TcpListener::bind(&listen).and_then(|l| l.set_nonblocking(true).map(|_| l)) {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!("cannot show the upgrade's progress on {listen}: {e}");
+                return None;
+            }
+        };
+        let mut server = nuah_http::Config::default();
+        server.hosts.extend(ctx.allow_hosts.iter().filter(|h| !h.is_empty()).map(|h| h.to_lowercase()));
+        server.faces.push(("/faces/setup".to_string(), face));
+        let names = ctx.catalog.0.iter().map(|p| p.manifest()).map(|m| (m.id.clone(), serde_json::json!(if m.name.is_empty() { m.id.clone() } else { m.name.clone() }))).collect();
+        let app = starting_router(Starting { product: ctx.product.clone(), names, progress }, server);
+        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        let thread = std::thread::spawn(move || {
+            let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_all().build() else { return };
+            rt.block_on(async move {
+                let Ok(listener) = tokio::net::TcpListener::from_std(listener) else { return };
+                // not a graceful stop: a page waiting on an answer simply tries again, and finds the Core
+                tokio::select! { _ = axum::serve(listener, app) => {}, _ = stopped => {} }
+            });
+        });
+        eprintln!("upgrading data before the server starts; the progress is on http://{listen}/");
+        Some(Box::new(move || {
+            let _ = stop.send(());
+            let _ = thread.join();
+        }))
     }
 }
 
