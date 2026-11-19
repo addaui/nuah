@@ -644,3 +644,86 @@ fn a_signal_is_small_and_only_sent_by_a_command() {
     assert!(call(&w, &alice, "notes.here", json!({"book": b, "size": 17_000})).is_err(), "data over 16 kB");
     assert!(call(&w, &alice, "notes.here_query", json!({})).is_err(), "a Query may not send Signals");
 }
+
+// ---- Browser modules and versioned Extension points (ADR 0095) ------------------------------------
+
+/// A plugin that is only its Manifest.
+struct Raw(Value);
+impl Plugin for Raw {
+    fn manifest(&self) -> Manifest {
+        serde_json::from_value(self.0.clone()).unwrap()
+    }
+}
+const BASE: [&str; 5] = ["@nuah/db-memory", "@nuah/auth-local", "@nuah/policy-roles", "@nuah/clock-fixed", "@nuah/ids-sequential"];
+
+fn editor(id: &str, version: &str) -> Raw {
+    Raw(json!({"id": id, "version": "1.0.0", "namespaces": ["ed"],
+        "defines": {"extension_points": {"ed.element": {"policy": "many", "browser": true, "version": version, "input": {},
+            "data": {"type": "object", "properties": {"kinds": {"type": "array"}}}}}}}))
+}
+fn element(data: Value, browser: bool) -> Raw {
+    let mut m = json!({"id": "@t/el", "version": "1.0.0", "namespaces": ["el"], "requires": {"extension_points": ["ed.element@^1"]},
+        "provides": [{"extension_point": "ed.element", "data": data}]});
+    if browser {
+        m["browser"] = json!({"ed.element": "index.js"});
+    }
+    Raw(m)
+}
+fn check_with(extra: Vec<Raw>, enabled: &[&str]) -> Vec<String> {
+    let clock = FixedClock::at(0);
+    let seen = Default::default();
+    let mut cat = catalog(&clock, &seen);
+    for r in extra {
+        cat.0.push(std::sync::Arc::new(r));
+    }
+    let mut on: Vec<&str> = BASE.to_vec();
+    on.extend_from_slice(enabled);
+    let dist = Distribution { name: "t".into(), catalog: cat, profile: profile(&on) };
+    Core::check(&dist).into_iter().map(|p| p.code).collect()
+}
+
+#[test]
+fn requirement_range_met_by_reimplementation() {
+    let ok = |definer: &str, v: &str| check_with(vec![editor(definer, v), element(json!({"kinds": []}), true)], &[definer, "@t/el"]);
+    assert_eq!(ok("@a/editor", "1.3.0"), Vec::<String>::new());
+    // another plugin defining the same point at a compatible version stands in, and the element plugin need not name it
+    assert_eq!(ok("@c/editor", "1.0.0"), Vec::<String>::new());
+}
+
+#[test]
+fn requirement_range_refused() {
+    let codes = check_with(vec![editor("@a/editor", "2.0.0"), element(json!({"kinds": []}), true)], &["@a/editor", "@t/el"]);
+    assert!(codes.contains(&"extension_point_version".to_string()), "{codes:?}");
+}
+
+#[test]
+fn required_point_missing() {
+    let codes = check_with(vec![element(json!({"kinds": []}), true)], &["@t/el"]);
+    assert!(codes.contains(&"unknown_extension_point".to_string()), "{codes:?}");
+}
+
+#[test]
+fn browser_provider_needs_file() {
+    let codes = check_with(vec![editor("@a/editor", "1.0.0"), element(json!({"kinds": []}), false)], &["@a/editor", "@t/el"]);
+    assert!(codes.contains(&"browser_module_missing".to_string()), "{codes:?}");
+}
+
+#[test]
+fn browser_file_for_a_point_not_provided() {
+    let r = Raw(json!({"id": "@t/odd", "version": "1.0.0", "namespaces": ["odd"], "browser": {"ed.element": "x.js"}}));
+    let codes = check_with(vec![editor("@a/editor", "1.0.0"), r], &["@a/editor", "@t/odd"]);
+    assert!(codes.contains(&"browser_without_point".to_string()), "{codes:?}");
+}
+
+#[test]
+fn provide_data_checked() {
+    let codes = check_with(vec![editor("@a/editor", "1.0.0"), element(json!({"kinds": 3}), true)], &["@a/editor", "@t/el"]);
+    assert!(codes.contains(&"invalid_provide_data".to_string()), "{codes:?}");
+}
+
+#[test]
+fn a_requirement_without_a_range_still_names_the_definer() {
+    let r = Raw(json!({"id": "@t/old", "version": "1.0.0", "namespaces": ["old"], "requires": {"extension_points": ["ed.element"]}}));
+    let codes = check_with(vec![editor("@a/editor", "1.0.0"), r], &["@a/editor", "@t/old"]);
+    assert!(codes.contains(&"missing_dependency".to_string()), "{codes:?}");
+}

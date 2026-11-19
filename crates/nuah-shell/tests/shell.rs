@@ -207,6 +207,27 @@ fn starting_without_a_plugin_also_leaves_out_the_plugins_that_need_it() {
     assert!(q.enabled.contains(&"@t/free".to_string()));
 }
 
+/// A plugin that is only its Manifest.
+struct RawM(Value);
+impl Plugin for RawM {
+    fn manifest(&self) -> Manifest {
+        serde_json::from_value(self.0.clone()).unwrap()
+    }
+}
+
+#[test]
+fn switching_off_the_plugin_that_defines_a_point_takes_out_the_plugins_that_need_it() {
+    let mut list = catalog().0;
+    list.push(Arc::new(RawM(json!({"id": "@t/editor", "version": "1.0.0", "namespaces": ["ed"],
+        "defines": {"extension_points": {"ed.element": {"policy": "many", "version": "1.0.0", "input": {}}}}}))));
+    list.push(Arc::new(RawM(json!({"id": "@t/el", "version": "1.0.0", "namespaces": ["el"], "requires": {"extension_points": ["ed.element@^1"]}}))));
+    let mut p = profile(false);
+    p.enabled.extend(["@t/editor", "@t/el"].map(String::from));
+    let (q, removed) = nuah_shell::edit::without(&Catalog(list), &p, "@t/editor");
+    assert_eq!(removed, vec!["@t/el".to_string()]);
+    assert!(!q.enabled.contains(&"@t/el".to_string()));
+}
+
 #[test]
 fn schema_check_prints_every_problem_and_says_whether_it_passes() {
     let old = json!({"version": 1, "collections": {"t.a": {"type": "object", "properties": {"a": {"type": "string"}, "b": {"type": "string"}}}}});

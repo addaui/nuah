@@ -406,13 +406,27 @@ pub fn resolve(dist: &Distribution) -> (Vec<Problem>, Plan) {
                 ps.push(problem("capability_not_requested", &[id], format!("the profile grants {id} the capability {g}, which its manifest never asked for")));
             }
         }
-        for point in &m.requires.extension_points {
+        for req in &m.requires.extension_points {
+            // `point@range` names what the plugin needs, not who gives it: any plugin defining the point at a fitting version will do (ADR 0095)
+            let (point, range) = match crate::manifest::point_requirement(req) {
+                Ok(x) => x,
+                Err(e) => {
+                    ps.push(problem("bad_requirement", &[id], format!("{id}: {e}")));
+                    continue;
+                }
+            };
             match plan.ext_points.get(point) {
                 None => ps.push(problem("unknown_extension_point", &[id], format!("{id} uses the extension point {point}, which no enabled plugin defines"))),
-                Some((owner, _)) if !m.requires.plugins.contains(owner) && owner != id => {
-                    ps.push(problem("missing_dependency", &[id, owner], format!("{id} uses {point}, so it must list {owner} in requires.plugins")))
-                }
-                _ => {}
+                Some((owner, d)) => match range {
+                    Some(r) => match semver::Version::parse(&d.version) {
+                        Ok(v) if r.matches(&v) => {}
+                        _ => ps.push(problem("extension_point_version", &[id, owner], format!("{id} needs {point} at {r}, and {owner} defines it at {}", d.version))),
+                    },
+                    None if !m.requires.plugins.contains(owner) && owner != id => {
+                        ps.push(problem("missing_dependency", &[id, owner], format!("{id} uses {point}, so it must list {owner} in requires.plugins")))
+                    }
+                    None => {}
+                },
             }
         }
         for pr in &m.provides {
@@ -422,7 +436,23 @@ pub fn resolve(dist: &Distribution) -> (Vec<Problem>, Plan) {
                 }
                 ps.push(problem("unknown_extension_point", &[id], format!("{id} provides {}, which no enabled plugin defines", pr.extension_point)));
             } else {
+                let (_, d) = &plan.ext_points[&pr.extension_point];
+                if d.browser && !m.browser.contains_key(&pr.extension_point) {
+                    ps.push(problem("browser_module_missing", &[id], format!("{id} provides the browser point {} but names no Browser module for it", pr.extension_point)));
+                }
+                if let Some(data) = &pr.data {
+                    if !d.data.is_null() {
+                        if let Err(e) = schema::validate(&d.data, data) {
+                            ps.push(problem("invalid_provide_data", &[id], format!("what {id} declares to {}: {}", pr.extension_point, e.message)));
+                        }
+                    }
+                }
                 plan.providers.entry(pr.extension_point.clone()).or_default().push((pr.priority, id.clone()));
+            }
+        }
+        for point in m.browser.keys() {
+            if !m.provides.iter().any(|pr| &pr.extension_point == point) {
+                ps.push(problem("browser_without_point", &[id], format!("{id} names a Browser module for {point}, which it does not provide")));
             }
         }
         for (r, fields) in &m.data.reads {
@@ -455,7 +485,8 @@ pub fn resolve(dist: &Distribution) -> (Vec<Problem>, Plan) {
         }
     }
     for (id, _, m) in &enabled {
-        for point in &m.requires.extension_points {
+        for req in &m.requires.extension_points {
+            let point = crate::manifest::point_requirement(req).map(|(p, _)| p).unwrap_or(req.as_str());
             if plan.ext_points.get(point).is_some_and(|(_, d)| d.policy == CallPolicy::Single) && !plan.providers.contains_key(point) {
                 ps.push(problem("extension_point_unfilled", &[id], format!("{id} needs {point}, and no enabled plugin provides it")));
             }
@@ -609,7 +640,9 @@ pub fn resolve(dist: &Distribution) -> (Vec<Problem>, Plan) {
             }
         }
         for pr in &m.provides {
-            if !b.provides.contains_key(&pr.extension_point) {
+            // a browser point's Provider is its Browser module; a server handler is optional (ADR 0095)
+            let browser = plan.ext_points.get(&pr.extension_point).is_some_and(|(_, d)| d.browser);
+            if !browser && !b.provides.contains_key(&pr.extension_point) {
                 miss(&mut ps, "extension point", &pr.extension_point);
             }
         }

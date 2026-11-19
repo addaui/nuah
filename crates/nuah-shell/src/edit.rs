@@ -214,13 +214,22 @@ pub fn without(catalog: &Catalog, p: &Profile, plugin: &str) -> (Profile, Vec<St
     let mut q = p.clone();
     let mut gone = vec![plugin.to_string()];
     let mut removed = vec![];
+    // a plugin that needs an Extension point by version names no plugin (ADR 0095): it goes when the point it needs went with
+    // the plugins taken out, which shows as a problem the Profile did not have before
+    let stranded = |q: &Profile| -> Vec<(String, String)> {
+        let dist = Distribution { name: String::new(), catalog: Catalog(catalog.0.clone()), profile: q.clone() };
+        Core::check(&dist).into_iter().filter(|pr| pr.code == "unknown_extension_point").filter_map(|pr| pr.plugins.first().map(|x| (x.clone(), pr.message.clone()))).collect()
+    };
+    let before = stranded(p);
     loop {
         q.enabled.retain(|x| !gone.contains(x));
         let dist = Distribution { name: String::new(), catalog: Catalog(catalog.0.clone()), profile: q.clone() };
+        let points: Vec<String> = stranded(&q).into_iter().filter(|x| !before.contains(x)).map(|(id, _)| id).collect();
         let next: Vec<String> = Core::check(&dist)
             .into_iter()
             .filter(|pr| pr.code == "missing_dependency" && pr.plugins.get(1).is_some_and(|d| gone.contains(d)))
             .filter_map(|pr| pr.plugins.first().cloned())
+            .chain(points)
             .filter(|x| !gone.contains(x))
             .collect();
         if next.is_empty() {

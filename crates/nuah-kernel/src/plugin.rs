@@ -443,7 +443,7 @@ impl<'a> Tx<'a> {
 
     /// Call whatever fills an Extension point this plugin requires, following the point's policy.
     pub fn extension_call(&mut self, point: &str, input: Value) -> Result<Value> {
-        let allowed = self.inner.manifest(&self.plugin).is_some_and(|m| m.requires.extension_points.iter().any(|p| p == point));
+        let allowed = self.inner.manifest(&self.plugin).is_some_and(|m| m.requires.extension_points.iter().any(|p| crate::manifest::point_requirement(p).map(|(n, _)| n).unwrap_or(p) == point));
         if !allowed {
             return Err(Error::internal(format!("plugin {} did not declare it uses {point}", self.plugin)));
         }
