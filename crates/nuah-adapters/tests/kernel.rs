@@ -791,3 +791,40 @@ fn browser_file_named_but_not_embedded() {
     let codes: Vec<String> = Core::check(&Distribution { name: "t".into(), catalog: cat, profile: profile(&on) }).into_iter().map(|p| p.code).collect();
     assert!(codes.contains(&"browser_module_missing".to_string()), "{codes:?}");
 }
+
+/// The plugin that defines `ed.element`, with an Operation that reads what its Providers declared.
+struct Lister;
+impl Plugin for Lister {
+    fn manifest(&self) -> Manifest {
+        let mut m = editor("@a/editor", "1.0.0").0;
+        m["operations"] = json!({"ed.list": {"kind": "query"}});
+        serde_json::from_value(m).unwrap()
+    }
+    fn bind(&self, b: &mut Bindings) {
+        b.op("ed.list", |tx, _| Ok(json!(tx.provided("ed.element")?)));
+    }
+}
+
+#[test]
+fn a_point_owner_reads_what_its_providers_declared() {
+    use sha2::{Digest, Sha256};
+    let core = start_with(vec![std::sync::Arc::new(Lister), std::sync::Arc::new(WithFile(FILE))], &["@a/editor", "@t/el"]);
+    let out = core.call_as(&person("a", &["member"]), "ed.list", json!({}), None).unwrap().output;
+    let hash = format!("{:x}", Sha256::digest(FILE[0].1))[..12].to_string();
+    assert_eq!(out, json!([{"plugin": "@t/el", "data": {"kinds": ["k"]}, "module": format!("/plugins/t/el/index.js?v={hash}")}]));
+}
+
+#[test]
+fn a_plugin_cannot_read_providers_of_a_point_it_neither_defines_nor_requires() {
+    struct Nosy;
+    impl Plugin for Nosy {
+        fn manifest(&self) -> Manifest {
+            serde_json::from_value(json!({"id": "@t/nosy", "version": "1.0.0", "namespaces": ["nosy"], "operations": {"nosy.peek": {"kind": "query"}}})).unwrap()
+        }
+        fn bind(&self, b: &mut Bindings) {
+            b.op("nosy.peek", |tx, _| Ok(json!(tx.provided("ed.element")?)));
+        }
+    }
+    let core = start_with(vec![std::sync::Arc::new(editor("@a/editor", "1.0.0")), std::sync::Arc::new(WithFile(FILE)), std::sync::Arc::new(Nosy)], &["@a/editor", "@t/el", "@t/nosy"]);
+    assert!(core.call_as(&person("a", &["member"]), "nosy.peek", json!({}), None).is_err());
+}

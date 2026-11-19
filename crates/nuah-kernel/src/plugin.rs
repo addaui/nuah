@@ -448,6 +448,29 @@ impl<'a> Tx<'a> {
         out
     }
 
+    /// What the enabled Providers of a point declared (ADR 0095): each one's plugin, its `provides` data and, for a browser point, the
+    /// address of its Browser module (with the file's hash), in the order the point calls them. Only for a point this plugin defines
+    /// or requires.
+    pub fn provided(&mut self, point: &str) -> Result<Vec<Value>> {
+        let m = self.inner.manifest(&self.plugin).ok_or_else(|| Error::internal("no manifest for the calling plugin"))?;
+        let defines = m.defines.extension_points.contains_key(point);
+        let requires = m.requires.extension_points.iter().any(|p| crate::manifest::point_requirement(p).map(|(n, _)| n).unwrap_or(p) == point);
+        if !defines && !requires {
+            return Err(Error::internal(format!("plugin {} neither defines nor requires {point}", self.plugin)));
+        }
+        let mut provs = self.inner.plan.providers.get(point).cloned().unwrap_or_default();
+        provs.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+        Ok(provs
+            .into_iter()
+            .filter_map(|(_, id)| {
+                let pm = self.inner.manifest(&id)?;
+                let data = pm.provides.iter().find(|p| p.extension_point == point).and_then(|p| p.data.clone()).unwrap_or(Value::Null);
+                let module = pm.browser.get(point).and_then(|f| self.inner.browser.get(&(id.clone(), f.clone())).map(|(_, h)| format!("/plugins/{}/{f}?v={h}", id.trim_start_matches('@'))));
+                Some(json!({"plugin": id, "data": data, "module": module}))
+            })
+            .collect())
+    }
+
     /// Call whatever fills an Extension point this plugin requires, following the point's policy.
     pub fn extension_call(&mut self, point: &str, input: Value) -> Result<Value> {
         let allowed = self.inner.manifest(&self.plugin).is_some_and(|m| m.requires.extension_points.iter().any(|p| crate::manifest::point_requirement(p).map(|(n, _)| n).unwrap_or(p) == point));
