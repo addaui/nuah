@@ -653,6 +653,10 @@ impl Plugin for Raw {
     fn manifest(&self) -> Manifest {
         serde_json::from_value(self.0.clone()).unwrap()
     }
+    /// A plugin that names a Browser module carries it.
+    fn browser_files(&self) -> &'static [(&'static str, &'static [u8])] {
+        if self.0.get("browser").is_some() { FILE } else { &[] }
+    }
 }
 const BASE: [&str; 5] = ["@nuah/db-memory", "@nuah/auth-local", "@nuah/policy-roles", "@nuah/clock-fixed", "@nuah/ids-sequential"];
 
@@ -726,4 +730,64 @@ fn a_requirement_without_a_range_still_names_the_definer() {
     let r = Raw(json!({"id": "@t/old", "version": "1.0.0", "namespaces": ["old"], "requires": {"extension_points": ["ed.element"]}}));
     let codes = check_with(vec![editor("@a/editor", "1.0.0"), r], &["@a/editor", "@t/old"]);
     assert!(codes.contains(&"missing_dependency".to_string()), "{codes:?}");
+}
+
+/// An element plugin carrying its built file.
+struct WithFile(&'static [(&'static str, &'static [u8])]);
+impl Plugin for WithFile {
+    fn manifest(&self) -> Manifest {
+        element(json!({"kinds": ["k"]}), true).manifest()
+    }
+    fn browser_files(&self) -> &'static [(&'static str, &'static [u8])] {
+        self.0
+    }
+}
+fn start_with(extra: Vec<std::sync::Arc<dyn Plugin>>, enabled: &[&str]) -> Core {
+    let clock = FixedClock::at(0);
+    let seen = Default::default();
+    let mut cat = catalog(&clock, &seen);
+    cat.0.extend(extra);
+    let mut on: Vec<&str> = BASE.to_vec();
+    on.extend_from_slice(enabled);
+    Core::start(&Distribution { name: "t".into(), catalog: cat, profile: profile(&on) }).unwrap_or_else(|p| panic!("{p:#?}"))
+}
+const FILE: &[(&str, &[u8])] = &[("index.js", b"export default function register(api) {}\n")];
+
+#[test]
+fn describe_lists_browser_modules() {
+    use sha2::{Digest, Sha256};
+    let core = start_with(vec![std::sync::Arc::new(editor("@a/editor", "1.0.0")), std::sync::Arc::new(WithFile(FILE))], &["@a/editor", "@t/el"]);
+    let hash = format!("{:x}", Sha256::digest(FILE[0].1))[..12].to_string();
+    for d in [core.describe(&person("a", &["member"])), core.describe_public()] {
+        let b = &d["browser"][0];
+        assert_eq!(b["plugin"], "@t/el");
+        assert_eq!(b["point"], "ed.element");
+        assert_eq!(b["file"], "index.js");
+        assert_eq!(b["url"], format!("/plugins/t/el/index.js?v={hash}"));
+        assert_eq!(b["data"], json!({"kinds": ["k"]}));
+    }
+    let p = &core.describe(&person("a", &["member"]))["extension_points"]["ed.element"];
+    assert_eq!((p["version"].as_str(), p["browser"].as_bool()), (Some("1.0.0"), Some(true)));
+    let (bytes, h) = core.browser_file("@t/el", "index.js").unwrap();
+    assert_eq!((bytes, h.as_str()), (FILE[0].1, hash.as_str()));
+}
+
+#[test]
+fn disabled_plugin_files_not_served() {
+    let core = start_with(vec![std::sync::Arc::new(editor("@a/editor", "1.0.0")), std::sync::Arc::new(WithFile(FILE))], &["@a/editor"]);
+    assert!(core.browser_file("@t/el", "index.js").is_none());
+    assert_eq!(core.describe_public()["browser"], json!([]));
+}
+
+#[test]
+fn browser_file_named_but_not_embedded() {
+    let clock = FixedClock::at(0);
+    let seen = Default::default();
+    let mut cat = catalog(&clock, &seen);
+    cat.0.push(std::sync::Arc::new(editor("@a/editor", "1.0.0")));
+    cat.0.push(std::sync::Arc::new(WithFile(&[("other.js", b"")])));
+    let mut on: Vec<&str> = BASE.to_vec();
+    on.extend_from_slice(&["@a/editor", "@t/el"]);
+    let codes: Vec<String> = Core::check(&Distribution { name: "t".into(), catalog: cat, profile: profile(&on) }).into_iter().map(|p| p.code).collect();
+    assert!(codes.contains(&"browser_module_missing".to_string()), "{codes:?}");
 }

@@ -153,6 +153,13 @@ pub trait Service: Send {
 
 pub trait Plugin: Send + Sync {
     fn manifest(&self) -> Manifest;
+    /// The built files of this plugin's Browser modules, by the path the Manifest's `browser` map names (`index.js`) and
+    /// any file they load. Served at `/plugins/<scope>/<name>/<path>` while the plugin is enabled ([ADR 0095]).
+    ///
+    /// [ADR 0095]: https://docs.addaui.com/nuah/adr/0095-plugins-ship-browser-modules-for-another-plugins-host-and-require-an-extension-point-at-a-version-never-a-plugin-by-id/
+    fn browser_files(&self) -> &'static [(&'static str, &'static [u8])] {
+        &[]
+    }
     /// Attach handlers to the names the Manifest declares. Must not touch the outside world.
     fn bind(&self, _b: &mut Bindings) {}
     /// For an Adapter: build what fills the Port, from the plugin's Settings.

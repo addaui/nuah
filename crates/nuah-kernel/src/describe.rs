@@ -19,7 +19,7 @@ impl Core {
                 }
             }
         }
-        json!({ "envelope": ENVELOPE_VERSION, "contract": inner.plan.hash, "operations": ops })
+        json!({ "envelope": ENVELOPE_VERSION, "contract": inner.plan.hash, "operations": ops, "browser": self.browser_modules() })
     }
 
     /// Everything a signed-in Face needs: plugins, Operations (with whether the caller's Roles allow
@@ -66,7 +66,7 @@ impl Core {
         let fonts: Vec<Value> = inner.plan.active.iter().filter_map(|(id, a)| a.manifest.fonts.as_ref().map(|f| json!({"id": id, "name": a.manifest.name, "families": f}))).collect();
         let points: Map<String, Value> = inner.plan.ext_points.iter().map(|(n, (owner, d))| {
             let providers: Vec<&String> = inner.plan.providers.get(n).map(|v| v.iter().map(|(_, p)| p).collect()).unwrap_or_default();
-            (n.clone(), json!({"owner": owner, "policy": d.policy, "providers": providers}))
+            (n.clone(), json!({"owner": owner, "policy": d.policy, "version": d.version, "browser": d.browser, "providers": providers}))
         }).collect();
         // Slot items the caller can use: the Operation exists and the caller's Roles allow it.
         let mut slots: Vec<Value> = vec![];
@@ -84,7 +84,7 @@ impl Core {
         json!({
             "envelope": ENVELOPE_VERSION, "contract": inner.plan.hash, "profile": inner.profile_name,
             "who": who, "plugins": plugins, "operations": ops, "events": events,
-            "permissions": perms, "themes": themes, "fonts": fonts, "extension_points": points, "slots": slots,
+            "permissions": perms, "themes": themes, "fonts": fonts, "extension_points": points, "slots": slots, "browser": self.browser_modules(),
         })
     }
 }

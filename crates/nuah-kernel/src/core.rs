@@ -29,6 +29,8 @@ pub(crate) struct Inner {
     pub(crate) profile_name: String,
     pub(crate) telemetry: crate::telemetry::Telemetry,
     pub(crate) shell: std::sync::RwLock<Option<Arc<dyn crate::plugin::ShellServices>>>,
+    /// The enabled plugins' browser files, by (plugin, path), with the first 12 hex digits of each file's sha-256.
+    pub(crate) browser: BTreeMap<(String, String), (&'static [u8], String)>,
 }
 
 /// A running Core. Cheap to clone.
@@ -127,7 +129,8 @@ impl Core {
         let (wake, _) = watch::channel(0u64);
         let settings = plan.settings.clone();
         let features = db.features();
-        let inner = Arc::new(Inner { db, features, auth, policy, clock, ids, net, plan, settings, wake, signals: Default::default(), profile_name: dist.profile.name.clone(), telemetry, shell: std::sync::RwLock::new(None) });
+        let browser = browser_files(&plan);
+        let inner = Arc::new(Inner { db, features, auth, policy, clock, ids, net, plan, settings, wake, signals: Default::default(), profile_name: dist.profile.name.clone(), telemetry, shell: std::sync::RwLock::new(None), browser });
         if inner.plan.ports.contains_key("db") {
             if let Err(e) = inner.prepare_storage(watch) {
                 if e.key == "kernel.upgrade_refused" {
@@ -222,6 +225,29 @@ impl Core {
     /// The Faces the enabled plugins publish, as (face name, plugin id), by plugin id.
     pub fn faces(&self) -> Vec<(String, String)> {
         self.inner.plan.active.iter().filter_map(|(id, a)| a.manifest.face.clone().map(|f| (f, id.clone()))).collect()
+    }
+
+    /// One of an enabled plugin's browser files, with the hash its address carries; `None` when the plugin is not enabled or has no
+    /// such file ([ADR 0095]).
+    ///
+    /// [ADR 0095]: https://docs.addaui.com/nuah/adr/0095-plugins-ship-browser-modules-for-another-plugins-host-and-require-an-extension-point-at-a-version-never-a-plugin-by-id/
+    pub fn browser_file(&self, plugin: &str, path: &str) -> Option<(&'static [u8], String)> {
+        self.inner.browser.get(&(plugin.to_string(), path.to_string())).map(|(b, h)| (*b, h.clone()))
+    }
+
+    /// The Browser modules of the enabled plugins: which plugin, for which point, at which address (with the file's hash), and
+    /// what the plugin declares to the point. Public: the files are served to anyone, like a Face's.
+    pub fn browser_modules(&self) -> Vec<Value> {
+        let inner = &*self.inner;
+        let mut out = vec![];
+        for (id, a) in &inner.plan.active {
+            for (point, file) in &a.manifest.browser {
+                let Some((_, hash)) = inner.browser.get(&(id.clone(), file.clone())) else { continue };
+                let data = a.manifest.provides.iter().find(|p| &p.extension_point == point).and_then(|p| p.data.clone()).unwrap_or(Value::Null);
+                out.push(json!({"plugin": id, "point": point, "file": file, "url": format!("/plugins/{}/{file}?v={hash}", id.trim_start_matches('@')), "data": data}));
+            }
+        }
+        out
     }
 
     /// The origins the enabled plugins ask the browser to allow a Face to call (sorted, each once). One that is not a valid origin is left out.
@@ -809,4 +835,16 @@ impl Inner {
         .or_else(|e| if out.is_err() { Ok(()) } else { Err(e) })?;
         out
     }
+}
+
+fn browser_files(plan: &Plan) -> BTreeMap<(String, String), (&'static [u8], String)> {
+    use sha2::{Digest, Sha256};
+    let mut out = BTreeMap::new();
+    for (id, a) in &plan.active {
+        for (path, bytes) in a.plugin.browser_files() {
+            let hash = format!("{:x}", Sha256::digest(bytes))[..12].to_string();
+            out.insert((id.clone(), path.to_string()), (*bytes, hash));
+        }
+    }
+    out
 }

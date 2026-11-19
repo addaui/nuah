@@ -352,7 +352,7 @@ pub fn resolve(dist: &Distribution) -> (Vec<Problem>, Plan) {
     }
 
     // 4. references between declarations
-    for (id, _, m) in &enabled {
+    for (id, pl, m) in &enabled {
         for (op, d) in &m.operations {
             if let Some(perm) = &d.permission {
                 if !permission_owner.contains_key(perm) {
@@ -437,8 +437,14 @@ pub fn resolve(dist: &Distribution) -> (Vec<Problem>, Plan) {
                 ps.push(problem("unknown_extension_point", &[id], format!("{id} provides {}, which no enabled plugin defines", pr.extension_point)));
             } else {
                 let (_, d) = &plan.ext_points[&pr.extension_point];
-                if d.browser && !m.browser.contains_key(&pr.extension_point) {
-                    ps.push(problem("browser_module_missing", &[id], format!("{id} provides the browser point {} but names no Browser module for it", pr.extension_point)));
+                if d.browser {
+                    match m.browser.get(&pr.extension_point) {
+                        None => ps.push(problem("browser_module_missing", &[id], format!("{id} provides the browser point {} but names no Browser module for it", pr.extension_point))),
+                        Some(f) if !pl.browser_files().iter().any(|(n, _)| n == f) => {
+                            ps.push(problem("browser_module_missing", &[id], format!("{id} names {f} as its Browser module for {} but does not carry that file", pr.extension_point)))
+                        }
+                        _ => {}
+                    }
                 }
                 if let Some(data) = &pr.data {
                     if !d.data.is_null() {
