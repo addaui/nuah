@@ -648,7 +648,9 @@ pub fn resolve(dist: &Distribution) -> (Vec<Problem>, Plan) {
         for pr in &m.provides {
             // a browser point's Provider is its Browser module; a server handler is optional (ADR 0095)
             let browser = plan.ext_points.get(&pr.extension_point).is_some_and(|(_, d)| d.browser);
-            if !browser && !b.provides.contains_key(&pr.extension_point) {
+            // an optional provider of a point nobody enabled defines offers nothing, so it needs no handler either
+            let absent = pr.optional && !plan.ext_points.contains_key(&pr.extension_point);
+            if !browser && !absent && !b.provides.contains_key(&pr.extension_point) {
                 miss(&mut ps, "extension point", &pr.extension_point);
             }
         }

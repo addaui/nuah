@@ -828,3 +828,9 @@ fn a_plugin_cannot_read_providers_of_a_point_it_neither_defines_nor_requires() {
     let core = start_with(vec![std::sync::Arc::new(editor("@a/editor", "1.0.0")), std::sync::Arc::new(WithFile(FILE)), std::sync::Arc::new(Nosy)], &["@a/editor", "@t/el", "@t/nosy"]);
     assert!(core.call_as(&person("a", &["member"]), "nosy.peek", json!({}), None).is_err());
 }
+
+#[test]
+fn an_optional_provider_of_a_point_nobody_defines_needs_no_handler() {
+    let r = Raw(json!({"id": "@t/opt", "version": "1.0.0", "namespaces": ["opt"], "provides": [{"extension_point": "face.editor", "optional": true}], "browser": {"face.editor": "index.js"}}));
+    assert_eq!(check_with(vec![r], &["@t/opt"]), Vec::<String>::new());
+}
