@@ -615,7 +615,12 @@ fn face_files(dir: impl AsRef<std::path::Path>) -> Router {
 /// else (the page that names those files) is asked about each time, which costs one cheap conditional request and means a new release shows at once.
 async fn face_cache(req: Request, next: Next) -> Response {
     let hashed = is_hashed_asset(req.uri().path());
+    // A Face's service worker (`sw.js` at the Face's top) may look after the whole site, so the Face opens at `/` without a connection (ADR 0093).
+    let worker = req.uri().path().trim_start_matches('/').split('/').filter(|p| !p.is_empty()).collect::<Vec<_>>().as_slice() == ["sw.js"];
     let mut resp = next.run(req).await;
+    if worker && resp.status().is_success() {
+        resp.headers_mut().insert("service-worker-allowed", HeaderValue::from_static("/"));
+    }
     if resp.status().is_success() && !resp.headers().contains_key(header::CACHE_CONTROL) {
         resp.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static(if hashed { "public, max-age=31536000, immutable" } else { "no-cache" }));
     }
@@ -640,7 +645,8 @@ pub fn csp(connect: &[String], images: &[String], fonts: &[String]) -> String {
     let extra: String = connect.iter().map(|o| format!(" {o}")).collect();
     // Pictures and media load from this server and the origins plugins declare, never from any https site (ADR 0077): a page cannot tell a viewer's browser to contact a stranger.
     let img: String = images.iter().map(|o| format!(" {o}")).collect();
-    format!("default-src 'self'; connect-src 'self'{extra}; img-src 'self' data: blob:{img}; media-src 'self' blob:{img}; font-src 'self'{font}; frame-src https://www.youtube-nocookie.com; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+    // Scripts only from this server; WebAssembly may be compiled (a Face's CRDT, ADR 0093), JavaScript may never be evaluated from text.
+    format!("default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'{extra}; img-src 'self' data: blob:{img}; media-src 'self' blob:{img}; font-src 'self'{font}; frame-src https://www.youtube-nocookie.com; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 }
 
 /// Routes a product adds to the Projection. Called once with the Core, it returns its own router.

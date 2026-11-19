@@ -480,3 +480,23 @@ fn the_event_stream_carries_signals_without_an_id() {
     drop(sock);
     services.stop();
 }
+
+#[test]
+fn the_policy_lets_webassembly_compile_but_never_lets_a_script_eval() {
+    let p = nuah_http::csp(&[], &[], &[]);
+    assert!(p.contains("script-src 'self' 'wasm-unsafe-eval'"), "{p}");
+    assert!(!p.contains("'unsafe-eval'") && !p.contains("'unsafe-inline'"), "{p}");
+}
+
+#[test]
+fn a_faces_service_worker_may_look_after_the_whole_site_and_nothing_else_may() {
+    let web = face_dir("sw", "WEB");
+    std::fs::write(std::path::Path::new(&web).join("sw.js"), "// worker").unwrap();
+    std::fs::write(std::path::Path::new(&web).join("other.js"), "// not a worker").unwrap();
+    let port = free_port();
+    let (_core, services) = start_with_http(json!({"listen": format!("127.0.0.1:{port}"), "faces": {"/faces/web": web}}));
+    let r = raw_get(&format!("http://127.0.0.1:{port}/faces/web/sw.js"), "identity");
+    assert_eq!(r.header("service-worker-allowed"), Some("/"));
+    assert_eq!(raw_get(&format!("http://127.0.0.1:{port}/faces/web/other.js"), "identity").header("service-worker-allowed"), None);
+    services.stop();
+}
