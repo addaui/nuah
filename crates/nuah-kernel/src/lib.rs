@@ -18,6 +18,7 @@ pub mod schema;
 pub mod setup;
 pub mod standins;
 pub mod telemetry;
+pub mod text;
 pub mod upgrade;
 
 pub use crate::core::{Core, Services};

@@ -15,6 +15,8 @@ struct State {
     last_seq: u64,
     /// Unique indexes; a put checks them by looking at the other live documents of the collection.
     uniques: Vec<IndexSpec>,
+    /// The search fields of each Collection with a text index; the text is folded when a search looks at it.
+    searches: BTreeMap<String, Vec<String>>,
 }
 
 pub struct MemoryDb {
@@ -86,6 +88,16 @@ impl State {
         let next = if q.offset + items.len() < total { Some(q.offset + items.len()) } else { None };
         Ok(Page { items, next })
     }
+    fn do_search(&self, c: &str, words: &[String], conds: &[Cond], limit: usize) -> Result<Vec<Doc>> {
+        check_fields(conds, &None)?;
+        let Some(fields) = self.searches.get(c).filter(|f| !f.is_empty()) else { return Ok(vec![]) };
+        let mut hits: Vec<&Doc> = self
+            .live(c)
+            .filter(|d| conds.iter().all(|k| matches(&d.body, k)) && nuah_kernel::text::holds_all(&nuah_kernel::text::searchable(&d.body, fields), words))
+            .collect();
+        hits.sort_by(|a, b| b.changed_at.cmp(&a.changed_at).then_with(|| a.id.cmp(&b.id)));
+        Ok(hits.into_iter().take(limit).cloned().collect())
+    }
     fn do_count(&self, c: &str, conds: &[Cond]) -> Result<u64> {
         check_fields(conds, &None)?;
         Ok(self.live(c).filter(|d| conds.iter().all(|k| matches(&d.body, k))).count() as u64)
@@ -95,6 +107,9 @@ impl State {
 struct Reader(Arc<State>);
 
 impl DbRead for Reader {
+    fn search(&self, c: &str, words: &[String], conds: &[Cond], limit: usize) -> Result<Vec<Doc>> {
+        self.0.do_search(c, words, conds, limit)
+    }
     fn get(&self, c: &str, id: &str) -> Result<Option<Doc>> {
         Ok(self.0.do_get(c, id))
     }
@@ -125,6 +140,9 @@ struct Writer {
 }
 
 impl DbRead for Writer {
+    fn search(&self, c: &str, words: &[String], conds: &[Cond], limit: usize) -> Result<Vec<Doc>> {
+        self.work.do_search(c, words, conds, limit)
+    }
     fn get(&self, c: &str, id: &str) -> Result<Option<Doc>> {
         Ok(self.work.do_get(c, id))
     }
@@ -241,7 +259,7 @@ impl Db for MemoryDb {
         Ok(())
     }
     fn features(&self) -> Features {
-        Features::default().with(feature::INDEX_UNIQUE, Support::Emulated).with(feature::INDEX_COMPOSITE, Support::Native).fact("storage_version", 0)
+        Features::default().with(feature::INDEX_UNIQUE, Support::Emulated).with(feature::INDEX_COMPOSITE, Support::Native).with(feature::TEXT_SEARCH, Support::Emulated).fact("storage_version", 0)
     }
     fn ensure_index(&self, spec: &IndexSpec) -> Result<()> {
         spec.check()?;
@@ -258,6 +276,13 @@ impl Db for MemoryDb {
             return Err(Error::internal(format!("cannot make a unique index on {}: existing documents already share values", spec.collection)));
         }
         next.uniques.push(spec.clone());
+        *self.state.lock() = Arc::new(next);
+        Ok(())
+    }
+    fn ensure_search(&self, collection: &str, fields: &[String]) -> Result<()> {
+        let _one_writer = self.writer.lock();
+        let mut next = (**self.state.lock()).clone();
+        next.searches.insert(collection.to_string(), fields.to_vec());
         *self.state.lock() = Arc::new(next);
         Ok(())
     }

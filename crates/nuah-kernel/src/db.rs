@@ -225,6 +225,9 @@ pub mod feature {
     pub const INDEX_COMPOSITE: &str = "index.composite";
     /// [`Db::snapshot`](super::Db::snapshot): a consistent copy of the database, taken while it is in use.
     pub const BACKUP_SNAPSHOT: &str = "backup.snapshot";
+    /// A text index of the fields a Collection schema marks `"search": true` ([`Db::ensure_search`](super::Db::ensure_search),
+    /// [`DbRead::search`](super::DbRead::search)).
+    pub const TEXT_SEARCH: &str = "text.search";
 }
 
 impl Features {
@@ -296,6 +299,12 @@ pub trait DbRead {
     /// Every document including tombstones, in the order of `(collection, id)` compared as bytes, starting after
     /// the given key (`("", "")` for the start). Used by export; a plugin never sees it.
     fn scan(&self, after_collection: &str, after_id: &str, limit: usize) -> Result<Vec<Doc>>;
+    /// Live documents of `collection` whose text index holds every one of `words` (already folded by
+    /// [`crate::text::words`]) and that meet `conds`, newest first (by `changed_at`, then id), at most `limit`.
+    /// The text index of a Document is [`crate::text::searchable`] of the fields last given to [`Db::ensure_search`].
+    fn search(&self, _collection: &str, _words: &[String], _conds: &[Cond], _limit: usize) -> Result<Vec<Doc>> {
+        Err(Error::unsupported(feature::TEXT_SEARCH, "this adapter"))
+    }
 }
 
 pub trait DbWrite: DbRead {
@@ -346,6 +355,12 @@ pub trait Db: Send + Sync {
     /// Make queries on the fields of `spec` fast. A plain index is a hint, never required for correctness; a
     /// unique index is a rule (see [`IndexSpec`]) and needs the `index.unique` feature.
     fn ensure_index(&self, spec: &IndexSpec) -> Result<()>;
+    /// Keep a text index of `fields` of `collection` from now on, through every put, delete and restore. Called at
+    /// each start; when the fields differ from the last call, the index of the Collection is rebuilt from what is
+    /// stored. No fields: the Collection has no text index. Requires [`feature::TEXT_SEARCH`].
+    fn ensure_search(&self, _collection: &str, _fields: &[String]) -> Result<()> {
+        Err(Error::unsupported(feature::TEXT_SEARCH, self.name()))
+    }
 }
 
 /// Field paths are placed in queries and indexes, so they are checked wherever they enter.

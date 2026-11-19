@@ -9,9 +9,12 @@ use nuah_kernel::*;
 use parking_lot::{Condvar, Mutex};
 use rusqlite::{params, params_from_iter, types::Value as Sql, Connection, OptionalExtension};
 use serde_json::Value;
+use std::collections::BTreeMap;
+use std::sync::Arc;
 
 /// The layout of the tables this Adapter creates (kept in `PRAGMA user_version`).
-const LAYOUT: u32 = 1;
+/// 2: the text index (`doc_text`, `doc_fts`, `search_fields`); a version-1 binary would write without keeping it.
+const LAYOUT: u32 = 2;
 
 pub struct SqliteDb {
     /// The writer; also serves reads when there is no pool.
@@ -19,6 +22,8 @@ pub struct SqliteDb {
     readers: Option<Readers>,
     /// When set, a copy of the database is written here before the Core migrates existing data.
     backup_dir: Option<std::path::PathBuf>,
+    /// The search fields of each Collection with a text index (also in `search_fields`), for the writer.
+    searches: Mutex<Arc<BTreeMap<String, Vec<String>>>>,
 }
 
 /// Idle reader connections. A read takes one and puts it back; when all are busy it waits for one.
@@ -89,7 +94,14 @@ impl SqliteDb {
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS docs (collection TEXT NOT NULL, id TEXT NOT NULL, rev INTEGER NOT NULL, changed_at INTEGER NOT NULL,
                deleted INTEGER NOT NULL, owner TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY (collection, id)) WITHOUT ROWID;
-             CREATE TABLE IF NOT EXISTS changes (seq INTEGER PRIMARY KEY AUTOINCREMENT, record TEXT NOT NULL);",
+             CREATE TABLE IF NOT EXISTS changes (seq INTEGER PRIMARY KEY AUTOINCREMENT, record TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS search_fields (collection TEXT PRIMARY KEY, fields TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS doc_text (row INTEGER PRIMARY KEY, collection TEXT NOT NULL, id TEXT NOT NULL, text TEXT NOT NULL, UNIQUE (collection, id));
+             CREATE VIRTUAL TABLE IF NOT EXISTS doc_fts USING fts5(text, content='doc_text', content_rowid='row', tokenize='trigram');
+             CREATE TRIGGER IF NOT EXISTS doc_text_ai AFTER INSERT ON doc_text BEGIN INSERT INTO doc_fts(rowid, text) VALUES (new.row, new.text); END;
+             CREATE TRIGGER IF NOT EXISTS doc_text_ad AFTER DELETE ON doc_text BEGIN INSERT INTO doc_fts(doc_fts, rowid, text) VALUES ('delete', old.row, old.text); END;
+             CREATE TRIGGER IF NOT EXISTS doc_text_au AFTER UPDATE ON doc_text BEGIN
+               INSERT INTO doc_fts(doc_fts, rowid, text) VALUES ('delete', old.row, old.text); INSERT INTO doc_fts(rowid, text) VALUES (new.row, new.text); END;",
         )
         .map_err(db_err)?;
         if layout < LAYOUT {
@@ -108,7 +120,17 @@ impl SqliteDb {
             }
             Some(Readers { idle: Mutex::new(idle), back: Condvar::new() })
         };
-        Ok(SqliteDb { conn: Mutex::new(conn), readers, backup_dir: None })
+        let searches = {
+            let mut st = conn.prepare("SELECT collection, fields FROM search_fields").map_err(db_err)?;
+            let rows = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).map_err(db_err)?;
+            let mut m = BTreeMap::new();
+            for row in rows {
+                let (c, f) = row.map_err(db_err)?;
+                m.insert(c, serde_json::from_str::<Vec<String>>(&f).map_err(json_err)?);
+            }
+            m
+        };
+        Ok(SqliteDb { conn: Mutex::new(conn), readers, backup_dir: None, searches: Mutex::new(Arc::new(searches)) })
     }
 }
 
@@ -232,6 +254,26 @@ fn finish(rows: Vec<(Doc, String)>) -> Result<Vec<Doc>> {
 struct Conn<'a> {
     c: &'a Connection,
     nested: u32,
+    /// The search fields of each Collection with a text index; a writer keeps `doc_text` in step with `docs`.
+    searches: Arc<BTreeMap<String, Vec<String>>>,
+}
+
+/// `s` as a literal inside a `LIKE` pattern with `ESCAPE '\'`.
+fn like_literal(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+}
+
+impl Conn<'_> {
+    /// Put the folded text of one Document into the text index, or take it out (deleted, or no search fields).
+    fn index_text(&self, collection: &str, id: &str, body: Option<&Value>) -> Result<()> {
+        let Some(fields) = self.searches.get(collection).filter(|f| !f.is_empty()) else { return Ok(()) };
+        match body {
+            Some(b) => self.c.execute("INSERT INTO doc_text (collection,id,text) VALUES (?1,?2,?3) ON CONFLICT (collection,id) DO UPDATE SET text=excluded.text",
+                params![collection, id, nuah_kernel::text::searchable(b, fields)]).map_err(db_err)?,
+            None => self.c.execute("DELETE FROM doc_text WHERE collection=?1 AND id=?2", params![collection, id]).map_err(db_err)?,
+        };
+        Ok(())
+    }
 }
 
 impl DbRead for Conn<'_> {
@@ -281,6 +323,26 @@ impl DbRead for Conn<'_> {
         let rows = st.query_map(params![ac, ai, limit as i64], row_doc).map_err(db_err)?.collect::<std::result::Result<Vec<_>, _>>().map_err(db_err)?;
         finish(rows)
     }
+    fn search(&self, collection: &str, words: &[String], conds: &[Cond], limit: usize) -> Result<Vec<Doc>> {
+        let (w, mut args) = where_sql(collection, conds)?;
+        // words of three letters or more go through the trigram index; shorter ones are matched on the folded text
+        let (long, short): (Vec<&String>, Vec<&String>) = words.iter().partition(|x| x.chars().count() >= 3);
+        let mut sub = "SELECT id FROM doc_text WHERE collection=?".to_string();
+        args.push(Sql::Text(collection.into()));
+        if !long.is_empty() {
+            sub += " AND row IN (SELECT rowid FROM doc_fts WHERE doc_fts MATCH ?)";
+            args.push(Sql::Text(long.iter().map(|x| format!("\"{}\"", x.replace('"', "\"\""))).collect::<Vec<_>>().join(" AND ")));
+        }
+        for x in short {
+            sub += " AND text LIKE ? ESCAPE '\\'";
+            args.push(Sql::Text(format!("%{}%", like_literal(x))));
+        }
+        let sql = format!("SELECT collection,id,rev,changed_at,deleted,owner,body FROM docs WHERE {w} AND id IN ({sub}) ORDER BY changed_at DESC, id LIMIT ?");
+        args.push(Sql::Integer(limit as i64));
+        let mut st = self.c.prepare_cached(&sql).map_err(db_err)?;
+        let rows = st.query_map(params_from_iter(args), row_doc).map_err(db_err)?.collect::<std::result::Result<Vec<_>, _>>().map_err(db_err)?;
+        finish(rows)
+    }
 }
 
 fn check_expect(existing: &Option<Doc>, expect: Expect) -> Result<()> {
@@ -303,6 +365,7 @@ impl DbWrite for Conn<'_> {
         let rev = prev.map(|p| p.rev + 1).unwrap_or(1);
         self.c.execute("INSERT INTO docs (collection,id,rev,changed_at,deleted,owner,body) VALUES (?1,?2,?3,?4,0,?5,?6)
              ON CONFLICT (collection,id) DO UPDATE SET rev=excluded.rev, changed_at=excluded.changed_at, deleted=0, owner=excluded.owner, body=excluded.body", params![collection, id, rev as i64, now, owner, body.to_string()]).map_err(db_err)?;
+        self.index_text(collection, id, Some(&body))?;
         Ok(Doc { id: id.into(), collection: collection.into(), rev, changed_at: now, deleted: false, owner: owner.into(), body })
     }
     fn delete(&mut self, collection: &str, id: &str, expect: Expect, now: Millis) -> Result<Option<Doc>> {
@@ -311,6 +374,7 @@ impl DbWrite for Conn<'_> {
         match prev {
             Some(p) if !p.deleted => {
                 self.c.execute("UPDATE docs SET rev=?3, changed_at=?4, deleted=1, body='{}' WHERE collection=?1 AND id=?2", params![collection, id, (p.rev + 1) as i64, now]).map_err(db_err)?;
+                self.index_text(collection, id, None)?;
                 Ok(Some(Doc { rev: p.rev + 1, changed_at: now, deleted: true, body: serde_json::json!({}), ..p }))
             }
             _ => Ok(None),
@@ -327,7 +391,7 @@ impl DbWrite for Conn<'_> {
     }
     fn restore(&mut self, d: Doc) -> Result<()> {
         self.c.execute("INSERT OR REPLACE INTO docs (collection,id,rev,changed_at,deleted,owner,body) VALUES (?1,?2,?3,?4,?5,?6,?7)", params![d.collection, d.id, d.rev as i64, d.changed_at, d.deleted as i64, d.owner, d.body.to_string()]).map_err(db_err)?;
-        Ok(())
+        self.index_text(&d.collection, &d.id, (!d.deleted).then_some(&d.body))
     }
     fn restore_change(&mut self, rec: ChangeRecord) -> Result<()> {
         self.c.execute("INSERT INTO changes (seq, record) VALUES (?1, ?2)", params![rec.seq as i64, serde_json::to_string(&rec).map_err(json_err)?]).map_err(db_err)?;
@@ -364,21 +428,21 @@ impl Db for SqliteDb {
         if let Some(pool) = &self.readers {
             let c = pool.take();
             let begun = c.execute_batch("BEGIN").map_err(db_err);
-            let r = begun.and_then(|_| f(&Conn { c: &c, nested: 0 }));
+            let r = begun.and_then(|_| f(&Conn { c: &c, nested: 0, searches: Default::default() }));
             let _ = c.execute_batch("ROLLBACK");
             pool.give(c);
             return r;
         }
         let guard = self.conn.lock();
         guard.execute_batch("BEGIN").map_err(db_err)?;
-        let r = f(&Conn { c: &guard, nested: 0 });
+        let r = f(&Conn { c: &guard, nested: 0, searches: Default::default() });
         let _ = guard.execute_batch("ROLLBACK");
         r
     }
     fn write(&self, f: &mut dyn FnMut(&mut dyn DbWrite) -> Result<()>) -> Result<()> {
         let guard = self.conn.lock();
         guard.execute_batch("BEGIN IMMEDIATE").map_err(db_err)?;
-        let mut c = Conn { c: &guard, nested: 0 };
+        let mut c = Conn { c: &guard, nested: 0, searches: self.searches.lock().clone() };
         match f(&mut c) {
             Ok(()) => guard.execute_batch("COMMIT").map_err(db_err),
             Err(e) => {
@@ -392,6 +456,7 @@ impl Db for SqliteDb {
             .with(feature::INDEX_UNIQUE, Support::Native)
             .with(feature::INDEX_COMPOSITE, Support::Native)
             .with(feature::BACKUP_SNAPSHOT, Support::Native)
+            .with(feature::TEXT_SEARCH, Support::Native)
             .fact("storage_version", LAYOUT)
     }
     fn before_migration(&self, what: &str) -> Result<()> {
@@ -413,6 +478,54 @@ impl Db for SqliteDb {
             return Err(Error::invalid("path", "the snapshot target already exists"));
         }
         self.conn.lock().execute("VACUUM INTO ?1", params![path]).map_err(db_err)?;
+        Ok(())
+    }
+    fn ensure_search(&self, collection: &str, fields: &[String]) -> Result<()> {
+        if !plain_name(collection) {
+            return Err(Error::internal("bad collection name"));
+        }
+        if self.searches.lock().get(collection).map(|f| f.as_slice()).unwrap_or(&[]) == fields {
+            return Ok(());
+        }
+        let mut next = (**self.searches.lock()).clone();
+        if fields.is_empty() {
+            next.remove(collection);
+        } else {
+            next.insert(collection.to_string(), fields.to_vec());
+        }
+        let next = Arc::new(next);
+        // the fields changed: the Collection's text is written again from what is stored, in one transaction
+        let guard = self.conn.lock();
+        guard.execute_batch("BEGIN IMMEDIATE").map_err(db_err)?;
+        let run = || -> Result<()> {
+            guard.execute("DELETE FROM doc_text WHERE collection=?1", params![collection]).map_err(db_err)?;
+            if fields.is_empty() {
+                guard.execute("DELETE FROM search_fields WHERE collection=?1", params![collection]).map_err(db_err)?;
+                return Ok(());
+            }
+            guard.execute("INSERT OR REPLACE INTO search_fields (collection, fields) VALUES (?1, ?2)", params![collection, serde_json::to_string(fields).map_err(json_err)?]).map_err(db_err)?;
+            let c = Conn { c: &guard, nested: 0, searches: next.clone() };
+            let mut after = String::new();
+            loop {
+                let mut st = guard.prepare_cached("SELECT collection,id,rev,changed_at,deleted,owner,body FROM docs WHERE collection=?1 AND id>?2 AND deleted=0 ORDER BY id LIMIT 500").map_err(db_err)?;
+                let rows = st.query_map(params![collection, after], row_doc).map_err(db_err)?.collect::<std::result::Result<Vec<_>, _>>().map_err(db_err)?;
+                let docs = finish(rows)?;
+                let Some(last) = docs.last().map(|d| d.id.clone()) else { break };
+                for d in &docs {
+                    c.index_text(collection, &d.id, Some(&d.body))?;
+                }
+                after = last;
+            }
+            Ok(())
+        };
+        match run() {
+            Ok(()) => guard.execute_batch("COMMIT").map_err(db_err)?,
+            Err(e) => {
+                let _ = guard.execute_batch("ROLLBACK");
+                return Err(e);
+            }
+        }
+        *self.searches.lock() = next;
         Ok(())
     }
     fn ensure_index(&self, spec: &IndexSpec) -> Result<()> {

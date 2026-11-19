@@ -39,7 +39,7 @@ fn parse_cursor(c: &str) -> Result<u64> {
 }
 
 impl Inner {
-    fn visible(&self, r: &dyn DbRead, a: &Audience, subject: &str) -> Result<bool> {
+    pub(crate) fn visible(&self, r: &dyn DbRead, a: &Audience, subject: &str) -> Result<bool> {
         match a {
             Audience::Subject { subject: s } => Ok(s == subject),
             Audience::Scope { scope, id } => {

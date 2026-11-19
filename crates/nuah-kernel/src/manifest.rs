@@ -198,6 +198,10 @@ pub struct DataDecl {
     pub prefers: Vec<String>,
     /// The strict Collection schema per owned Collection, checked by the kernel on every put.
     pub schemas: BTreeMap<String, Value>,
+    /// The fields of each owned Collection the schema marks `"search": true`, for the text index ([ADR 0092]).
+    ///
+    /// [ADR 0092]: https://docs.addaui.com/nuah/adr/0092-one-index-of-entities-plugins-announce-them-in-their-events-the-data-port-searches-text-and-permissions-follow-the-events-audience/
+    pub searches: BTreeMap<String, Vec<String>>,
 }
 
 /// `DataDecl` as written in a Manifest, before the schema file is unpacked.
@@ -219,7 +223,7 @@ struct RawDataDecl {
 impl TryFrom<RawDataDecl> for DataDecl {
     type Error = String;
     fn try_from(r: RawDataDecl) -> Result<DataDecl, String> {
-        let mut d = DataDecl { schema: None, collections: r.collections, reads: r.reads, version: r.version, upgrades_from: r.upgrades_from, steps: r.steps, indexes: r.indexes, requires: r.requires, prefers: r.prefers, schemas: r.schemas };
+        let mut d = DataDecl { schema: None, collections: r.collections, reads: r.reads, version: r.version, upgrades_from: r.upgrades_from, steps: r.steps, indexes: r.indexes, requires: r.requires, prefers: r.prefers, schemas: r.schemas, searches: BTreeMap::new() };
         let Some(schema) = r.schema else { return Ok(d) };
         if !d.collections.is_empty() || d.version != 0 || !d.indexes.is_empty() || !d.schemas.is_empty() || d.upgrades_from.is_some() || !d.steps.is_empty() {
             return Err("collections, version, indexes, upgrades_from and steps are written in the schema file only".into());
@@ -235,6 +239,13 @@ impl TryFrom<RawDataDecl> for DataDecl {
             for ix in crate::upgrade::index_specs(c, s) {
                 d.indexes.push(IndexDecl { collection: ix.collection, field: String::new(), fields: ix.fields, unique: ix.unique });
             }
+            let fields = crate::upgrade::search_fields(s);
+            if !fields.is_empty() {
+                d.searches.insert(c.clone(), fields);
+            }
+        }
+        if !d.searches.is_empty() && !d.requires.iter().any(|f| f == crate::db::feature::TEXT_SEARCH) {
+            d.requires.push(crate::db::feature::TEXT_SEARCH.to_string());
         }
         d.schema = Some(schema);
         Ok(d)
@@ -753,6 +764,20 @@ mod data_schema_tests {
         assert_eq!(m.data.indexes.iter().map(|i| i.spec()).collect::<Vec<_>>(), vec![crate::db::IndexSpec { collection: "t.tasks".into(), fields: vec!["project".into()], unique: false }]);
         assert_eq!(m.data.schemas["t.tasks"]["additionalProperties"], json!(false));
         assert!(m.data.schema.is_some());
+    }
+
+    #[test]
+    fn search_fields_come_from_the_schema_and_need_the_text_index() {
+        let m = parse(json!({"schema": {"version": 1, "collections": {
+            "t.notes": {"type": "object", "properties": {"title": {"type": "string", "search": true}, "tags": {"type": "array", "items": {"type": "string"}, "search": true},
+                "old": {"removed": true, "search": true}, "n": {"type": "integer"}}},
+            "t.plain": {"type": "object", "properties": {"a": {"type": "string"}}}
+        }}})).unwrap();
+        assert_eq!(m.data.searches.get("t.notes"), Some(&vec!["tags".to_string(), "title".to_string()]));
+        assert!(!m.data.searches.contains_key("t.plain"));
+        assert!(m.data.requires.contains(&crate::db::feature::TEXT_SEARCH.to_string()), "an Adapter without a text index cannot run it");
+        let plain = parse(json!({"schema": {"version": 1, "collections": {"t.plain": {"type": "object", "properties": {"a": {"type": "string"}}}}}})).unwrap();
+        assert!(plain.data.requires.is_empty());
     }
 
     #[test]

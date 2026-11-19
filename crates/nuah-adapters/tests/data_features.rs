@@ -180,6 +180,9 @@ impl Db for Counting {
     fn retain_indexes(&self, collection: &str, keep: &[IndexSpec]) -> Result<()> {
         self.0.retain_indexes(collection, keep)
     }
+    fn ensure_search(&self, collection: &str, fields: &[String]) -> Result<()> {
+        self.0.ensure_search(collection, fields)
+    }
 }
 struct AdapterCounting(Arc<MemoryDb>, Arc<std::sync::atomic::AtomicUsize>);
 impl Plugin for AdapterCounting {
@@ -730,4 +733,87 @@ fn the_indexes_of_a_renamed_collection_are_dropped() {
         w.put("up.docs", "x2", "t", json!({"k": "same"}), Expect::Any, 1)?;
         Ok(())
     }).expect("no unique index is left on the old name");
+}
+
+// ---- the text index and Audiences (ADR 0092) -------------------------------------------------------
+
+/// A plugin with a searchable Collection, a Scope (`finder.team`: the subjects listed in `finder.teams/<id>`), and
+/// Operations that search and ask whether the caller sees an Audience.
+struct Finder;
+impl Plugin for Finder {
+    fn manifest(&self) -> Manifest {
+        serde_json::from_value(json!({"id": "@test/finder", "version": "1.0.0", "namespaces": ["finder"],
+            "permissions": {"finder.write": {"default": ["member"]}},
+            "scopes": ["finder.team"],
+            "operations": {
+                "finder.put": {"kind": "command", "permission": "finder.write", "input": {"type": "object", "required": ["c", "id", "body"]}},
+                "finder.find": {"kind": "query", "input": {"type": "object", "required": ["q"]}},
+                "finder.sees": {"kind": "query", "input": {"type": "object", "required": ["audience"]}}
+            },
+            "data": {"schema": {"version": 1, "collections": {
+                "finder.notes": {"type": "object", "properties": {"title": {"type": "string", "search": true}, "kind": {"type": "string"}}},
+                "finder.teams": {"type": "object", "properties": {"members": {"type": "array", "items": {"type": "string"}}}}
+            }}}})).unwrap()
+    }
+    fn bind(&self, b: &mut Bindings) {
+        b.op("finder.put", |tx, i| {
+            tx.put(i["c"].as_str().unwrap(), i["id"].as_str().unwrap(), i["body"].clone(), Expect::Any)?;
+            Ok(json!({}))
+        });
+        b.op("finder.find", |tx, i| {
+            let conds: Vec<Cond> = i.get("kind").map(|k| vec![Cond { field: "kind".into(), op: Cmp::Eq, value: k.clone() }]).unwrap_or_default();
+            let ids: Vec<String> = tx.search("finder.notes", i["q"].as_str().unwrap(), &conds, 10)?.into_iter().map(|d| d.id).collect();
+            Ok(json!({"ids": ids}))
+        });
+        b.op("finder.sees", |tx, i| Ok(json!({"sees": tx.may_see(&serde_json::from_value(i["audience"].clone()).unwrap())?})));
+        b.scope("finder.team", |r, id, subject| {
+            Ok(r.get("finder.teams", id)?.filter(|d| !d.deleted).is_some_and(|d| d.body["members"].as_array().is_some_and(|m| m.iter().any(|x| x == subject))))
+        });
+    }
+}
+
+fn finder(db: &str) -> std::result::Result<Core, Vec<Problem>> {
+    let clock = FixedClock::at(1_000_000);
+    let seen = Default::default();
+    let mut cat = catalog(&clock, &seen);
+    cat.0.push(Arc::new(Finder));
+    cat.0.push(Arc::new(AdapterBare));
+    let mut p = profile(&[db, "@nuah/auth-local", "@nuah/policy-roles", "@nuah/clock-fixed", "@nuah/ids-sequential", "@test/finder"]);
+    p.grants.clear();
+    Core::start(&Distribution { name: "t".into(), catalog: cat, profile: p })
+}
+
+#[test]
+fn a_plugin_searches_the_text_of_its_collection_as_people_type_it() {
+    let c = finder("@nuah/db-memory").unwrap();
+    let me = person("a", &["member"]);
+    for (id, title, kind) in [("n1", "Release Plan", "a"), ("n2", "خُطَّة الإصدار", "a"), ("n3", "plan B", "b")] {
+        c.call_as(&me, "finder.put", json!({"c": "finder.notes", "id": id, "body": {"title": title, "kind": kind}}), None).unwrap();
+    }
+    let find = |q: Value| c.call_as(&me, "finder.find", q, None).unwrap().output["ids"].clone();
+    assert_eq!(find(json!({"q": "PLAN"})), json!(["n1", "n3"]), "every match; same time, so by id");
+    assert_eq!(find(json!({"q": "خطة"})), json!(["n2"]));
+    assert_eq!(find(json!({"q": "plan", "kind": "b"})), json!(["n3"]));
+    assert_eq!(find(json!({"q": "   "})), json!([]), "no words, nothing found");
+}
+
+#[test]
+fn search_fields_on_an_adapter_without_a_text_index_stop_the_start() {
+    let p = finder("@nuah/db-bare").err().expect("must not start");
+    assert_eq!(p[0].code, "unsupported");
+    assert!(p[0].message.contains("text.search"), "{}", p[0].message);
+}
+
+#[test]
+fn may_see_resolves_an_audience_as_pulse_does() {
+    let c = finder("@nuah/db-memory").unwrap();
+    let (a, b) = (person("a", &["member"]), person("b", &["member"]));
+    c.call_as(&a, "finder.put", json!({"c": "finder.teams", "id": "t1", "body": {"members": ["a"]}}), None).unwrap();
+    let sees = |who: &Identity, aud: Value| c.call_as(who, "finder.sees", json!({"audience": aud}), None).unwrap().output["sees"].clone();
+    let team = json!({"type": "scope", "scope": "finder.team", "id": "t1"});
+    assert_eq!(sees(&a, team.clone()), json!(true));
+    assert_eq!(sees(&b, team), json!(false));
+    assert_eq!(sees(&b, json!({"type": "subject", "subject": "b"})), json!(true));
+    assert_eq!(sees(&a, json!({"type": "subject", "subject": "b"})), json!(false));
+    assert_eq!(sees(&a, json!({"type": "scope", "scope": "nobody.declared", "id": "x"})), json!(false), "an unknown Scope sees no one");
 }

@@ -56,7 +56,7 @@ fn scan_all(db: &dyn Db) {
 fn features(db: &dyn Db) {
     let f = db.features();
     for name in f.have.keys() {
-        assert!([feature::INDEX_UNIQUE, feature::INDEX_COMPOSITE, feature::BACKUP_SNAPSHOT].contains(&name.as_str()), "unknown feature {name}");
+        assert!([feature::INDEX_UNIQUE, feature::INDEX_COMPOSITE, feature::BACKUP_SNAPSHOT, feature::TEXT_SEARCH].contains(&name.as_str()), "unknown feature {name}");
     }
     if f.has(feature::INDEX_UNIQUE) {
         index_unique(db);
@@ -66,6 +66,11 @@ fn features(db: &dyn Db) {
     }
     if f.has(feature::INDEX_COMPOSITE) {
         index_composite(db);
+    }
+    if f.has(feature::TEXT_SEARCH) {
+        text_search(db);
+    } else {
+        assert_eq!(db.ensure_search("ts", &["title".into()]).unwrap_err().category, Category::Unsupported);
     }
     if !f.has(feature::BACKUP_SNAPSHOT) {
         assert_eq!(db.snapshot("/nonexistent/never").unwrap_err().category, Category::Unsupported);
@@ -562,4 +567,61 @@ pub fn differential(a: &dyn Db, b: &dyn Db, seed: u64) {
         same("flat", &Query::new().eq("f", v.clone()));
         same("wide", &Query::new().eq("f", v.clone()));
     }
+}
+
+/// The text index ([ADR 0092]): live Documents whose folded search fields hold every word, newest first.
+///
+/// [ADR 0092]: https://docs.addaui.com/nuah/adr/0092-one-index-of-entities-plugins-announce-them-in-their-events-the-data-port-searches-text-and-permissions-follow-the-events-audience/
+fn text_search(db: &dyn Db) {
+    use nuah_kernel::text::words;
+    db.ensure_search("ts", &["title".into(), "tags".into()]).unwrap();
+    let at = |w: &mut dyn DbWrite, id: &str, body: Value, now: Millis| {
+        w.put("ts", id, "t", body, Expect::Any, now).unwrap();
+    };
+    db.write(&mut |w| {
+        at(w, "d1", json!({"title": "Release Plan", "kind": "a", "body": "x marks"}), 1);
+        at(w, "d2", json!({"title": "خُطَّة الإصدار", "kind": "a"}), 2);
+        at(w, "d3", json!({"title": "Plan B", "tags": ["urgent", "q4"], "kind": "b"}), 3);
+        at(w, "d4", json!({"title": "100% done", "kind": "b"}), 4);
+        w.put("ts2", "o1", "t", json!({"title": "plan elsewhere"}), Expect::Any, 5).unwrap();
+        Ok(())
+    })
+    .unwrap();
+    let find = |q: &str, conds: &[Cond], limit: usize| -> Vec<String> {
+        let mut out = vec![];
+        db.read(&mut |r| {
+            out = r.search("ts", &words(q), conds, limit)?.into_iter().map(|d| d.id).collect();
+            Ok(())
+        })
+        .unwrap();
+        out
+    };
+    assert_eq!(find("plan", &[], 10), vec!["d3", "d1"], "every match of this Collection only, newest first");
+    assert_eq!(find("PLAN rel", &[], 10), vec!["d1"], "every word must appear, in any case");
+    assert_eq!(find("خطه الاصدار", &[], 10), vec!["d2"], "Arabic as people type it");
+    assert_eq!(find("urgent plan", &[], 10), vec!["d3"], "a list of strings is searched too");
+    assert_eq!(find("pl", &[], 10), vec!["d3", "d1"], "short words are found");
+    assert_eq!(find("0%", &[], 10), vec!["d4"], "% is a letter, not a pattern");
+    assert!(find("_", &[], 10).is_empty(), "_ is a letter, not a pattern");
+    assert!(find("marks", &[], 10).is_empty(), "only the search fields are searched");
+    assert_eq!(find("plan", &[Cond { field: "kind".into(), op: Cmp::Eq, value: json!("a") }], 10), vec!["d1"], "conditions narrow it");
+    assert_eq!(find("plan", &[], 1), vec!["d3"]);
+    db.write(&mut |w| {
+        at(w, "d1", json!({"title": "Roadmap", "kind": "a", "body": "x marks"}), 6);
+        w.delete("ts", "d3", Expect::Any, 7).unwrap();
+        Ok(())
+    })
+    .unwrap();
+    assert!(find("plan", &[], 10).is_empty(), "a changed and a deleted Document leave the index");
+    assert_eq!(find("roadmap", &[], 10), vec!["d1"]);
+    db.write(&mut |w| {
+        w.restore(Doc { id: "d5".into(), collection: "ts".into(), rev: 1, changed_at: 8, deleted: false, owner: "t".into(), body: json!({"title": "Restored plan"}) })
+    })
+    .unwrap();
+    assert_eq!(find("plan", &[], 10), vec!["d5"], "a restored Document is indexed");
+    // the fields changed: the index of the Collection is rebuilt from what is stored
+    db.ensure_search("ts", &["title".into(), "body".into()]).unwrap();
+    assert_eq!(find("marks", &[], 10), vec!["d1"]);
+    db.ensure_search("ts", &[]).unwrap();
+    assert!(find("roadmap", &[], 10).is_empty(), "no search fields, nothing found");
 }

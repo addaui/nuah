@@ -548,6 +548,12 @@ impl Inner {
                 for c in &data.collections {
                     let keep: Vec<IndexSpec> = data.indexes.iter().map(|i| i.spec()).filter(|s| &s.collection == c).collect();
                     self.db.retain_indexes(c, &keep)?;
+                    // the text index follows the schema too: new search fields fill it, none empties it
+                    match data.searches.get(c) {
+                        Some(fields) => self.db.ensure_search(c, fields)?,
+                        None if self.features.has(feature::TEXT_SEARCH) => self.db.ensure_search(c, &[])?,
+                        None => {}
+                    }
                 }
             }
             let (want, have) = (data.version, have_of[id]);

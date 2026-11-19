@@ -328,6 +328,32 @@ impl<'a> Tx<'a> {
         self.check_read_paths(collection, conds.iter().map(|c| c.field.as_str()))?;
         self.rd().count(collection, conds)
     }
+    /// Live documents of a Collection this plugin owns whose search fields (`"search": true` in its schema) hold
+    /// every word of `q`, folded as the index folds text, and that meet `conds`; newest first, at most `limit`
+    /// ([ADR 0092]). A query with no words finds nothing.
+    ///
+    /// [ADR 0092]: https://docs.addaui.com/nuah/adr/0092-one-index-of-entities-plugins-announce-them-in-their-events-the-data-port-searches-text-and-permissions-follow-the-events-audience/
+    pub fn search(&self, collection: &str, q: &str, conds: &[Cond], limit: usize) -> Result<Vec<Doc>> {
+        let owned = self.inner.manifest(&self.plugin).is_some_and(|m| m.data.searches.contains_key(collection));
+        if !owned {
+            return Err(Error::internal(format!("plugin {} searches {collection}, which is not one of its Collections with search fields", self.plugin)));
+        }
+        for c in conds {
+            if !valid_field(&c.field) {
+                return Err(Error::internal(format!("bad field path {}", c.field)));
+            }
+        }
+        let words = crate::text::words(q);
+        if words.is_empty() {
+            return Ok(vec![]);
+        }
+        self.rd().search(collection, &words, conds, limit)
+    }
+    /// Would the caller receive an Event addressed to `audience`? Resolved now, as Pulse resolves it: a Scope asks the
+    /// plugin that declares it; an unknown Scope holds no one.
+    pub fn may_see(&self, audience: &Audience) -> Result<bool> {
+        self.inner.visible(self.rd(), audience, &self.who().subject)
+    }
     /// Create or replace a document in a collection this plugin owns.
     pub fn put(&mut self, collection: &str, id: &str, body: Value, expect: Expect) -> Result<Doc> {
         self.may_write(collection)?;

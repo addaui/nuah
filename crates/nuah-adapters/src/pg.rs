@@ -17,10 +17,13 @@ use postgres::types::ToSql;
 use postgres::Client;
 use serde_json::Value;
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 /// The layout of the tables this Adapter creates (kept in `nuah_state`).
-const LAYOUT: i64 = 1;
+/// 2: the text index (`nuah_text`, `nuah_search`); a version-1 binary would write without keeping it.
+const LAYOUT: i64 = 2;
 /// The class half of the advisory lock key; the other half is a hash of the schema name.
 const LOCK_CLASS: i32 = 0x4e75_6168;
 
@@ -31,6 +34,8 @@ CREATE TABLE IF NOT EXISTS nuah_docs (
 CREATE TABLE IF NOT EXISTS nuah_changes (seq bigint PRIMARY KEY, record jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS nuah_state (key text PRIMARY KEY, value bigint NOT NULL);
 INSERT INTO nuah_state (key, value) VALUES ('latest_change', 0) ON CONFLICT DO NOTHING;
+CREATE TABLE IF NOT EXISTS nuah_search (collection text COLLATE "C" PRIMARY KEY, fields jsonb NOT NULL);
+CREATE TABLE IF NOT EXISTS nuah_text (collection text COLLATE "C" NOT NULL, id text COLLATE "C" NOT NULL, text text NOT NULL, PRIMARY KEY (collection, id));
 "#;
 
 fn pg_err(e: postgres::Error) -> Error {
@@ -80,6 +85,13 @@ pub struct PgDb {
     /// Is there any unique index? Then every put runs under a savepoint, so a refused put does not
     /// poison the rest of the transaction (the Port lets a caller go on after a conflict).
     uniques: AtomicBool,
+    /// The search fields of each Collection with a text index (also in `nuah_search`), for the writer.
+    searches: Mutex<Arc<BTreeMap<String, Vec<String>>>>,
+}
+
+/// `s` as a literal inside a `LIKE` pattern (Postgres escapes with `\` by default).
+fn like_literal(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
 }
 
 fn plain_ident(s: &str) -> bool {
@@ -155,7 +167,20 @@ impl PgDb {
             }
             Some(Pool { idle: Mutex::new(idle), back: Condvar::new() })
         };
-        Ok(PgDb { writer: Mutex::new(w), readers, uniques: AtomicBool::new(has_unique) })
+        // a trigram index makes `LIKE` on the text fast; without the extension (no right to create it) a search scans
+        let trgm: Option<String> = match w.query_opt("SELECT n.nspname::text FROM pg_extension e JOIN pg_namespace n ON n.oid=e.extnamespace WHERE e.extname='pg_trgm'", &[]).map_err(pg_err)? {
+            Some(r) => Some(r.get(0)),
+            None => w.batch_execute("CREATE EXTENSION IF NOT EXISTS pg_trgm SCHEMA public").ok().map(|_| "public".to_string()),
+        };
+        if let Some(ns) = trgm.filter(|n| plain_ident(n)) {
+            let _ = w.batch_execute(&format!("CREATE INDEX IF NOT EXISTS nuah_text_trgm ON nuah_text USING gin (text {ns}.gin_trgm_ops)"));
+        }
+        let mut searches = BTreeMap::new();
+        for r in w.query("SELECT collection::text, fields::text FROM nuah_search", &[]).map_err(pg_err)? {
+            let fields: String = r.get(1);
+            searches.insert(r.get::<_, String>(0), serde_json::from_str::<Vec<String>>(&fields).map_err(json_err)?);
+        }
+        Ok(PgDb { writer: Mutex::new(w), readers, uniques: AtomicBool::new(has_unique), searches: Mutex::new(Arc::new(searches)) })
     }
 }
 
@@ -308,9 +333,23 @@ struct Conn<'a> {
     c: RefCell<&'a mut Client>,
     nested: u32,
     savepoint_puts: bool,
+    /// The search fields of each Collection with a text index; a writer keeps `nuah_text` in step with `nuah_docs`.
+    searches: Arc<BTreeMap<String, Vec<String>>>,
 }
 
 impl Conn<'_> {
+    /// Put the folded text of one Document into the text index, or take it out (deleted, or no search fields).
+    fn index_text(&self, collection: &str, id: &str, body: Option<&Value>) -> Result<()> {
+        let Some(fields) = self.searches.get(collection).filter(|f| !f.is_empty()) else { return Ok(()) };
+        match body {
+            Some(b) => {
+                let text = nuah_kernel::text::searchable(b, fields);
+                self.exec("INSERT INTO nuah_text (collection,id,text) VALUES ($1,$2,$3) ON CONFLICT (collection,id) DO UPDATE SET text=EXCLUDED.text", &[&collection, &id, &text])?
+            }
+            None => self.exec("DELETE FROM nuah_text WHERE collection=$1 AND id=$2", &[&collection, &id])?,
+        };
+        Ok(())
+    }
     fn rows(&self, sql: &str, b: &Binds) -> Result<Vec<postgres::Row>> {
         self.c.borrow_mut().query(sql, &b.refs()).map_err(pg_err)
     }
@@ -335,6 +374,16 @@ impl DbRead for Conn<'_> {
         let mut items = self.rows(&sql, &b)?.iter().map(row_doc).collect::<Result<Vec<_>>>()?;
         let next = if items.len() > q.limit { items.truncate(q.limit); Some(q.offset + q.limit) } else { None };
         Ok(Page { items, next })
+    }
+    fn search(&self, collection: &str, words: &[String], conds: &[Cond], limit: usize) -> Result<Vec<Doc>> {
+        let mut b = Binds::default();
+        let w = where_sql(collection, conds, &mut b)?;
+        let mut sub = format!("SELECT id FROM nuah_text WHERE collection=${}", b.add(collection.to_string()));
+        for x in words {
+            sub += &format!(" AND text LIKE ${}", b.add(format!("%{}%", like_literal(x))));
+        }
+        let sql = format!("SELECT {COLS} FROM nuah_docs WHERE {w} AND id IN ({sub}) ORDER BY changed_at DESC, id LIMIT {limit}");
+        self.rows(&sql, &b)?.iter().map(row_doc).collect()
     }
     fn count(&self, collection: &str, conds: &[Cond]) -> Result<u64> {
         let mut b = Binds::default();
@@ -405,6 +454,7 @@ impl DbWrite for Conn<'_> {
         } else {
             self.exec(UPSERT, &args)?;
         }
+        self.index_text(collection, id, Some(&body))?;
         Ok(Doc { id: id.into(), collection: collection.into(), rev, changed_at: now, deleted: false, owner: owner.into(), body })
     }
     fn delete(&mut self, collection: &str, id: &str, expect: Expect, now: Millis) -> Result<Option<Doc>> {
@@ -413,6 +463,7 @@ impl DbWrite for Conn<'_> {
         match prev {
             Some(p) if !p.deleted => {
                 self.exec("UPDATE nuah_docs SET rev=$3, changed_at=$4, deleted=true, body='{}'::jsonb WHERE collection=$1 AND id=$2", &[&collection, &id, &((p.rev + 1) as i64), &now])?;
+                self.index_text(collection, id, None)?;
                 Ok(Some(Doc { rev: p.rev + 1, changed_at: now, deleted: true, body: serde_json::json!({}), ..p }))
             }
             _ => Ok(None),
@@ -435,7 +486,7 @@ impl DbWrite for Conn<'_> {
     fn restore(&mut self, d: Doc) -> Result<()> {
         let text = d.body.to_string();
         self.exec(UPSERT, &[&d.collection, &d.id, &(d.rev as i64), &d.changed_at, &d.deleted, &d.owner, &text])?;
-        Ok(())
+        self.index_text(&d.collection, &d.id, (!d.deleted).then_some(&d.body))
     }
     fn restore_change(&mut self, rec: ChangeRecord) -> Result<()> {
         let (seq, text) = (rec.seq as i64, serde_json::to_string(&rec).map_err(json_err)?);
@@ -470,12 +521,12 @@ impl Db for PgDb {
         "postgres"
     }
     fn features(&self) -> Features {
-        Features::default().with(feature::INDEX_UNIQUE, Support::Native).with(feature::INDEX_COMPOSITE, Support::Native).fact("storage_version", LAYOUT)
+        Features::default().with(feature::INDEX_UNIQUE, Support::Native).with(feature::INDEX_COMPOSITE, Support::Native).with(feature::TEXT_SEARCH, Support::Native).fact("storage_version", LAYOUT)
     }
     fn read(&self, f: &mut dyn FnMut(&dyn DbRead) -> Result<()>) -> Result<()> {
         let run = |c: &mut Client, f: &mut dyn FnMut(&dyn DbRead) -> Result<()>| {
             c.batch_execute("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY").map_err(pg_err)?;
-            let r = f(&Conn { c: RefCell::new(&mut *c), nested: 0, savepoint_puts: false });
+            let r = f(&Conn { c: RefCell::new(&mut *c), nested: 0, savepoint_puts: false, searches: Default::default() });
             let _ = c.batch_execute("ROLLBACK");
             r
         };
@@ -499,7 +550,7 @@ impl Db for PgDb {
         for attempt in 1..=TRIES {
             let mut guard = self.writer.lock();
             guard.batch_execute("BEGIN ISOLATION LEVEL SERIALIZABLE").map_err(pg_err)?;
-            let r = f(&mut Conn { c: RefCell::new(&mut guard), nested: 0, savepoint_puts: self.uniques.load(Ordering::Relaxed) });
+            let r = f(&mut Conn { c: RefCell::new(&mut guard), nested: 0, savepoint_puts: self.uniques.load(Ordering::Relaxed), searches: self.searches.lock().clone() });
             match r {
                 Ok(()) => match guard.batch_execute("COMMIT") {
                     Ok(()) => return Ok(()),
@@ -521,6 +572,54 @@ impl Db for PgDb {
             }
         }
         Err(Error::conflict("kernel.retry", "the database kept asking to try again"))
+    }
+    fn ensure_search(&self, collection: &str, fields: &[String]) -> Result<()> {
+        if !plain_name(collection) {
+            return Err(Error::internal("bad collection name"));
+        }
+        if self.searches.lock().get(collection).map(|f| f.as_slice()).unwrap_or(&[]) == fields {
+            return Ok(());
+        }
+        let mut next = (**self.searches.lock()).clone();
+        if fields.is_empty() {
+            next.remove(collection);
+        } else {
+            next.insert(collection.to_string(), fields.to_vec());
+        }
+        let next = Arc::new(next);
+        // the fields changed: the Collection's text is written again from what is stored, in one transaction
+        let mut guard = self.writer.lock();
+        guard.batch_execute("BEGIN").map_err(pg_err)?;
+        let fields_json = serde_json::to_string(fields).map_err(json_err)?;
+        let run = |c: &Conn| -> Result<()> {
+            c.exec("DELETE FROM nuah_text WHERE collection=$1", &[&collection])?;
+            if fields.is_empty() {
+                c.exec("DELETE FROM nuah_search WHERE collection=$1", &[&collection])?;
+                return Ok(());
+            }
+            c.exec("INSERT INTO nuah_search (collection, fields) VALUES ($1, $2::text::jsonb) ON CONFLICT (collection) DO UPDATE SET fields=EXCLUDED.fields", &[&collection, &fields_json])?;
+            let mut after = String::new();
+            loop {
+                let rows = c.c.borrow_mut().query(&format!("SELECT {COLS} FROM nuah_docs WHERE collection=$1 AND id>$2 AND NOT deleted ORDER BY id LIMIT 500"), &[&collection, &after]).map_err(pg_err)?;
+                let docs = rows.iter().map(row_doc).collect::<Result<Vec<_>>>()?;
+                let Some(last) = docs.last().map(|d| d.id.clone()) else { break };
+                for d in &docs {
+                    c.index_text(collection, &d.id, Some(&d.body))?;
+                }
+                after = last;
+            }
+            Ok(())
+        };
+        let r = run(&Conn { c: RefCell::new(&mut guard), nested: 0, savepoint_puts: false, searches: next.clone() });
+        match r {
+            Ok(()) => guard.batch_execute("COMMIT").map_err(pg_err)?,
+            Err(e) => {
+                let _ = guard.batch_execute("ROLLBACK");
+                return Err(e);
+            }
+        }
+        *self.searches.lock() = next;
+        Ok(())
     }
     fn ensure_index(&self, spec: &IndexSpec) -> Result<()> {
         spec.check()?;

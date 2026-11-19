@@ -127,6 +127,20 @@ pub fn index_specs(collection: &str, schema: &Value) -> Vec<IndexSpec> {
     out
 }
 
+/// The top-level fields a Collection schema marks `"search": true` (strings or lists of strings), in name order.
+pub fn search_fields(schema: &Value) -> Vec<String> {
+    let mut out: Vec<String> = schema
+        .get("properties")
+        .and_then(|p| p.as_object())
+        .into_iter()
+        .flatten()
+        .filter(|(_, p)| !is_removed(p) && p.get("search") == Some(&Value::Bool(true)))
+        .map(|(k, _)| k.clone())
+        .collect();
+    out.sort();
+    out
+}
+
 // ---- the Schema check ----------------------------------------------------------------------------
 
 /// One reason a Schema check refuses. `code` is one of: `field_missing`, `collection_missing`, `type_changed`,
