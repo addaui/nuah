@@ -350,10 +350,11 @@ struct Up {
     failed: Arc<AtomicUsize>,
     /// The step also pushes a Document of its own (which the contract forbids).
     adds: bool,
+    release: String,
 }
 impl Plugin for Up {
     fn manifest(&self) -> Manifest {
-        serde_json::from_value(json!({"id": "@test/up", "version": "1.0.0", "namespaces": ["up"],
+        serde_json::from_value(json!({"id": "@test/up", "version": self.release, "namespaces": ["up"],
             "permissions": {"up.write": {"default": ["member"]}},
             "operations": {"up.put": {"kind": "command", "permission": "up.write", "input": {"type": "object", "required": ["c", "id", "body"]}}},
             "data": {"schema": self.file}})).unwrap()
@@ -382,6 +383,7 @@ impl Plugin for Up {
 
 struct Rig {
     adds: bool,
+    release: std::cell::RefCell<String>,
     mem: Arc<MemoryDb>,
     backups: Arc<AtomicUsize>,
     batches: Arc<AtomicUsize>,
@@ -389,13 +391,13 @@ struct Rig {
 }
 impl Rig {
     fn new() -> Rig {
-        Rig { adds: false, mem: Arc::new(MemoryDb::new()), backups: Default::default(), batches: Default::default(), failed: Default::default() }
+        Rig { adds: false, release: std::cell::RefCell::new("1.0.0".into()), mem: Arc::new(MemoryDb::new()), backups: Default::default(), batches: Default::default(), failed: Default::default() }
     }
     fn boot(&self, file: Value, fail_at: Option<usize>) -> std::result::Result<Core, Vec<Problem>> {
         let clock = FixedClock::at(1_000_000);
         let seen = Default::default();
         let mut cat = catalog(&clock, &seen);
-        cat.0.push(Arc::new(Up { file, batches: self.batches.clone(), fail_at, failed: self.failed.clone(), adds: self.adds }));
+        cat.0.push(Arc::new(Up { file, batches: self.batches.clone(), fail_at, failed: self.failed.clone(), adds: self.adds, release: self.release.borrow().clone() }));
         cat.0.push(Arc::new(AdapterCounting(self.mem.clone(), self.backups.clone())));
         let mut p = profile(&["@nuah/db-counting", "@nuah/auth-local", "@nuah/policy-roles", "@nuah/clock-fixed", "@nuah/ids-sequential", "@test/up"]);
         p.grants.clear();
@@ -442,6 +444,16 @@ fn new_data_is_recorded_with_its_schema() {
     assert_eq!(s["file"], v1());
     assert_eq!(s["release"], "1.0.0");
     assert_eq!(rig.backups.load(AtomicOrdering::SeqCst), 0, "a new database has nothing to lose");
+}
+
+#[test]
+fn a_new_release_with_the_same_schema_is_recorded_without_a_backup() {
+    let rig = Rig::new();
+    rig.boot(v1(), None).unwrap();
+    *rig.release.borrow_mut() = "1.1.0".into();
+    rig.boot(v1(), None).unwrap();
+    assert_eq!(rig.meta("schema:@test/up").unwrap()["release"], "1.1.0", "a later Upgrade report names the release the person really ran");
+    assert_eq!(rig.backups.load(AtomicOrdering::SeqCst), 0);
 }
 
 #[test]
@@ -544,7 +556,7 @@ fn sqlite_drops_a_unique_index_the_schema_no_longer_asks_for() {
         let clock = FixedClock::at(1_000_000);
         let seen = Default::default();
         let mut cat = catalog(&clock, &seen);
-        cat.0.push(Arc::new(Up { file, batches: rig.batches.clone(), fail_at: None, failed: rig.failed.clone(), adds: false }));
+        cat.0.push(Arc::new(Up { file, batches: rig.batches.clone(), fail_at: None, failed: rig.failed.clone(), adds: false, release: "1.0.0".into() }));
         cat.0.push(Arc::new(AdapterSqlite));
         let mut p = profile(&["@nuah/db-sqlite", "@nuah/auth-local", "@nuah/policy-roles", "@nuah/clock-fixed", "@nuah/ids-sequential", "@test/up"]);
         p.grants.clear();

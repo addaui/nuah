@@ -453,9 +453,12 @@ impl Db for SqliteDb {
         let keep: Vec<String> = keep.iter().map(|s| format!("{}3_{}", if s.unique { "uq" } else { "ix" }, index_base(s))).collect();
         let conn = self.conn.lock();
         let names: Vec<String> = {
-            let mut st = conn.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='docs' AND sql LIKE ?1").map_err(db_err)?;
-            let rows = st.query_map(params![format!("%WHERE collection='{collection}'%")], |r| r.get::<_, String>(0)).map_err(db_err)?;
-            rows.collect::<std::result::Result<_, _>>().map_err(db_err)?
+            // compared exactly here: in SQL `LIKE`, `_` would stand for any letter of another Collection's name
+            let mut st = conn.prepare("SELECT name, sql FROM sqlite_master WHERE type='index' AND tbl_name='docs' AND sql IS NOT NULL").map_err(db_err)?;
+            let rows = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).map_err(db_err)?;
+            let all: Vec<(String, String)> = rows.collect::<std::result::Result<_, _>>().map_err(db_err)?;
+            let tag = format!("WHERE collection='{collection}'");
+            all.into_iter().filter(|(_, sql)| sql.contains(&tag)).map(|(n, _)| n).collect()
         };
         for n in names.into_iter().filter(|n| (n.starts_with("ix") || n.starts_with("uq")) && !keep.contains(n)) {
             conn.execute_batch(&format!("DROP INDEX IF EXISTS \"{n}\"")).map_err(db_err)?;

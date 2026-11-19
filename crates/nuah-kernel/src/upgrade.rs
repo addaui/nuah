@@ -381,7 +381,7 @@ impl Diff<'_> {
                     matched.push(to);
                     // a value stored without the field gets the default (a field that becomes required needs it)
                     if let Some(dv) = nf.get("default") {
-                        ops.push(FieldOp::Default(there.clone(), dv.clone()));
+                        ops.push(FieldOp::Default(there.clone(), filled(nf, dv)));
                     }
                     if *to != f.as_str() {
                         ops.push(FieldOp::Rename { from: here.clone(), to: there.clone() });
@@ -401,7 +401,7 @@ impl Diff<'_> {
             }
             let here = [path, &[k.to_string()]].concat();
             match nf.get("default") {
-                Some(dv) => ops.push(FieldOp::Default(here, dv.clone())),
+                Some(dv) => ops.push(FieldOp::Default(here, filled(nf, dv))),
                 None if required(new, k) => self.problem(&here, "required_without_default", serde_json::json!({})),
                 None => {}
             }
@@ -448,6 +448,29 @@ fn tightened(stored: &Value, new: &Value) -> Option<&'static str> {
         (Some(a), Some(b)) => a.iter().any(|x| !b.contains(x)),
     };
     upper("maxLength").or(lower("minLength")).or(upper("maximum")).or(lower("minimum")).or(upper("maxItems")).or(lower("minItems")).or(enum_tighter.then_some("enum"))
+}
+
+/// A default as stored: an object default also holds the defaults of the fields inside it, at any depth (a value
+/// the default gives itself is kept).
+fn filled(schema: &Value, default: &Value) -> Value {
+    let (Some(o), Some(props)) = (default.as_object(), schema.get("properties").and_then(|p| p.as_object())) else {
+        return default.clone();
+    };
+    let mut o = o.clone();
+    for (k, ps) in props.iter().filter(|(_, ps)| !is_removed(ps)) {
+        match o.get(k) {
+            Some(v) => {
+                let v = filled(ps, v);
+                o.insert(k.clone(), v);
+            }
+            None => {
+                if let Some(d) = ps.get("default") {
+                    o.insert(k.clone(), filled(ps, d));
+                }
+            }
+        }
+    }
+    Value::Object(o)
 }
 
 // ---- applying a plan -----------------------------------------------------------------------------
@@ -792,6 +815,24 @@ mod tests {
         let stored = v(1, json!({"t.a": obj(json!({"due": {"type": ["string", "null"]}}))}));
         let new = v(2, json!({"t.a": {"type": "object", "required": ["due"], "properties": {"due": {"type": ["string", "null"], "default": null}}}}));
         assert_eq!(ops(plan("@t/p", &stored, &new))[0].ops, vec![FieldOp::Default(path(&["due"]), json!(null))]);
+    }
+
+    #[test]
+    fn a_new_object_field_gets_the_defaults_of_its_children() {
+        let stored = v(1, json!({"t.a": obj(json!({"title": {"type": "string"}}))}));
+        let new = v(2, json!({"t.a": obj(json!({"title": {"type": "string"},
+            "settings": {"type": "object", "default": {}, "required": ["color"], "properties": {
+                "color": {"type": "string", "default": "blue"},
+                "size": {"type": "object", "default": {"w": 1}, "properties": {"w": {"type": "integer"}, "h": {"type": "integer", "default": 2}}},
+                "note": {"type": "string"}}}}))}));
+        assert_eq!(ops(plan("@t/p", &stored, &new))[0].ops, vec![FieldOp::Default(path(&["settings"]), json!({"color": "blue", "size": {"w": 1, "h": 2}}))]);
+    }
+
+    #[test]
+    fn an_existing_object_field_gets_a_new_child_default() {
+        let stored = v(1, json!({"t.a": obj(json!({"settings": {"type": "object", "properties": {"color": {"type": "string"}}}}))}));
+        let new = v(2, json!({"t.a": obj(json!({"settings": {"type": "object", "properties": {"color": {"type": "string"}, "size": {"type": "integer", "default": 3}}}}))}));
+        assert_eq!(ops(plan("@t/p", &stored, &new))[0].ops, vec![FieldOp::Default(path(&["settings", "size"]), json!(3))]);
     }
 
     #[test]

@@ -557,7 +557,20 @@ impl Inner {
                     }
                     Ok(())
                 })?;
-            } else if have < want && data.schema.is_none() {
+            } else if data.schema.is_some() {
+                // the release running now, so a later Upgrade report names the version the person really had
+                let release = a.manifest.version.clone();
+                self.run_kernel(id, &mut |tx| {
+                    let now = tx.now();
+                    let w = tx.wr()?;
+                    let key = format!("schema:{id}");
+                    if let Some(mut d) = w.get("_meta", &key)?.filter(|d| !d.deleted && d.body["release"] != json!(release)) {
+                        d.body["release"] = json!(release);
+                        w.put("_meta", &key, "kernel", d.body, Expect::Any, now)?;
+                    }
+                    Ok(())
+                })?;
+            } else if have < want {
                 self.run_kernel(id, &mut |tx| {
                     let now = tx.now();
                     tx.wr()?.put("_meta", &format!("version:{id}"), "kernel", json!({"version": want}), Expect::Any, now)?;

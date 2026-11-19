@@ -1,5 +1,5 @@
 /** The Upgrade report (ADR 0091): what the server sends (`/upgrade/state`), how each problem is worded, and the report a person copies for the plugin's maker. */
-import type { Key } from "./i18n"
+import { translate, type Key, type Lang } from "./i18n"
 
 export interface UpgradeProblem { plugin: string; collection: string; path: string; code: string; params: Record<string, unknown> }
 export interface PluginVersions { name: string; from_release: string | null; to_release: string; from_version: number; to_version: number }
@@ -38,10 +38,21 @@ export function titleOf(s: ReportState): { key: Key; params: Record<string, stri
   return { key: "upgrade.titleData", params: { ...base, from: v.from_version, to: v.to_version } }
 }
 
-export function problemParams(p: UpgradeProblem): Record<string, string | number> {
+const TYPES = ["string", "number", "integer", "boolean", "array", "object", "null"]
+
+/** A JSON Schema type (or a list of them) in plain words of `lang`: `["string", "null"]` reads "text or empty". */
+export function typeWords(lang: Lang, v: unknown): string {
+  const list = (Array.isArray(v) ? v : [v]).map(String)
+  if (!list.every((x) => TYPES.includes(x))) return list.join(", ")
+  return list.map((x) => translate(lang, `upgrade.type.${x}`)).join(translate(lang, "upgrade.type.or"))
+}
+
+/** The words a problem's sentence fills in. With `lang`, type names are said in that language. */
+export function problemParams(p: UpgradeProblem, lang?: Lang): Record<string, string | number> {
   const s = (k: string) => { const v = p.params[k]; return typeof v === "number" || typeof v === "string" ? v : v == null ? "" : JSON.stringify(v) }
+  const type = (k: string) => (lang && p.code === "type_changed" && p.params[k] != null ? typeWords(lang, p.params[k]) : s(k))
   const fields = Array.isArray(p.params.fields) ? ltr((p.params.fields as string[]).join(", ")) : ""
-  return { at: where(p), code: p.code, from: s("from"), to: s("to"), limit: s("limit"), stored: s("stored"), floor: s("floor"), version: s("version"),
+  return { at: where(p), code: p.code, from: type("from"), to: type("to"), limit: s("limit"), stored: s("stored"), floor: s("floor"), version: s("version"),
     count: s("count"), example: ltr(String(s("example"))), reason: ltr(String(s("reason"))), fields }
 }
 

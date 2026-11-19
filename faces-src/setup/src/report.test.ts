@@ -71,3 +71,14 @@ describe("the report's title", () => {
     expect(titleOf({ ...state, plugins: { ...state.plugins, "@x/y": state.plugins["@madar/tasks"] } }).key).toBe("upgrade.titleMany")
   })
 })
+
+describe("type names in the report", () => {
+  it("are said in plain words of the person's language, and a choice of types reads as one", () => {
+    const p = { plugin: "@t/p", collection: "t.docs", path: "due", code: "type_changed", params: { from: ["string", "null"], to: "integer" } }
+    expect(translate("en", problemKey(p), problemParams(p, "en"))).toContain("changed from text or empty to whole number")
+    const ar = translate("ar", problemKey(p), problemParams(p, "ar"))
+    expect(ar).toContain("نص أو فارغ")
+    expect(ar).toContain("عدد صحيح")
+    expect(ar).not.toContain("string")
+  })
+})

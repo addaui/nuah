@@ -158,21 +158,25 @@ fn index_unique(db: &dyn Db) {
 
 /// An index the schema no longer asks for is dropped; the ones kept still hold, and other Collections are untouched.
 fn retain_indexes(db: &dyn Db) {
-    let (gone, kept, other) = (IndexSpec::on("rt", "a").unique(), IndexSpec::on("rt", "b").unique(), IndexSpec::on("rt2", "a").unique());
-    for s in [&gone, &kept, &other] {
+    // `r_t` and `rxt` look alike to a pattern match where `_` stands for any letter
+    let (gone, kept, other, alike) = (IndexSpec::on("rt", "a").unique(), IndexSpec::on("rt", "b").unique(), IndexSpec::on("rt2", "a").unique(), IndexSpec::on("rxt", "a").unique());
+    for s in [&gone, &kept, &other, &alike] {
         db.ensure_index(s).unwrap();
     }
     db.write(&mut |w| {
         put(w, "rt", "1", json!({"a": 1, "b": 1}));
         put(w, "rt2", "1", json!({"a": 1}));
+        put(w, "rxt", "1", json!({"a": 1}));
         Ok(())
     })
     .unwrap();
     db.retain_indexes("rt", &[kept.clone()]).unwrap();
+    db.retain_indexes("r_t", &[]).unwrap();
     db.write(&mut |w| {
         w.put("rt", "2", "t", json!({"a": 1, "b": 2}), Expect::Any, 1).expect("a is no longer unique");
         conflict_unique(w.put("rt", "3", "t", json!({"a": 9, "b": 1}), Expect::Any, 1));
         conflict_unique(w.put("rt2", "2", "t", json!({"a": 1}), Expect::Any, 1));
+        conflict_unique(w.put("rxt", "2", "t", json!({"a": 1}), Expect::Any, 1));
         Ok(())
     })
     .unwrap();

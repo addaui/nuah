@@ -9,7 +9,7 @@ import { ltr, problemKey, problemParams, reportText, titleOf, type ReportState }
 
 /** Shown instead of the app when a plugin's data cannot be upgraded (ADR 0091): nothing was changed, here is why, and what to do. */
 export function Report({ state }: { state: ReportState }) {
-  const { t } = useI18n()
+  const { t, lang } = useI18n()
   const [copied, setCopied] = useState(false)
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -47,7 +47,7 @@ export function Report({ state }: { state: ReportState }) {
               <div key={id} className="grid gap-1.5">
                 {ids.length > 1 && <h3 className="m-0 text-sm font-medium">{name(id)} <bdi dir="ltr" className="font-mono text-xs text-muted-foreground">{id}</bdi></h3>}
                 <ol className="m-0 grid list-decimal gap-1.5 ps-5 text-sm">
-                  {state.problems.filter((p) => p.plugin === id).map((p, i) => <li key={i}>{t(problemKey(p), problemParams(p))}</li>)}
+                  {state.problems.filter((p) => p.plugin === id).map((p, i) => <li key={i}>{t(problemKey(p), problemParams(p, lang))}</li>)}
                 </ol>
               </div>
             ))}
