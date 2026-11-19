@@ -126,6 +126,18 @@ pub struct Requires {
 pub struct ExtensionPointDef {
     #[serde(default)]
     pub policy: CallPolicy,
+    /// The version of what the point promises (its methods, its `data`, and for a browser point the shared libraries and the
+    /// module's API). Plugins require a range of it, never the plugin that defines it ([ADR 0095]).
+    ///
+    /// [ADR 0095]: https://docs.addaui.com/nuah/adr/0095-plugins-ship-browser-modules-for-another-plugins-host-and-require-an-extension-point-at-a-version-never-a-plugin-by-id/
+    #[serde(default = "one_zero_zero")]
+    pub version: String,
+    /// Its Providers are Browser modules, loaded and called in the browser by the plugin that defines the point.
+    #[serde(default)]
+    pub browser: bool,
+    /// The JSON Schema of the static `data` a Provider may declare in its `provides` entry (`Null`: none).
+    #[serde(default)]
+    pub data: Value,
     #[serde(default)]
     pub description: String,
     pub input: Value,
@@ -148,6 +160,12 @@ pub struct Provide {
     /// then simply offers nothing. Lets a plugin join something that may not be there (preferences).
     #[serde(default)]
     pub optional: bool,
+    /// What the plugin declares to the point without running code (for the editor: its element kinds), checked against the
+    /// point's `data` schema. A plugin with only browser code needs nothing else ([ADR 0095]).
+    ///
+    /// [ADR 0095]: https://docs.addaui.com/nuah/adr/0095-plugins-ship-browser-modules-for-another-plugins-host-and-require-an-extension-point-at-a-version-never-a-plugin-by-id/
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -399,6 +417,12 @@ pub struct Manifest {
     pub defines: Defines,
     #[serde(default)]
     pub provides: Vec<Provide>,
+    /// The Browser module this plugin ships for each browser Extension point it provides: point -> file, a relative path
+    /// inside the plugin's own browser files (`editor/index.js`). Served at `/plugins/<scope>/<name>/<file>` ([ADR 0095]).
+    ///
+    /// [ADR 0095]: https://docs.addaui.com/nuah/adr/0095-plugins-ship-browser-modules-for-another-plugins-host-and-require-an-extension-point-at-a-version-never-a-plugin-by-id/
+    #[serde(default)]
+    pub browser: BTreeMap<String, String>,
     #[serde(default)]
     pub data: DataDecl,
     #[serde(default)]
@@ -522,7 +546,13 @@ impl Manifest {
     }
 
     pub fn parse(src: &str) -> Result<Manifest, String> {
-        serde_json::from_str(src).map_err(|e| format!("manifest does not parse: {e}"))
+        let m: Manifest = serde_json::from_str(src).map_err(|e| format!("manifest does not parse: {e}"))?;
+        for (point, file) in &m.browser {
+            if !valid_browser_file(file) {
+                return Err(format!("bad_browser_file: the Browser module for {point} must be a relative path of letters, digits, '.', '_', '-' and '/', without '..': {file:?}"));
+            }
+        }
+        Ok(m)
     }
 
     /// The kind comes from what the Manifest says, never from a declared field.
@@ -646,6 +676,28 @@ impl Manifest {
             .collect();
         let hooks: Vec<Value> = self.hooks.iter().map(|h| json!({"stage": h.stage, "on": h.on, "reasons": h.reasons.keys().collect::<Vec<_>>()})).collect();
         json!({ "operations": ops, "events": self.events.keys().collect::<Vec<_>>(), "hooks": hooks })
+    }
+}
+
+fn one_zero_zero() -> String {
+    "1.0.0".into()
+}
+
+/// A Browser module's file: a relative path of `[A-Za-z0-9._/-]`, no empty part, no `.` or `..` part.
+pub fn valid_browser_file(f: &str) -> bool {
+    !f.is_empty()
+        && f.chars().all(|c| c.is_ascii_alphanumeric() || "._/-".contains(c))
+        && f.split('/').all(|p| !p.is_empty() && p != "." && p != "..")
+}
+
+/// A requirement on an Extension point, `name` or `name@range` (`editor.element@^1`), split into the point and the range of its
+/// version ([ADR 0095]). A range that does not parse is refused.
+///
+/// [ADR 0095]: https://docs.addaui.com/nuah/adr/0095-plugins-ship-browser-modules-for-another-plugins-host-and-require-an-extension-point-at-a-version-never-a-plugin-by-id/
+pub fn point_requirement(s: &str) -> Result<(&str, Option<semver::VersionReq>), String> {
+    match s.rsplit_once('@') {
+        None => Ok((s, None)),
+        Some((p, r)) => semver::VersionReq::parse(r).map(|v| (p, Some(v))).map_err(|e| format!("the requirement {s} has a version range that does not parse: {e}")),
     }
 }
 
@@ -796,5 +848,50 @@ mod data_schema_tests {
     fn reads_name_the_fields_of_each_collection() {
         let m = parse(json!({"reads": {"o.pages": ["title", "body"]}})).unwrap();
         assert_eq!(m.data.reads["o.pages"], vec!["title".to_string(), "body".to_string()]);
+    }
+}
+
+#[cfg(test)]
+mod browser_tests {
+    use super::*;
+
+    #[test]
+    fn requirement_with_range() {
+        let (p, r) = point_requirement("editor.element@^1").unwrap();
+        assert_eq!(p, "editor.element");
+        assert!(r.unwrap().matches(&semver::Version::parse("1.4.0").unwrap()));
+        let (p, r) = point_requirement("notify.channel").unwrap();
+        assert_eq!((p, r.is_none()), ("notify.channel", true));
+        assert!(point_requirement("x@not-a-range").is_err());
+    }
+
+    #[test]
+    fn browser_fields_parse() {
+        let m = Manifest::parse(&json!({"id":"@t/p","version":"1.0.0","namespaces":["t"],
+          "browser":{"t.view":"view/index.js"},
+          "defines":{"extension_points":{"t.view":{"policy":"many","browser":true,"version":"1.2.0","input":{},"data":{"type":"object"}}}},
+          "provides":[{"extension_point":"t.view","data":{"kinds":[]}}]}).to_string()).unwrap();
+        assert_eq!(m.browser["t.view"], "view/index.js");
+        let d = &m.defines.extension_points["t.view"];
+        assert!(d.browser);
+        assert_eq!(d.version, "1.2.0");
+        assert_eq!(d.data, json!({"type":"object"}));
+        assert_eq!(m.provides[0].data, Some(json!({"kinds":[]})));
+    }
+
+    #[test]
+    fn point_version_defaults_to_one() {
+        let m = Manifest::parse(&json!({"id":"@t/p","version":"1.0.0","namespaces":["t"],
+          "defines":{"extension_points":{"t.x":{"input":{}}}}}).to_string()).unwrap();
+        assert_eq!(m.defines.extension_points["t.x"].version, "1.0.0");
+        assert!(!m.defines.extension_points["t.x"].browser);
+    }
+
+    #[test]
+    fn bad_browser_file_refused() {
+        for f in ["../x.js", "/abs.js", "a b.js", "a/../../b.js", ""] {
+            let e = Manifest::parse(&json!({"id":"@t/p","version":"1.0.0","browser":{"t.v": f}}).to_string()).unwrap_err();
+            assert!(e.contains("bad_browser_file"), "{f}: {e}");
+        }
     }
 }
