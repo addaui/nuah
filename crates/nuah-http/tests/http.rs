@@ -618,3 +618,17 @@ fn csp_unchanged_by_browser_modules() {
     assert_eq!(hdr(&h, "content-security-policy").map(String::from), Some(nuah_http::csp(&[], &[], &[])));
     services.stop();
 }
+
+#[test]
+fn a_face_named_without_its_trailing_slash_is_sent_to_it() {
+    // the page names its files relatively (app.js): without the slash they would be looked for one folder up
+    let console = face_dir("slash", "CONSOLE");
+    let port = free_port();
+    let (_core, services) = start_with_http(json!({"listen": format!("127.0.0.1:{port}"), "faces": {"/faces/console": console}}));
+    let (st, h, _) = get_raw(port, "/faces/console");
+    assert_eq!((st, hdr(&h, "location")), (308, Some("/faces/console/")));
+    let (st, h, _) = get_raw(port, "/faces/console?x=1");
+    assert_eq!((st, hdr(&h, "location")), (308, Some("/faces/console/?x=1")));
+    assert_eq!(get_text(&format!("http://127.0.0.1:{port}/faces/console/")).1, "CONSOLE");
+    services.stop();
+}

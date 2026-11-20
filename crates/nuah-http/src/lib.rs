@@ -611,6 +611,18 @@ pub async fn guard(State(cfg): State<Arc<Config>>, req: Request, next: Next) -> 
             return refuse(StatusCode::BAD_REQUEST, "invalid", "server.no_face", "The X-Nuah-Face header is required.");
         }
     }
+    // A Face asked for without its trailing slash goes to it with one: its page names its files relatively (`app.js`), which from
+    // `/faces/console` would mean `/faces/app.js`.
+    let path = req.uri().path();
+    if matches!(*req.method(), Method::GET | Method::HEAD) && cfg.faces.iter().any(|(p, _)| p == path) {
+        let to = match req.uri().query() {
+            Some(q) => format!("{path}/?{q}"),
+            None => format!("{path}/"),
+        };
+        if let Ok(v) = HeaderValue::from_str(&to) {
+            return (StatusCode::PERMANENT_REDIRECT, [(header::LOCATION, v)]).into_response();
+        }
+    }
     let is_face = req.uri().path().starts_with("/faces/");
     let mut res = next.run(req).await;
     let h = res.headers_mut();
