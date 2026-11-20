@@ -34,6 +34,13 @@ pub trait Product {
     fn replaced(&self) -> Vec<(String, String)> {
         vec![]
     }
+    /// What this build is made from ([ADR 0100]): `{name, version, commit, components: [{name, version, commit}]}`. A product
+    /// records its commit at build time and reads its components from its own `Cargo.lock` ([`components_from_lock`]).
+    ///
+    /// [ADR 0100]: https://docs.addaui.com/nuah/adr/0100-a-distribution-says-what-it-is-built-from-its-version-and-commit-and-nuahs-shown-to-signed-in-people/
+    fn about(&self) -> serde_json::Value {
+        serde_json::json!({"name": self.name(), "version": null, "commit": null, "components": []})
+    }
     /// What setup starts from when there is no Profile file yet: the product's defaults. `home` is the directory
     /// of the identity file, for defaults that live next to it (a database file).
     fn starting_point(&self, home: &std::path::Path) -> Profile;
@@ -445,7 +452,40 @@ fn start_core(product: &impl Product, path: &std::path::Path, f: &ServeFlags, st
         s.set_default_reach(from_address);
     }
     profile.reach = profile.reach.or(from_address);
-    Core::start_watched(&Distribution { name: product.name().to_string(), catalog: product.catalog(), profile }, watch).map(|c| (c, changed))
+    Core::start_watched(&Distribution { name: product.name().to_string(), catalog: product.catalog(), profile }, watch).map(|c| {
+        c.set_about(product.about());
+        (c, changed)
+    })
+}
+
+/// The components a Distribution is built from, read from its `Cargo.lock`: for each (shown name, crate), the tag and commit the
+/// lock pins (`git+https://…?tag=v0.16.1#<sha>`); a local checkout has no tag or commit, so its crate version stands and the commit
+/// is null; a crate the lock does not have is left out.
+pub fn components_from_lock(lock: &str, wanted: &[(&str, &str)]) -> serde_json::Value {
+    let mut out = vec![];
+    for (shown, krate) in wanted {
+        let mut found: Option<(String, Option<String>)> = None;
+        for block in lock.split("[[package]]") {
+            let field = |k: &str| block.lines().find_map(|l| l.trim().strip_prefix(&format!("{k} = \"")).and_then(|r| r.strip_suffix('"')).map(String::from));
+            if field("name").as_deref() != Some(*krate) {
+                continue;
+            }
+            let version = field("version").unwrap_or_default();
+            found = Some(match field("source").and_then(|s| s.strip_prefix("git+").map(String::from)) {
+                Some(src) => {
+                    let (url, commit) = src.split_once('#').map(|(u, c)| (u.to_string(), Some(c.to_string()))).unwrap_or((src.clone(), None));
+                    let tag = url.split_once("tag=").map(|(_, t)| t.split('&').next().unwrap_or(t).to_string());
+                    (tag.unwrap_or(version), commit)
+                }
+                None => (version, None),
+            });
+            break;
+        }
+        if let Some((version, commit)) = found {
+            out.push(serde_json::json!({"name": shown, "version": version, "commit": commit}));
+        }
+    }
+    serde_json::Value::Array(out)
 }
 
 fn home_of(identity_file: &std::path::Path) -> PathBuf {

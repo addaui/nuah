@@ -81,11 +81,17 @@ impl Core {
             }
         }
         slots.sort_by(|a, b| (a["slot"].as_str(), a["order"].as_i64(), a["id"].as_str()).cmp(&(b["slot"].as_str(), b["order"].as_i64(), b["id"].as_str())));
-        json!({
+        let mut d = json!({
             "envelope": ENVELOPE_VERSION, "contract": inner.plan.hash, "profile": inner.profile_name,
             "who": who, "plugins": plugins, "operations": ops, "events": events,
             "permissions": perms, "themes": themes, "fonts": fonts, "extension_points": points, "slots": slots, "browser": self.browser_modules(),
-        })
+        });
+        // what the instance is built from, for a signed-in person (ADR 0100)
+        let about = inner.about.read().unwrap_or_else(|e| e.into_inner()).clone();
+        if !about.is_null() {
+            d["about"] = about;
+        }
+        d
     }
 }
 

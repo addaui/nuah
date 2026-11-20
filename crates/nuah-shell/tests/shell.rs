@@ -266,3 +266,40 @@ fn moving_to_a_successor_is_saved_so_every_editor_of_the_profile_sees_it() {
     assert!(nuah_shell::edit::move_to_successors(&cat, &path, &[]).unwrap().is_empty());
     assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
 }
+
+#[test]
+fn the_components_a_distribution_is_built_from_are_read_from_its_lock() {
+    let lock = r#"
+[[package]]
+name = "nuah-kernel"
+version = "0.16.1"
+source = "git+https://github.com/addaui/nuah?tag=v0.16.1#6dc85cd77a3f29503aef8fa7d8eab2bc96925460"
+
+[[package]]
+name = "nuah-prefs"
+version = "0.9.0"
+source = "git+https://github.com/addaui/nuah-plugins?tag=v0.9.0#278da7c4d88e0000000000000000000000000000"
+
+[[package]]
+name = "serde"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+"#;
+    let c = nuah_shell::components_from_lock(lock, &[("Nuah", "nuah-kernel"), ("Nuah plugins", "nuah-prefs"), ("Missing", "nuah-nothing")]);
+    assert_eq!(c, json!([
+        {"name": "Nuah", "version": "v0.16.1", "commit": "6dc85cd77a3f29503aef8fa7d8eab2bc96925460"},
+        {"name": "Nuah plugins", "version": "v0.9.0", "commit": "278da7c4d88e0000000000000000000000000000"},
+    ]));
+    // a path dependency (a local checkout) has no tag or commit: it says so
+    let local = "[[package]]\nname = \"nuah-kernel\"\nversion = \"0.16.1\"\n";
+    assert_eq!(nuah_shell::components_from_lock(local, &[("Nuah", "nuah-kernel")]), json!([{"name": "Nuah", "version": "0.16.1", "commit": null}]));
+}
+
+#[test]
+fn what_an_instance_is_built_from_is_shown_to_signed_in_people_only() {
+    let c = start(&profile(true));
+    c.set_about(json!({"name": "madar", "version": "0.3.0", "commit": "abc123", "components": []}));
+    let who = Identity::new("u1", "Ann", &["member"]);
+    assert_eq!(c.describe(&who)["about"]["commit"], "abc123");
+    assert!(c.describe_public().get("about").is_none(), "a stranger does not learn the exact build");
+}

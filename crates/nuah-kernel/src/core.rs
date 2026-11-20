@@ -29,6 +29,8 @@ pub(crate) struct Inner {
     pub(crate) profile_name: String,
     pub(crate) telemetry: crate::telemetry::Telemetry,
     pub(crate) shell: std::sync::RwLock<Option<Arc<dyn crate::plugin::ShellServices>>>,
+    /// What the running program is built from (ADR 0100): the Distribution's version and commit, and its components'.
+    pub(crate) about: std::sync::RwLock<Value>,
     /// The enabled plugins' browser files, by (plugin, path), with the first 12 hex digits of each file's sha-256.
     pub(crate) browser: BTreeMap<(String, String), (&'static [u8], String)>,
 }
@@ -63,6 +65,13 @@ impl Core {
     /// [ADR 0041]: https://docs.addaui.com/nuah/adr/0041-the-console-edits-the-identity-file-through-a-host-capability-and-an-operator-can-recover-a-locked-out-instance/
     pub fn attach_shell(&self, shell: Arc<dyn crate::plugin::ShellServices>) {
         *self.inner.shell.write().unwrap_or_else(|e| e.into_inner()) = Some(shell);
+    }
+
+    /// What the program running this Core is built from ([ADR 0100]): shown in `describe` to a signed-in person, never in `describe_public`.
+    ///
+    /// [ADR 0100]: https://docs.addaui.com/nuah/adr/0100-a-distribution-says-what-it-is-built-from-its-version-and-commit-and-nuahs-shown-to-signed-in-people/
+    pub fn set_about(&self, about: Value) {
+        *self.inner.about.write().unwrap_or_else(|e| e.into_inner()) = about;
     }
 
     /// Resolve, open the Adapters, record who owns which collection, migrate data, and be ready.
@@ -130,7 +139,7 @@ impl Core {
         let settings = plan.settings.clone();
         let features = db.features();
         let browser = browser_files(&plan);
-        let inner = Arc::new(Inner { db, features, auth, policy, clock, ids, net, plan, settings, wake, signals: Default::default(), profile_name: dist.profile.name.clone(), telemetry, shell: std::sync::RwLock::new(None), browser });
+        let inner = Arc::new(Inner { db, features, auth, policy, clock, ids, net, plan, settings, wake, signals: Default::default(), profile_name: dist.profile.name.clone(), telemetry, shell: std::sync::RwLock::new(None), about: std::sync::RwLock::new(Value::Null), browser });
         if inner.plan.ports.contains_key("db") {
             if let Err(e) = inner.prepare_storage(watch) {
                 if e.key == "kernel.upgrade_refused" {
