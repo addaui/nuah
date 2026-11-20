@@ -534,10 +534,14 @@ fn start_mod(on: bool) -> (Core, Services, u16) {
 
 /// Status, lower-cased headers and body of a GET sent as written (no path clean-up by a client).
 fn get_raw(port: u16, path: &str) -> (u16, Vec<(String, String)>, Vec<u8>) {
+    get_raw_with(port, path, "")
+}
+/// The same, with one more header line (`Name: value\r\n`).
+fn get_raw_with(port: u16, path: &str, extra: &str) -> (u16, Vec<(String, String)>, Vec<u8>) {
     use std::io::{Read, Write};
     let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
     s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-    write!(s, "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n").unwrap();
+    write!(s, "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAccept-Encoding: identity\r\n{extra}Connection: close\r\n\r\n").unwrap();
     let mut buf = Vec::new();
     s.read_to_end(&mut buf).unwrap();
     let end = buf.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
@@ -571,6 +575,23 @@ fn browser_module_wrong_hash_not_cached() {
     assert_eq!((st, hdr(&h, "cache-control")), (200, Some("no-cache")));
     let (st, h, _) = get_raw(port, "/plugins/test/mod/index.js");
     assert_eq!((st, hdr(&h, "cache-control")), (200, Some("no-cache")));
+    services.stop();
+}
+
+#[test]
+fn browser_file_without_hash_is_revalidated_not_downloaded_again() {
+    // files a module loads by relative path (chunks, a runtime's .wasm) carry no ?v: the browser asks, and gets 304 while unchanged
+    let (_core, services, port) = start_mod(true);
+    let (st, h, body) = get_raw(port, "/plugins/test/mod/lib/py.wasm");
+    assert_eq!(st, 200);
+    assert!(!body.is_empty());
+    let etag = hdr(&h, "etag").expect("an ETag").to_string();
+    let (st, h2, body) = get_raw_with(port, "/plugins/test/mod/lib/py.wasm", &format!("If-None-Match: {etag}\r\n"));
+    assert_eq!(st, 304);
+    assert!(body.is_empty());
+    assert_eq!(hdr(&h2, "etag"), Some(etag.as_str()));
+    let (st, _, _) = get_raw_with(port, "/plugins/test/mod/lib/py.wasm", "If-None-Match: \"something-else\"\r\n");
+    assert_eq!(st, 200);
     services.stop();
 }
 

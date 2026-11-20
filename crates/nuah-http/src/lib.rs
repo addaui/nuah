@@ -330,7 +330,7 @@ async fn font_file(State(app): State<App>, Path(file): Path<String>) -> Result<R
 
 /// A file of an enabled plugin's Browser modules (ADR 0095). The address `describe` gives carries the file's hash; with that hash
 /// the answer is kept for a year, without it the browser asks again each time.
-async fn browser_file(State(app): State<App>, Path((scope, name, file)): Path<(String, String, String)>, Query(q): Query<HashMap<String, String>>) -> Response {
+async fn browser_file(State(app): State<App>, Path((scope, name, file)): Path<(String, String, String)>, Query(q): Query<HashMap<String, String>>, headers: HeaderMap) -> Response {
     if !nuah_kernel::valid_browser_file(&file) {
         return StatusCode::NOT_FOUND.into_response();
     }
@@ -346,7 +346,13 @@ async fn browser_file(State(app): State<App>, Path((scope, name, file)): Path<(S
         _ => "application/octet-stream",
     };
     let cache = if q.get("v") == Some(&hash) { "public, max-age=31536000, immutable" } else { "no-cache" };
-    ([(header::CONTENT_TYPE, kind), (header::CACHE_CONTROL, cache)], bytes).into_response()
+    // files loaded by relative path carry no hash: the browser asks again, and an unchanged file answers 304 without its bytes
+    let etag = format!("\"{hash}\"");
+    let unchanged = headers.get(header::IF_NONE_MATCH).and_then(|v| v.to_str().ok()).is_some_and(|v| v.split(',').any(|t| t.trim() == etag || t.trim() == "*"));
+    if unchanged {
+        return (StatusCode::NOT_MODIFIED, [(header::ETAG, etag.as_str()), (header::CACHE_CONTROL, cache)]).into_response();
+    }
+    ([(header::CONTENT_TYPE, kind), (header::CACHE_CONTROL, cache), (header::ETAG, etag.as_str())], bytes).into_response()
 }
 
 async fn describe(State(app): State<App>, headers: HeaderMap) -> Result<Response, ApiError> {
