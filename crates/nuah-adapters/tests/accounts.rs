@@ -136,3 +136,14 @@ fn a_username_has_one_rule_when_it_is_made_or_changed() {
     assert!(list["accounts"].as_array().unwrap().iter().all(|a| a["username"].is_string() && a.get("name").is_none()));
 }
 
+
+#[test]
+fn every_account_operation_declares_what_it_returns() {
+    // a Face's generated contract types the answers, and the Core checks each answer against its schema
+    for p in [Arc::new(AuthPassword) as Arc<dyn Plugin>, Arc::new(AuthLocal), Arc::new(AuthOpen)] {
+        let m = p.manifest();
+        for (op, decl) in &m.operations {
+            assert!(!decl.output.is_null(), "{} {op} declares no output schema", m.id);
+        }
+    }
+}

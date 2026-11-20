@@ -279,16 +279,19 @@ impl Plugin for AuthPassword {
                     "input":{"type":"object","required":["current","new"],"properties":{"current":{"type":"string","minLength":1,"maxLength":1000},"new":pw_in},"additionalProperties":false},
                     "output":{"type":"object"},
                     "reasons":{"auth.bad_credentials":"The current password is wrong"}},
-                "auth.account.list": {"kind":"query","permission":"auth.manage","description":"Every account, without passwords"},
+                "auth.account.list": {"kind":"query","permission":"auth.manage","description":"Every account, without passwords",
+                    "output":{"type":"object","required":["accounts"],"properties":{"accounts":{"type":"array","items":{"type":"object","required":["subject","username"]}}}}},
                 "auth.account.create": {"kind":"command","permission":"auth.manage","description":"Create an account",
                     "input":{"type":"object","required":["username","password"],"properties":{"username":username_in,"display":{"type":"string","maxLength":200},"password":pw_in,"roles":{"type":"array","items":{"type":"string"}}},"additionalProperties":false},
                     "output":{"type":"object","required":["subject"]},
                     "reasons":{"auth.username_taken":"That username is already used","auth.bad_username":"A username is 2 to 32 letters, numbers, dots, dashes or underscores"}},
                 "auth.account.update": {"kind":"command","permission":"auth.manage","description":"Rename an account, change its display name or roles, disable or enable it",
                     "input":{"type":"object","required":["subject"],"properties":{"subject":{"type":"string","minLength":1},"username":username_in,"display":{"type":"string","maxLength":200},"roles":{"type":"array","items":{"type":"string"}},"disabled":{"type":"boolean"}},"additionalProperties":false},
+                    "output":{"type":"object"},
                     "reasons":{"auth.username_taken":"That username is already used","auth.bad_username":"A username is 2 to 32 letters, numbers, dots, dashes or underscores","auth.last_admin":"At least one enabled administrator must remain","auth.no_account":"There is no such account"}},
                 "auth.account.set_password": {"kind":"command","permission":"auth.manage","description":"Set the password of an account",
                     "input":{"type":"object","required":["subject","password"],"properties":{"subject":{"type":"string","minLength":1},"password":pw_in},"additionalProperties":false},
+                    "output":{"type":"object"},
                     "reasons":{"auth.no_account":"There is no such account"}}
             }
         })).unwrap()
