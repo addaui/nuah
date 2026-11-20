@@ -420,11 +420,17 @@ struct ServeFlags {
 /// Read the file, apply the flags, resolve and start a Core (no services). Also returns the contract the file
 /// was locked to when that differs from the contract now.
 fn start_core(product: &impl Product, path: &std::path::Path, f: &ServeFlags, store: Option<&edit::ProfileStore>, watch: Option<nuah_kernel::upgrade::OnUpgrade>) -> Result<(Core, Option<String>), Vec<nuah_kernel::Problem>> {
-    let mut profile = read_profile(path);
-    // a plugin this version of the product replaced (renamed or rebuilt) gives way to its successor, settings and grants included
-    for (old, new) in nuah_kernel::successors(&product.catalog(), &mut profile, &product.replaced()) {
-        eprintln!("profile: {old} is now {new}");
+    // a plugin this version of the product replaced (renamed or rebuilt) gives way to its successor, settings and grants included, in
+    // the saved file too, so the console and the product's settings edit the Profile as it now is
+    match edit::move_to_successors(&product.catalog(), path, &product.replaced()) {
+        Ok(moved) => {
+            for (old, new) in moved {
+                eprintln!("profile: {old} is now {new}");
+            }
+        }
+        Err(e) => eprintln!("profile: could not move to successors: {e}"),
     }
+    let mut profile = read_profile(path);
     // The lock is checked against the file as it was saved, before this run's command-line changes.
     let changed = profile.contract.clone().filter(|c| *c != Core::contract_for(&Distribution { name: product.name().to_string(), catalog: product.catalog(), profile: profile.clone() }));
     apply_http_flags(&mut profile, HttpFlags { listen: f.listen.clone(), faces_dir: f.faces.clone(), hosts: f.allow_host.clone(), secure_cookie: f.secure_cookie });

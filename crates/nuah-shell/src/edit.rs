@@ -243,3 +243,17 @@ pub fn without(catalog: &Catalog, p: &Profile, plugin: &str) -> (Profile, Vec<St
         }
     }
 }
+
+/// Moves the saved Profile off plugins the catalog no longer has onto their successors (`replaces`, and the product's own renames),
+/// and saves it, so the console and a product's settings edit the Profile as it now is. Returns each move; with none, the file is not
+/// touched.
+pub fn move_to_successors(catalog: &Catalog, path: &Path, also: &[(String, String)]) -> std::io::Result<Vec<(String, String)>> {
+    let text = std::fs::read_to_string(path)?;
+    let v: serde_json::Value = serde_json::from_str(&text).map_err(std::io::Error::other)?;
+    let mut p = nuah_kernel::setup::profile_from_json(&v).map_err(std::io::Error::other)?;
+    let moved = nuah_kernel::successors(catalog, &mut p, also);
+    if !moved.is_empty() {
+        write_profile(path, &p)?;
+    }
+    Ok(moved)
+}

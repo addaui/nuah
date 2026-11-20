@@ -244,3 +244,25 @@ fn schema_check_prints_every_problem_and_says_whether_it_passes() {
     let (text, pass) = nuah_shell::schema_check(&old, &json!({"collections": {}}));
     assert!(!pass && text.contains("version"), "{text}");
 }
+
+#[test]
+fn moving_to_a_successor_is_saved_so_every_editor_of_the_profile_sees_it() {
+    let mut list = catalog().0;
+    list.push(Arc::new(RawM(json!({"id": "@t/new", "version": "1.0.0", "namespaces": ["new"], "replaces": ["@t/old"]}))));
+    let cat = Catalog(list);
+    let mut p = profile(false);
+    p.enabled.push("@t/old".into());
+    p.settings.insert("@t/old".into(), json!({"keep": true}));
+    let d = dir("successor");
+    let path = d.join("nuah.json");
+    write_profile(&path, &p).unwrap();
+    let moved = nuah_shell::edit::move_to_successors(&cat, &path, &[]).unwrap();
+    assert_eq!(moved, vec![("@t/old".to_string(), "@t/new".to_string())]);
+    let saved: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let text = saved.to_string();
+    assert!(text.contains("@t/new") && !text.contains("@t/old"), "{text}");
+    // nothing to move: the file is left as it is
+    let before = std::fs::read_to_string(&path).unwrap();
+    assert!(nuah_shell::edit::move_to_successors(&cat, &path, &[]).unwrap().is_empty());
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+}
