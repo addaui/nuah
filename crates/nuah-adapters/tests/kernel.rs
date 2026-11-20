@@ -834,3 +834,33 @@ fn an_optional_provider_of_a_point_nobody_defines_needs_no_handler() {
     let r = Raw(json!({"id": "@t/opt", "version": "1.0.0", "namespaces": ["opt"], "provides": [{"extension_point": "face.editor", "optional": true}], "browser": {"face.editor": "index.js"}}));
     assert_eq!(check_with(vec![r], &["@t/opt"]), Vec::<String>::new());
 }
+
+// ---- a plugin that replaces another (a successor) ----------------------------------------------------------------------
+
+#[test]
+fn a_profile_naming_a_replaced_plugin_moves_to_its_successor() {
+    let new = Raw(json!({"id": "@new/editor", "version": "1.0.0", "namespaces": ["ed"], "replaces": ["@old/editor"],
+        "requires": {"capabilities": ["emit"]}}));
+    let clock = FixedClock::at(0);
+    let seen = Default::default();
+    let mut cat = catalog(&clock, &seen);
+    cat.0.push(std::sync::Arc::new(new));
+    let mut on: Vec<&str> = BASE.to_vec();
+    on.push("@old/editor");
+    let mut p = profile(&on);
+    p.settings.insert("@old/editor".into(), json!({"x": 1}));
+    p.grants.insert("@old/editor".into(), vec!["emit".into()]);
+    let moved = nuah_kernel::successors(&cat, &mut p, &[]);
+    assert_eq!(moved, vec![("@old/editor".to_string(), "@new/editor".to_string())]);
+    assert!(p.enabled.contains(&"@new/editor".to_string()) && !p.enabled.contains(&"@old/editor".to_string()));
+    assert_eq!(p.settings["@new/editor"], json!({"x": 1}));
+    assert_eq!(p.grants["@new/editor"], vec!["emit".to_string()]);
+    assert_eq!(Core::check(&Distribution { name: "t".into(), catalog: cat, profile: p.clone() }).len(), 0);
+    // a second run changes nothing; a plugin the catalog still has is never replaced
+    let mut q = p.clone();
+    assert!(nuah_kernel::successors(&Catalog(vec![]), &mut q, &[]).is_empty());
+    // a product may name its own renames
+    let mut r = profile(&["@nuah/db-memory", "@acme/old"]);
+    let moved = nuah_kernel::successors(&catalog(&FixedClock::at(0), &Default::default()), &mut r, &[("@acme/old".into(), "@test/notes".into())]);
+    assert_eq!(moved, vec![("@acme/old".to_string(), "@test/notes".to_string())]);
+}

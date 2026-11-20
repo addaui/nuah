@@ -798,3 +798,46 @@ fn plan_hooks_on(enabled: &[(String, Arc<dyn Plugin>, Manifest)], op: &str) -> V
     }
     v
 }
+
+/// Moves a Profile off plugins the catalog no longer has onto the plugins that replace them: those that declare it (`replaces`), and
+/// the pairs a product names itself (`also`: old id, successor; a product's own renames, which a reusable plugin must not know). The id
+/// in `enabled`, its settings and its grants move. Returns each move (old, new); run it before resolving a Profile that an older version
+/// of the product saved. A plugin the catalog still has is never replaced, and a second run changes nothing.
+pub fn successors(catalog: &Catalog, profile: &mut Profile, also: &[(String, String)]) -> Vec<(String, String)> {
+    let mut by_old: BTreeMap<String, String> = BTreeMap::new();
+    let ids: Vec<String> = catalog.0.iter().map(|p| p.manifest().id).collect();
+    for (old, new) in also {
+        if !ids.contains(old) && ids.contains(new) {
+            by_old.insert(old.clone(), new.clone());
+        }
+    }
+    for p in &catalog.0 {
+        let m = p.manifest();
+        for old in &m.replaces {
+            if !ids.contains(old) {
+                by_old.entry(old.clone()).or_insert(m.id.clone());
+            }
+        }
+    }
+    let mut moved = vec![];
+    for old in profile.enabled.clone() {
+        let Some(new) = by_old.get(&old) else { continue };
+        profile.enabled.retain(|x| x != &old);
+        if !profile.enabled.contains(new) {
+            profile.enabled.push(new.clone());
+        }
+        if let Some(s) = profile.settings.remove(&old) {
+            profile.settings.entry(new.clone()).or_insert(s);
+        }
+        if let Some(g) = profile.grants.remove(&old) {
+            let have = profile.grants.entry(new.clone()).or_default();
+            for c in g {
+                if !have.contains(&c) {
+                    have.push(c);
+                }
+            }
+        }
+        moved.push((old, new.clone()));
+    }
+    moved
+}

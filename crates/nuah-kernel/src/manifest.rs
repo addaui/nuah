@@ -423,6 +423,10 @@ pub struct Manifest {
     /// [ADR 0095]: https://docs.addaui.com/nuah/adr/0095-plugins-ship-browser-modules-for-another-plugins-host-and-require-an-extension-point-at-a-version-never-a-plugin-by-id/
     #[serde(default)]
     pub browser: BTreeMap<String, String>,
+    /// Plugin ids this plugin takes the place of (a renamed or rebuilt plugin): a Profile that still enables one of them is moved to
+    /// this plugin, with its settings and grants, when the catalog no longer has the old one ([`crate::successors`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub replaces: Vec<String>,
     #[serde(default)]
     pub data: DataDecl,
     #[serde(default)]

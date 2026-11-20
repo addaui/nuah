@@ -29,6 +29,11 @@ pub trait Product {
     fn name(&self) -> &str;
     /// Every plugin available, including the Projections (`nuah_http::Http`) with whatever routes the product adds.
     fn catalog(&self) -> Catalog;
+    /// Plugins of older versions of this product that a plugin of this version takes the place of: (old id, successor). A Profile that still
+    /// enables an old one is moved to its successor when it starts (settings and grants too).
+    fn replaced(&self) -> Vec<(String, String)> {
+        vec![]
+    }
     /// What setup starts from when there is no Profile file yet: the product's defaults. `home` is the directory
     /// of the identity file, for defaults that live next to it (a database file).
     fn starting_point(&self, home: &std::path::Path) -> Profile;
@@ -416,6 +421,10 @@ struct ServeFlags {
 /// was locked to when that differs from the contract now.
 fn start_core(product: &impl Product, path: &std::path::Path, f: &ServeFlags, store: Option<&edit::ProfileStore>, watch: Option<nuah_kernel::upgrade::OnUpgrade>) -> Result<(Core, Option<String>), Vec<nuah_kernel::Problem>> {
     let mut profile = read_profile(path);
+    // a plugin this version of the product replaced (renamed or rebuilt) gives way to its successor, settings and grants included
+    for (old, new) in nuah_kernel::successors(&product.catalog(), &mut profile, &product.replaced()) {
+        eprintln!("profile: {old} is now {new}");
+    }
     // The lock is checked against the file as it was saved, before this run's command-line changes.
     let changed = profile.contract.clone().filter(|c| *c != Core::contract_for(&Distribution { name: product.name().to_string(), catalog: product.catalog(), profile: profile.clone() }));
     apply_http_flags(&mut profile, HttpFlags { listen: f.listen.clone(), faces_dir: f.faces.clone(), hosts: f.allow_host.clone(), secure_cookie: f.secure_cookie });
