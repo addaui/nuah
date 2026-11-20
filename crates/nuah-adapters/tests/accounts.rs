@@ -147,3 +147,47 @@ fn every_account_operation_declares_what_it_returns() {
         }
     }
 }
+
+fn with_credential(c: &Core, credential: &str, op: &str, input: Value) -> Result<Value> {
+    c.call(CallRequest { credential: Some(credential.into()), op: op.into(), input, key: None, contract: None }).map(|r| r.output)
+}
+
+#[test]
+fn an_api_key_acts_as_its_owner_until_it_is_revoked() {
+    let c = core();
+    let root = sign_in(&c, "root", "first-password").unwrap()["who"].clone();
+    let made = as_who(&c, &root, "auth.keys.create", json!({"name": "my agent"})).unwrap();
+    let key = made["key"].as_str().unwrap().to_string();
+    assert!(key.starts_with("nuah_") && key.len() > 30, "{key}");
+    // the key signs in as its owner, with the owner's rights
+    assert_eq!(with_credential(&c, &key, "auth.who", json!({})).unwrap()["subject"], root["subject"]);
+    assert!(with_credential(&c, &key, "auth.account.list", json!({})).is_ok(), "an admin's key can do what the admin can");
+    // the list names it and never shows it again
+    let list = as_who(&c, &root, "auth.keys.list", json!({})).unwrap();
+    assert_eq!(list["keys"][0]["name"], "my agent");
+    assert_eq!(list["keys"][0]["id"], made["id"]);
+    assert!(!list.to_string().contains(&key), "{list}");
+    // revoked: it is nobody
+    as_who(&c, &root, "auth.keys.revoke", json!({"id": made["id"]})).unwrap();
+    assert_eq!(with_credential(&c, &key, "auth.who", json!({})).unwrap_err().category, Category::Unauthenticated);
+    assert_eq!(as_who(&c, &root, "auth.keys.list", json!({})).unwrap()["keys"], json!([]));
+}
+
+#[test]
+fn a_key_stops_with_its_account_and_only_its_owner_revokes_it() {
+    let c = core();
+    let root = sign_in(&c, "root", "first-password").unwrap()["who"].clone();
+    let sam = as_who(&c, &root, "auth.account.create", json!({"username": "sam", "password": "sam-password-1", "roles": ["member"]})).unwrap()["subject"].clone();
+    let sam_who = sign_in(&c, "sam", "sam-password-1").unwrap()["who"].clone();
+    let made = as_who(&c, &sam_who, "auth.keys.create", json!({"name": "laptop"})).unwrap();
+    let key = made["key"].as_str().unwrap().to_string();
+    // nobody else sees or revokes it
+    assert_eq!(as_who(&c, &root, "auth.keys.list", json!({})).unwrap()["keys"], json!([]));
+    assert!(as_who(&c, &root, "auth.keys.revoke", json!({"id": made["id"]})).is_err());
+    assert!(with_credential(&c, &key, "auth.who", json!({})).is_ok());
+    // a member's key cannot do what a member cannot
+    assert_eq!(with_credential(&c, &key, "auth.account.list", json!({})).unwrap_err().category, Category::Denied);
+    // a disabled account's keys stop at once
+    as_who(&c, &root, "auth.account.update", json!({"subject": sam, "disabled": true})).unwrap();
+    assert_eq!(with_credential(&c, &key, "auth.who", json!({})).unwrap_err().category, Category::Unauthenticated);
+}

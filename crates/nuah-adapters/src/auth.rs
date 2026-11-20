@@ -123,6 +123,13 @@ impl Plugin for AuthOpen {
 }
 
 const SESSIONS: &str = "auth.sessions";
+/// API keys ([ADR 0101]): long-lived credentials a person makes for an agent or a script; each acts as its owner. Kept by the hash
+/// of the key (the key itself is shown once), with the owner and a name.
+///
+/// [ADR 0101]: https://docs.addaui.com/nuah/adr/0101-agents-reach-a-distribution-through-mcp-and-api-keys-a-key-acts-as-its-owner/
+const API_KEYS: &str = "auth.api_keys";
+/// Every API key starts with this, so a person (and a secret scanner) can tell one apart.
+pub const API_KEY_PREFIX: &str = "nuah_";
 const ACCOUNTS: &str = "auth.accounts";
 const NAMES: &str = "auth.names";
 const DEFAULT_TTL_MS: i64 = 12 * 60 * 60 * 1000;
@@ -179,6 +186,12 @@ impl Auth for Password {
         "@nuah/auth-password"
     }
     fn authenticate(&self, db: &dyn DbRead, credential: &str, now: Millis) -> Result<Option<Identity>> {
+        // an API key acts as its owner, as the owner's account is now (a disabled account's keys stop at once)
+        if credential.starts_with(API_KEY_PREFIX) {
+            let Some(k) = db.get(API_KEYS, &token_hash(credential))?.filter(|d| !d.deleted) else { return Ok(None) };
+            let Some(subject) = k.body["subject"].as_str() else { return Ok(None) };
+            return Ok(db.get(ACCOUNTS, subject)?.filter(|a| !a.deleted && a.body["disabled"] != true).map(|a| identity_of(subject, &a.body)));
+        }
         let Some(d) = db.get(SESSIONS, &token_hash(credential))?.filter(|d| !d.deleted) else { return Ok(None) };
         if d.body["expires_at"].as_i64().unwrap_or(0) <= now {
             return Ok(None);
@@ -275,6 +288,15 @@ impl Plugin for AuthPassword {
                     "input":{"type":"object","required":["token"],"properties":{"token":{"type":"string","minLength":1}},"additionalProperties":false},
                     "output":{"type":"object"}},
                 "auth.who": {"kind":"query","description":"Who am I?","output":{"type":"object","required":["subject"]}},
+                "auth.keys.create": {"kind":"command","description":"Make an API key that acts as you (for an agent or a script); the key is shown this once",
+                    "input":{"type":"object","required":["name"],"properties":{"name":{"type":"string","minLength":1,"maxLength":100}},"additionalProperties":false},
+                    "output":{"type":"object","required":["id","key","name","created_at"]}},
+                "auth.keys.list": {"kind":"query","description":"Your API keys, by name (never the keys themselves)",
+                    "output":{"type":"object","required":["keys"],"properties":{"keys":{"type":"array","items":{"type":"object","required":["id","name","created_at"]}}}}},
+                "auth.keys.revoke": {"kind":"command","description":"Revoke one of your API keys; whatever used it is signed out at once",
+                    "input":{"type":"object","required":["id"],"properties":{"id":{"type":"string","minLength":1}},"additionalProperties":false},
+                    "output":{"type":"object"},
+                    "reasons":{"auth.no_key":"You have no API key with that id"}},
                 "auth.password.change": {"kind":"command","description":"Change your own password by giving the current one",
                     "input":{"type":"object","required":["current","new"],"properties":{"current":{"type":"string","minLength":1,"maxLength":1000},"new":pw_in},"additionalProperties":false},
                     "output":{"type":"object"},
@@ -352,6 +374,30 @@ impl Plugin for AuthPassword {
             Ok(json!({}))
         });
         b.op("auth.who", |tx, _| Ok(serde_json::to_value(tx.who()).unwrap()));
+        b.op("auth.keys.create", |tx, input| {
+            let who = tx.who().clone();
+            if who.subject.is_empty() {
+                return Err(Error::new(Category::Unauthenticated, "kernel.unauthenticated", "sign in first"));
+            }
+            let key = format!("{API_KEY_PREFIX}{}{}", tx.new_id(), tx.new_id());
+            let (id, name, now) = (tx.new_id(), input["name"].as_str().unwrap_or("").trim().to_string(), tx.now());
+            tx.put(API_KEYS, &token_hash(&key), json!({"id": id, "subject": who.subject, "name": name, "created_at": now}), Expect::Absent)?;
+            Ok(json!({"id": id, "key": key, "name": name, "created_at": now}))
+        });
+        b.op("auth.keys.list", |tx, _| {
+            let subject = tx.who().subject.clone();
+            let page = tx.query(API_KEYS, &Query::new().eq("subject", subject).limit(500))?;
+            let mut keys: Vec<Value> = page.items.iter().map(|d| json!({"id": d.body["id"], "name": d.body["name"], "created_at": d.body["created_at"]})).collect();
+            keys.sort_by_key(|k| k["created_at"].as_i64().unwrap_or(0));
+            Ok(json!({"keys": keys}))
+        });
+        b.op("auth.keys.revoke", |tx, input| {
+            let subject = tx.who().subject.clone();
+            let page = tx.query(API_KEYS, &Query::new().eq("id", input["id"].as_str().unwrap_or("")).eq("subject", subject).limit(1))?;
+            let Some(d) = page.items.first() else { return Err(Error::reason(Category::NotFound, "auth.no_key", "You have no API key with that id")) };
+            tx.delete(API_KEYS, &d.id)?;
+            Ok(json!({}))
+        });
         b.op("auth.account.list", |tx, _| {
             let page = tx.query(ACCOUNTS, &Query::new().limit(1000))?;
             let mut accounts: Vec<Value> = page.items.iter().map(|d| public_account(&d.id, &d.body)).collect();
