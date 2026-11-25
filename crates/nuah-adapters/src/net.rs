@@ -120,6 +120,25 @@ impl Net for Public {
         "@nuah/net-public"
     }
     fn fetch(&self, req: &NetRequest) -> Result<NetResponse> {
+        let mut out = vec![];
+        let mut r = self.send(req, &mut |c| {
+            out.extend_from_slice(c);
+            true
+        }, false)?;
+        r.truncated = out.len() > req.max_bytes;
+        out.truncate(req.max_bytes);
+        r.body = out;
+        Ok(r)
+    }
+    fn fetch_stream(&self, req: &NetRequest, on_chunk: &mut dyn FnMut(&[u8]) -> bool) -> Result<NetResponse> {
+        self.send(req, on_chunk, true)
+    }
+}
+
+impl Public {
+    /// Sends the request. `stream` hands a 2xx body to `on_chunk` as it arrives; otherwise (and for any other status) the
+    /// body is read whole, up to `max_bytes` plus one byte so a cut can be told.
+    fn send(&self, req: &NetRequest, on_chunk: &mut dyn FnMut(&[u8]) -> bool, stream: bool) -> Result<NetResponse> {
         let url = check_url(&req.url, self.allow_private)?;
         let config = ureq::config::Config::builder()
             .proxy(None)
@@ -136,14 +155,44 @@ impl Net for Public {
             builder = builder.header(n.as_str(), v.as_str());
         }
         let request = builder.body(req.body.clone().unwrap_or_default()).map_err(|e| Error::invalid("request", &e.to_string()))?;
-        let resp = agent.run(request).map_err(|_| Error::new(Category::Unsupported, "net.unavailable", "The request could not be completed"))?;
+        let unavailable = || Error::new(Category::Unsupported, "net.unavailable", "The request could not be completed");
+        let resp = agent.run(request).map_err(|_| unavailable())?;
         let status = resp.status().as_u16();
         let final_url = resp.get_uri().to_string();
         let headers: Vec<(String, String)> = resp.headers().iter().filter_map(|(n, v)| v.to_str().ok().map(|v| (n.as_str().to_lowercase(), v.to_string()))).collect();
+        let mut reader = resp.into_body().into_reader().take(req.max_bytes as u64 + 1);
         let mut body = vec![];
-        resp.into_body().into_reader().take(req.max_bytes as u64 + 1).read_to_end(&mut body).map_err(|_| Error::new(Category::Unsupported, "net.unavailable", "The request could not be completed"))?;
-        let truncated = body.len() > req.max_bytes;
-        body.truncate(req.max_bytes);
+        let mut truncated = false;
+        if stream && (200..300).contains(&status) {
+            let (mut buf, mut sent) = ([0u8; 4096], 0usize);
+            loop {
+                let n = reader.read(&mut buf).map_err(|_| unavailable())?;
+                if n == 0 {
+                    break;
+                }
+                let room = req.max_bytes.saturating_sub(sent).min(n);
+                if room < n {
+                    truncated = true;
+                }
+                if room > 0 && !on_chunk(&buf[..room]) {
+                    break;
+                }
+                sent += room;
+                if truncated {
+                    break;
+                }
+            }
+        } else {
+            reader.read_to_end(&mut body).map_err(|_| unavailable())?;
+            if !stream {
+                // `fetch` gives the body whole to its caller through `on_chunk`, which collects it
+                on_chunk(&body);
+                body.clear();
+            } else {
+                truncated = body.len() > req.max_bytes;
+                body.truncate(req.max_bytes);
+            }
+        }
         Ok(NetResponse { status, url: final_url, headers, body, truncated })
     }
 }
@@ -227,5 +276,44 @@ mod tests {
         assert_eq!((r.status, r.body.as_slice()), (200, b"ok".as_slice()));
         let cut = Public { allow_private: true }.fetch(&NetRequest { max_bytes: 1, ..NetRequest::get(&url) }).unwrap();
         assert!(cut.truncated && cut.body == b"o");
+    }
+
+    #[test]
+    fn a_streamed_answer_arrives_in_pieces_and_can_be_stopped() {
+        use std::io::Write;
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for s in l.incoming().flatten() {
+                let mut s = s;
+                let mut b = [0u8; 512];
+                let _ = s.read(&mut b);
+                let _ = s.write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n");
+                for piece in ["one ", "two ", "three"] {
+                    let _ = s.write_all(format!("{:x}\r\n{piece}\r\n", piece.len()).as_bytes());
+                    let _ = s.flush();
+                    std::thread::sleep(Duration::from_millis(150));
+                }
+                let _ = s.write_all(b"0\r\n\r\n");
+            }
+        });
+        let net = Public { allow_private: true };
+        let url = format!("http://127.0.0.1:{port}/");
+        let (mut got, mut at) = (vec![], vec![]);
+        let started = std::time::Instant::now();
+        let r = net.fetch_stream(&NetRequest::get(&url), &mut |c| {
+            got.extend_from_slice(c);
+            at.push(started.elapsed().as_millis());
+            true
+        }).unwrap();
+        assert_eq!((r.status, r.body.len()), (200, 0), "the body went to the callback");
+        assert_eq!(String::from_utf8(got.clone()).unwrap(), "one two three");
+        assert!(at.len() >= 2 && at.first().unwrap() + 100 < *at.last().unwrap(), "pieces arrived over time, not all at the end: {at:?}");
+        // stopping from the callback closes the stream early
+        let mut n = 0;
+        net.fetch_stream(&NetRequest::get(&url), &mut |_| { n += 1; false }).unwrap();
+        assert_eq!(n, 1);
+        // fetch is unchanged
+        assert_eq!(net.fetch(&NetRequest::get(&url)).unwrap().body, b"one two three");
     }
 }

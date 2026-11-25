@@ -127,6 +127,23 @@ pub trait Net: Send + Sync {
     fn name(&self) -> &str;
     /// Blocks until there is an answer or the time limit passes. A status of 400 or more is an answer, not an error.
     fn fetch(&self, req: &NetRequest) -> Result<NetResponse>;
+    /// Like `fetch`, but for an answer with a status of 200 to 299 the body is handed to `on_chunk` piece by piece as it arrives
+    /// instead of being collected; `on_chunk` returns whether to go on (false closes the connection), and the response then has
+    /// an empty body. Any other status is returned whole, as `fetch` does, so a refusal can be read. The time limit covers the
+    /// whole stream and `max_bytes` counts the streamed bytes. The default delivers the whole body as one piece, so an Adapter
+    /// that cannot stream still works ([ADR 0134]).
+    ///
+    /// [ADR 0134]: https://madar.addaui.com/#/p/c732d1c1f2a8405da02ddc3cf964557c?tab=knowledge&page=82c570e033cd4320b15a65255dc11955
+    fn fetch_stream(&self, req: &NetRequest, on_chunk: &mut dyn FnMut(&[u8]) -> bool) -> Result<NetResponse> {
+        let mut r = self.fetch(req)?;
+        if (200..300).contains(&r.status) {
+            let body = std::mem::take(&mut r.body);
+            if !body.is_empty() {
+                on_chunk(&body);
+            }
+        }
+        Ok(r)
+    }
 }
 
 /// How many Adapters fill one Port ([ADR 0031]). Whether a Port may have several is a property of the
