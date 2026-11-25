@@ -196,6 +196,9 @@ pub struct ChangeRecord {
     pub at: Millis,
     pub actor: String,
     pub request: String,
+    /// The caller's own id for the action this call belongs to, kept across outbound calls (ADR 0130). Old records have none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub correlation: Option<String>,
     pub operation: String,
     pub docs: Vec<DocRef>,
     pub events: Vec<Event>,

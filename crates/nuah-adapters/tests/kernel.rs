@@ -265,6 +265,22 @@ fn pulse_resumes_from_a_cursor_and_resets_when_the_cursor_is_too_old() {
 }
 
 #[test]
+fn a_correlation_id_follows_a_call_into_its_events() {
+    let w = world();
+    let a = person("alice", &["member"]);
+    let b = book(&w, &a);
+    let c0 = w.core.pulse_now().unwrap();
+    w.core.call_as_with(&a, "notes.add", json!({"book": b, "text": "1"}), None, Some("trace-7")).unwrap();
+    call(&w, &a, "notes.add", json!({"book": b, "text": "2"})).unwrap();
+    let evs = w.core.pulse(&a, Some(&c0), 50).unwrap().events;
+    assert_eq!(evs.len(), 2);
+    assert_eq!(evs[0].correlation.as_deref(), Some("trace-7"));
+    assert!(!evs[0].request.is_empty(), "every event names the request that made it");
+    assert_ne!(evs[0].request, evs[1].request, "each call keeps its own request id");
+    assert_eq!(evs[1].correlation, None, "a call without one has none");
+}
+
+#[test]
 fn a_bad_cursor_is_invalid() {
     let w = world();
     assert_eq!(w.core.pulse(&person("a", &["member"]), Some("zzz"), 5).unwrap_err().category, Category::Invalid);
@@ -467,10 +483,11 @@ struct Fetchy {
 }
 impl Plugin for Fetchy {
     fn manifest(&self) -> Manifest {
-        let caps = if self.wants_net { json!(["call", "net"]) } else { json!(["call"]) };
+        let caps = if self.wants_net { json!(["call", "emit", "net"]) } else { json!(["call", "emit"]) };
         serde_json::from_value(json!({
             "id": "@test/fetchy", "version": "1", "namespaces": ["fetchy"],
             "requires": {"capabilities": caps},
+            "events": {"fetchy.noted": {}},
             "data": {"schema": {"version": 1, "collections": {"fetchy.seen": {"type": "object", "properties": {}}}}},
             "permissions": {"fetchy.use": {"default": ["member"]}},
             "operations": {
@@ -491,6 +508,7 @@ impl Plugin for Fetchy {
         b.op("fetchy.note", |tx, _| {
             let n = tx.query("fetchy.seen", &Query::new())?.items.len();
             tx.put("fetchy.seen", &format!("s{n}"), json!({}), Expect::Any)?;
+            tx.emit("fetchy.noted", Audience::subject("u"), json!({}))?;
             Ok(json!({}))
         });
         b.op("fetchy.count", |tx, _| Ok(json!({"n": tx.query("fetchy.seen", &Query::new())?.items.len()})));
@@ -503,7 +521,7 @@ fn outbound_world(wants_net: bool, grant_net: bool) -> std::result::Result<(Core
     let mut p = profile(&["@nuah/db-memory", "@nuah/auth-local", "@nuah/policy-roles", "@nuah/clock-system", "@nuah/ids-random", "@nuah/net-fake", "@test/fetchy"]);
     p.settings.clear();
     p.grants.clear();
-    p.grants.insert("@test/fetchy".into(), if grant_net { vec!["call".into(), "net".into()] } else { vec!["call".into()] });
+    p.grants.insert("@test/fetchy".into(), if grant_net { vec!["call".into(), "emit".into(), "net".into()] } else { vec!["call".into(), "emit".into()] });
     let list: Vec<std::sync::Arc<dyn Plugin>> = vec![
         std::sync::Arc::new(AdapterMemory), std::sync::Arc::new(AuthLocal), std::sync::Arc::new(PolicyRoles), std::sync::Arc::new(StdClock), std::sync::Arc::new(StdIds),
         std::sync::Arc::new(FakeNetPlugin(asked.clone())), std::sync::Arc::new(Fetchy { wants_net }),
@@ -525,6 +543,18 @@ fn an_outbound_operation_uses_the_net_port_outside_a_transaction_and_reaches_dat
     // a retried call is not a replayed one: keys are refused, and a Command cannot call an outbound Operation
     assert!(core.call_as(&me, "fetchy.get", json!({"url": "https://example.com/"}), Some("k")).is_err());
     assert!(core.call_as(&me, "fetchy.bad", json!({}), None).is_err());
+}
+
+#[test]
+fn an_outbound_operation_passes_the_correlation_id_to_the_calls_it_makes() {
+    let (core, _) = outbound_world(true, true).unwrap();
+    let me = Identity::new("u", "u", &["member"]);
+    let c0 = core.pulse_now().unwrap();
+    core.call_as_with(&me, "fetchy.get", json!({"url": "https://example.com/"}), None, Some("trace-9")).unwrap();
+    let evs = core.pulse(&me, Some(&c0), 50).unwrap().events;
+    assert_eq!(evs.len(), 1);
+    assert_eq!(evs[0].kind, "fetchy.noted");
+    assert_eq!(evs[0].correlation.as_deref(), Some("trace-9"), "the nested call is a new request but the same correlation");
 }
 
 #[test]

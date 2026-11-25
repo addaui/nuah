@@ -60,6 +60,12 @@ impl Core {
 
     /// The whole story of one call from outside.
     pub fn call(&self, req: CallRequest) -> Result<CallResponse> {
+        self.call_with(req, None)
+    }
+
+    /// Like `call`, with the caller's own id for the action this call belongs to (ADR 0130). It is kept in the change
+    /// record and in the Pulse Events the call made, and handed to the calls an outbound Operation makes.
+    pub fn call_with(&self, req: CallRequest, correlation: Option<&str>) -> Result<CallResponse> {
         if let Some(h) = &req.contract {
             if h != self.contract_hash() {
                 return Err(Error::new(Category::Incompatible, "kernel.incompatible", "this Face was built for a different contract; reload it")
@@ -68,16 +74,21 @@ impl Core {
         }
         let decl = self.inner.op_decl(&req.op).ok_or_else(|| Error::not_found(&format!("operation {}", req.op)))?;
         let who = if decl.public { Identity { subject: "anonymous".into(), display: "anonymous".into(), roles: vec![] } } else { self.authenticate(req.credential.as_deref())? };
-        self.call_as(&who, &req.op, req.input, req.key.as_deref())
+        self.call_as_with(&who, &req.op, req.input, req.key.as_deref(), correlation)
     }
 
     /// Run an Operation as an Identity the caller already trusts (in-process Faces, tests, Listeners).
     /// Every call is counted, timed, logged and (when a trace Adapter is on) traced; none of that can fail it.
     pub fn call_as(&self, who: &Identity, op: &str, input: Value, key: Option<&str>) -> Result<CallResponse> {
+        self.call_as_with(who, op, input, key, None)
+    }
+
+    /// `call_as` with a correlation id (ADR 0130).
+    pub fn call_as_with(&self, who: &Identity, op: &str, input: Value, key: Option<&str>, correlation: Option<&str>) -> Result<CallResponse> {
         let started = std::time::Instant::now();
         let start_ms = self.inner.clock.now();
         let mut request = String::new();
-        let mut res = self.call_as_inner(who, op, input, key, &mut request);
+        let mut res = self.call_as_inner(who, op, input, key, correlation, &mut request);
         // An internal error carries the request id as its reference, so what the caller is told to quote finds the log line.
         if let Err(e) = &mut res {
             if e.category == Category::Internal && !request.is_empty() {
@@ -100,7 +111,7 @@ impl Core {
         m.observe("nuah_operation_duration_ms", &[("operation", op)], ms);
         let req = if request.is_empty() { None } else { Some(request.as_str()) };
         match &res {
-            Ok(_) => self.log(crate::telemetry::Level::Debug, "nuah.kernel", "operation.ok", json!({"operation": op, "ms": ms, "request": req})),
+            Ok(_) => self.log(crate::telemetry::Level::Debug, "nuah.kernel", "operation.ok", json!({"operation": op, "ms": ms, "request": req, "correlation": correlation})),
             Err(e) if e.category == Category::Internal => self.log_error(crate::telemetry::Level::Error, "nuah.kernel", "operation.failed", json!({"operation": op, "ms": ms}), e, req),
             Err(e) => self.log_error(crate::telemetry::Level::Debug, "nuah.kernel", "operation.refused", json!({"operation": op, "ms": ms}), e, req),
         }
@@ -111,7 +122,7 @@ impl Core {
         res
     }
 
-    fn call_as_inner(&self, who: &Identity, op: &str, input: Value, key: Option<&str>, request_out: &mut String) -> Result<CallResponse> {
+    fn call_as_inner(&self, who: &Identity, op: &str, input: Value, key: Option<&str>, correlation: Option<&str>, request_out: &mut String) -> Result<CallResponse> {
         let inner = &*self.inner;
         let decl = inner.op_decl(op).ok_or_else(|| Error::not_found(&format!("operation {op}")))?;
         let request = inner.ids.new_id();
@@ -149,7 +160,7 @@ impl Core {
                     return Err(Error::internal("operations call each other too deeply"));
                 }
                 DEPTH.with(|d| d.set(d.get() + 1));
-                let out = guarded(|| f(&mut Outbound { core: self, plugin: owner.clone(), who, request: &request }, input));
+                let out = guarded(|| f(&mut Outbound { core: self, plugin: owner.clone(), who, request: &request, correlation }, input));
                 DEPTH.with(|d| d.set(d.get() - 1));
                 let out = out?;
                 if !decl.output.is_null() {
@@ -196,7 +207,7 @@ impl Core {
                         w.put("_idem", id, "kernel", body, Expect::Any, now)?;
                     }
                     if !events.is_empty() || !docs.is_empty() {
-                        let seq = w.append_change(ChangeRecord { seq: 0, at: now, actor: who.subject.clone(), request: request.clone(), operation: op.into(), docs: std::mem::take(&mut docs), events: std::mem::take(&mut events) })?;
+                        let seq = w.append_change(ChangeRecord { seq: 0, at: now, actor: who.subject.clone(), request: request.clone(), correlation: correlation.map(String::from), operation: op.into(), docs: std::mem::take(&mut docs), events: std::mem::take(&mut events) })?;
                         if seq % 100 == 0 {
                             w.prune_changes(CHANGE_RETENTION)?;
                         }

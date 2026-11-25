@@ -345,7 +345,7 @@ fn mixed_types(db: &dyn Db) {
 fn atomicity(db: &dyn Db) {
     let r = db.write(&mut |w| {
         put(w, "at", "a", json!({}));
-        w.append_change(ChangeRecord { seq: 0, at: 1, actor: "x".into(), request: "r".into(), operation: "o".into(), docs: vec![], events: vec![] })?;
+        w.append_change(ChangeRecord { seq: 0, at: 1, actor: "x".into(), request: "r".into(), correlation: None, operation: "o".into(), docs: vec![], events: vec![] })?;
         Err(Error::internal("boom"))
     });
     assert!(r.is_err());
@@ -395,7 +395,7 @@ fn change_log(db: &dyn Db) {
     for i in 0..5 {
         db.write(&mut |w| {
             seqs.truncate(i);
-            seqs.push(w.append_change(ChangeRecord { seq: 0, at: i as i64, actor: "a".into(), request: format!("r{i}"), operation: "op".into(), docs: vec![], events: vec![Event { kind: "k".into(), audience: Audience::subject("s"), data: json!({"i": i}) }] })?);
+            seqs.push(w.append_change(ChangeRecord { seq: 0, at: i as i64, actor: "a".into(), request: format!("r{i}"), correlation: None, operation: "op".into(), docs: vec![], events: vec![Event { kind: "k".into(), audience: Audience::subject("s"), data: json!({"i": i}) }] })?);
             Ok(())
         })
         .unwrap();
@@ -446,7 +446,7 @@ fn concurrent_writers(db: &dyn Db) {
                         let mut seq = 0;
                         db.write(&mut |w| {
                             w.put("cw", &format!("t{t}"), "t", json!({"i": i}), Expect::Any, 1)?;
-                            seq = w.append_change(ChangeRecord { seq: 0, at: 1, actor: format!("t{t}"), request: format!("r{t}-{i}"), operation: "op".into(), docs: vec![], events: vec![] })?;
+                            seq = w.append_change(ChangeRecord { seq: 0, at: 1, actor: format!("t{t}"), request: format!("r{t}-{i}"), correlation: None, operation: "op".into(), docs: vec![], events: vec![] })?;
                             Ok(())
                         })
                         .unwrap();

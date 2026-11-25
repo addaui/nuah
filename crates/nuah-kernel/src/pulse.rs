@@ -43,6 +43,11 @@ pub struct PulseEvent {
     pub at: Millis,
     pub actor: String,
     pub operation: String,
+    /// The request that made the event, and the caller's correlation id when it gave one (ADR 0130).
+    #[serde(default)]
+    pub request: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub correlation: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -162,7 +167,7 @@ impl Core {
                 let mut mine = vec![];
                 for ev in &rec.events {
                     if inner.visible(r, &ev.audience, &who.subject)? {
-                        mine.push(PulseEvent { cursor: format!("c{}", rec.seq), kind: ev.kind.clone(), data: ev.data.clone(), at: rec.at, actor: rec.actor.clone(), operation: rec.operation.clone() });
+                        mine.push(PulseEvent { cursor: format!("c{}", rec.seq), kind: ev.kind.clone(), data: ev.data.clone(), at: rec.at, actor: rec.actor.clone(), operation: rec.operation.clone(), request: rec.request.clone(), correlation: rec.correlation.clone() });
                     }
                 }
                 if !events.is_empty() && events.len() + mine.len() > limit {
@@ -282,7 +287,7 @@ impl Inner {
             let now = self.clock.now();
             w.put("_cursors", &cursor_id, "kernel", json!({"seq": last}), Expect::Any, now)?;
             if !events.is_empty() || !docs.is_empty() {
-                committed = Some(w.append_change(ChangeRecord { seq: 0, at: now, actor: who.subject.clone(), request, operation: format!("listener:{cursor_id}"), docs, events })?);
+                committed = Some(w.append_change(ChangeRecord { seq: 0, at: now, actor: who.subject.clone(), request, correlation: None, operation: format!("listener:{cursor_id}"), docs, events })?);
             }
             // Count batches that only skipped events as progress too, so the loop ends.
             if delivered == 0 {

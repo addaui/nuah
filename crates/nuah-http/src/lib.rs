@@ -282,6 +282,11 @@ impl IntoResponse for ApiError {
     }
 }
 
+/// A caller's correlation id is taken only when it is short and plain, so it is safe in a log line and a header (ADR 0130).
+fn valid_correlation(v: &str) -> bool {
+    !v.is_empty() && v.len() <= 128 && v.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | '-'))
+}
+
 pub fn header_str(headers: &HeaderMap, name: &str) -> Option<String> {
     headers.get(name).and_then(|v| v.to_str().ok()).map(String::from)
 }
@@ -422,7 +427,10 @@ async fn call(State(app): State<App>, Path(op): Path<String>, headers: HeaderMap
     }
     let req = CallRequest { credential: credential(&headers), op: op.clone(), input, key: header_str(&headers, "idempotency-key"), contract: header_str(&headers, "x-nuah-contract") };
     let core = app.core.clone();
-    let result = blocking(move || core.call(req)).await?;
+    // The caller's own id for the action (ADR 0130): taken when it is short and plain, returned on the response.
+    let correlation = header_str(&headers, "x-request-id").filter(|v| valid_correlation(v));
+    let corr = correlation.clone();
+    let result = blocking(move || core.call_with(req, corr.as_deref())).await?;
     if let Some(name) = &attempt {
         let mut t = app.throttle.lock().unwrap_or_else(|e| e.into_inner());
         match &result {
@@ -451,6 +459,9 @@ async fn call(State(app): State<App>, Path(op): Path<String>, headers: HeaderMap
     let mut out = no_store(Json(json!({"ok": true, "output": res.output, "replayed": res.replayed})));
     if let Some(c) = cookie_header {
         out.headers_mut().append(header::SET_COOKIE, c);
+    }
+    if let Some(id) = correlation.as_deref().and_then(|c| HeaderValue::from_str(c).ok()) {
+        out.headers_mut().insert("x-request-id", id);
     }
     Ok(out)
 }

@@ -84,7 +84,7 @@ fn data_survives_a_restart_and_goes_round_to_other_adapters() {
         }
         w.delete("c", "d0003", Expect::Any, 2)?;
         for i in 0..5 {
-            w.append_change(ChangeRecord { seq: 0, at: i, actor: "a".into(), request: "r".into(), operation: "op".into(), docs: vec![], events: vec![] })?;
+            w.append_change(ChangeRecord { seq: 0, at: i, actor: "a".into(), request: "r".into(), correlation: None, operation: "op".into(), docs: vec![], events: vec![] })?;
         }
         w.prune_changes(2)
     })
@@ -102,7 +102,7 @@ fn data_survives_a_restart_and_goes_round_to_other_adapters() {
     // jsonb keeps the same values, though not the key order inside text; compare as parsed lines
     let parse = |b: &[u8]| String::from_utf8_lossy(b).lines().map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap()).collect::<Vec<_>>();
     assert_eq!(parse(&back), parse(&again));
-    pg.write(&mut |w| w.append_change(ChangeRecord { seq: 0, at: 0, actor: "a".into(), request: "r".into(), operation: "o".into(), docs: vec![], events: vec![] }).map(|n| assert_eq!(n, 6))).unwrap();
+    pg.write(&mut |w| w.append_change(ChangeRecord { seq: 0, at: 0, actor: "a".into(), request: "r".into(), correlation: None, operation: "o".into(), docs: vec![], events: vec![] }).map(|n| assert_eq!(n, 6))).unwrap();
 }
 
 #[test]

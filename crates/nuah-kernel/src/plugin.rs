@@ -532,6 +532,7 @@ pub struct Outbound<'a> {
     pub(crate) plugin: String,
     pub(crate) who: &'a crate::ports::Identity,
     pub(crate) request: &'a str,
+    pub(crate) correlation: Option<&'a str>,
 }
 
 /// What the program running the Core offers to plugins ([ADR 0041]): the state of the identity file and the
@@ -587,7 +588,7 @@ impl<'a> Outbound<'a> {
     pub fn call_as_self(&self, op: &str, input: Value) -> Result<Value> {
         self.core.inner.check_capability(&self.plugin, "call")?;
         let me = crate::ports::Identity::new(&self.plugin, &self.plugin, &[&format!("plugin:{}", self.plugin)]);
-        self.core.call_as(&me, op, input, None).map(|r| r.output)
+        self.core.call_as_with(&me, op, input, None, self.correlation).map(|r| r.output)
     }
     /// The font data of every enabled font plugin: what an outbound Operation that stores fonts may fetch (ADR 0090).
     pub fn font_data(&self) -> Vec<Value> {
@@ -601,6 +602,6 @@ impl<'a> Outbound<'a> {
     /// Call an Operation as the same Subject, with the same checks as from outside, in a transaction of its own.
     pub fn call(&self, op: &str, input: Value) -> Result<Value> {
         self.core.inner.check_capability(&self.plugin, "call")?;
-        self.core.call_as(self.who, op, input, None).map(|r| r.output)
+        self.core.call_as_with(self.who, op, input, None, self.correlation).map(|r| r.output)
     }
 }

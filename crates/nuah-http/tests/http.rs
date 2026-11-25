@@ -12,11 +12,18 @@ impl Plugin for Echo {
     fn manifest(&self) -> Manifest {
         serde_json::from_value(json!({"id":"@test/echo","version":"1","namespaces":["echo"],
             "requires":{"capabilities":["emit"]},
+            "events":{"echo.noted":{}},
             "operations":{"echo.say":{"kind":"query","input":{"type":"object","properties":{"text":{"type":"string"}}}},
+                "echo.note":{"kind":"command","input":{"type":"object"}},
                 "echo.wave":{"kind":"command","input":{"type":"object"}}}})).unwrap()
     }
     fn bind(&self, b: &mut Bindings) {
         b.op("echo.say", |tx, i| Ok(json!({"text": i["text"], "who": tx.who().subject})));
+        b.op("echo.note", |tx, _| {
+            let me = tx.who().subject.clone();
+            tx.emit("echo.noted", Audience::subject(&me), json!({}))?;
+            Ok(json!({}))
+        });
         b.op("echo.wave", |tx, _| {
             let me = tx.who().subject.clone();
             tx.signal("echo.here", Audience::subject(&me), json!({"hand": "up"}))?;
@@ -82,6 +89,32 @@ fn a_product_less_core_is_served_over_http_and_stops() {
     assert_eq!((s, said["output"]["text"].as_str()), (200, Some("hi")), "{said}");
     services.stop();
     assert!(agent().get(&format!("{base}/healthz")).call().is_err());
+}
+
+#[test]
+fn a_request_id_header_is_the_correlation_id_and_is_returned() {
+    let port = free_port();
+    let base = format!("http://127.0.0.1:{port}");
+    let (core, services) = start(port);
+    let (_, signed) = post(&base, "auth.sign_in", json!({"username": "alice", "password": "pw"}), None, None);
+    let token = signed["output"]["token"].as_str().unwrap().to_string();
+    let c0 = core.pulse_now().unwrap();
+    let send = |id: &str| {
+        agent().post(&format!("{base}/link/call/echo.note")).header("Content-Type", "application/json").header("X-Nuah-Face", "test")
+            .header("Authorization", &format!("Bearer {token}")).header("X-Request-Id", id).send("{}").unwrap()
+    };
+    let ok = send("web-42.a:b_c");
+    assert_eq!(ok.headers().get("x-request-id").and_then(|v| v.to_str().ok()), Some("web-42.a:b_c"));
+    let long = "x".repeat(200);
+    let bad = send(&long);
+    assert!(bad.headers().get("x-request-id").is_none(), "an id that is too long is not taken");
+    let (_, said) = post(&base, "echo.say", json!({}), Some(&token), None);
+    let subject = said["output"]["who"].as_str().unwrap().to_string();
+    let me = Identity::new(&subject, "alice", &["member"]);
+    let evs = core.pulse(&me, Some(&c0), 50).unwrap().events;
+    let got: Vec<Option<&str>> = evs.iter().filter(|e| e.kind == "echo.noted").map(|e| e.correlation.as_deref()).collect();
+    assert_eq!(got, [Some("web-42.a:b_c"), None]);
+    services.stop();
 }
 
 #[test]
