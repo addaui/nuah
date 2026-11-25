@@ -837,3 +837,23 @@ fn an_upgrade_of_a_per_subject_collection_is_not_refused_for_the_person_the_core
     assert!(rig.docs("up.docs").iter().all(|d| d.body.get("_subject").is_some()), "the person is still kept");
     drop(core);
 }
+
+#[test]
+fn an_upgrade_that_rewrites_the_documents_of_a_per_subject_collection_keeps_each_persons_own() {
+    let rig = Rig::new();
+    let mut f = v1();
+    f["collections"]["up.docs"]["per_subject"] = json!(true);
+    seed(&rig.boot(f.clone(), None).unwrap(), 3);
+    let before: Vec<(String, Value)> = rig.docs("up.docs").iter().map(|d| (d.id.clone(), d.body["_subject"].clone())).collect();
+    f["version"] = json!(2);
+    // a new field with a default: every stored document is rewritten
+    f["collections"]["up.docs"]["properties"]["extra"] = json!({"type": "string", "default": "x"});
+    let core = rig.boot(f, None).unwrap_or_else(|p| panic!("the upgrade was refused: {p:#?}"));
+    let after = rig.docs("up.docs");
+    assert_eq!(after.len(), 3);
+    assert!(after.iter().all(|d| d.body["extra"] == "x"), "the default was written");
+    for (id, subject) in before {
+        assert_eq!(after.iter().find(|d| d.id == id).unwrap().body["_subject"], subject, "each document is still its person's");
+    }
+    drop(core);
+}

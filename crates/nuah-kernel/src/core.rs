@@ -847,8 +847,15 @@ impl Inner {
                         }
                     }
                     if !w.removed {
+                        // a per-person collection keeps the person inside the document: rewrite it as it is, through the writer,
+                        // because the Tx would refuse a document that names its person and a caller with none
+                        let per_subject = crate::upgrade::is_per_subject(&u.file["collections"][w.to.as_str()]);
                         for (i, b) in &items {
-                            tx.put(&w.to, i, b.clone(), Expect::Any)?;
+                            if per_subject {
+                                tx.wr()?.put(&w.to, i, id, b.clone(), Expect::Any, now)?;
+                            } else {
+                                tx.put(&w.to, i, b.clone(), Expect::Any)?;
+                            }
                         }
                     }
                     let mut p = progress.clone();
