@@ -298,7 +298,7 @@ impl Plugin for AuthPassword {
                 "auth.keys.create": {"kind":"command","description":"Make an API key that acts as you (for an agent or a script); the key is shown this once",
                     "input":{"type":"object","required":["name"],"properties":{"name":{"type":"string","minLength":1,"maxLength":100},"permissions":{"type":"array","maxItems":100,"items":{"type":"string","minLength":1,"maxLength":80},"description":"Limit the key to Operations that need one of these permissions"},"expires_in_days":{"type":"integer","minimum":1,"maximum":3650,"description":"The key stops working after this many days"}},"additionalProperties":false},
                     "output":{"type":"object","required":["id","key","name","created_at"]},
-                    "reasons":{"auth.key_cannot_mint":"An API key cannot make or revoke API keys"}},
+                    "reasons":{"auth.key_cannot_mint":"A limited API key cannot make or revoke API keys"}},
                 "auth.keys.list": {"kind":"query","description":"Your API keys, by name (never the keys themselves)",
                     "output":{"type":"object","required":["keys"],"properties":{"keys":{"type":"array","items":{"type":"object","required":["id","name","created_at"]}}}}},
                 "auth.keys.revoke": {"kind":"command","description":"Revoke one of your API keys; whatever used it is signed out at once",
@@ -388,9 +388,10 @@ impl Plugin for AuthPassword {
                 return Err(Error::new(Category::Unauthenticated, "kernel.unauthenticated", "sign in first"));
             }
             let key = format!("{API_KEY_PREFIX}{}{}", tx.new_id(), tx.new_id());
-            // a key cannot make keys: a limited key would otherwise make itself an unlimited one (ADR 0132)
-            if who.via.is_some() {
-                return Err(Error::new(Category::Denied, "auth.key_cannot_mint", "an API key cannot make API keys; sign in as the person").with_reason("auth.key_cannot_mint"));
+            // a limited key cannot make keys: it would otherwise make itself an unlimited one (ADR 0132). A key with no limits
+            // acts as its person in this too, as before.
+            if who.limits.is_some() {
+                return Err(Error::new(Category::Denied, "auth.key_cannot_mint", "a limited API key cannot make API keys; sign in as the person").with_reason("auth.key_cannot_mint"));
             }
             let (id, name, now) = (tx.new_id(), input["name"].as_str().unwrap_or("").trim().to_string(), tx.now());
             let mut doc = json!({"id": id, "subject": who.subject, "name": name, "created_at": now});
@@ -403,6 +404,10 @@ impl Plugin for AuthPassword {
             }
             if let Some(days) = input.get("expires_in_days").and_then(|d| d.as_i64()) {
                 doc["expires_at"] = json!(now + days * 86_400_000);
+                // an end date is a limit too: such a key may not make a key without one
+                if doc.get("limits").is_none() {
+                    doc["limits"] = json!({});
+                }
             }
             tx.put(API_KEYS, &token_hash(&key), doc.clone(), Expect::Absent)?;
             Ok(json!({"id": id, "key": key, "name": name, "created_at": now, "permissions": doc["limits"]["permissions"], "expires_at": doc.get("expires_at")}))
@@ -415,8 +420,8 @@ impl Plugin for AuthPassword {
             Ok(json!({"keys": keys}))
         });
         b.op("auth.keys.revoke", |tx, input| {
-            if tx.who().via.is_some() {
-                return Err(Error::new(Category::Denied, "auth.key_cannot_mint", "an API key cannot manage API keys; sign in as the person").with_reason("auth.key_cannot_mint"));
+            if tx.who().limits.is_some() {
+                return Err(Error::new(Category::Denied, "auth.key_cannot_mint", "a limited API key cannot manage API keys; sign in as the person").with_reason("auth.key_cannot_mint"));
             }
             let subject = tx.who().subject.clone();
             let page = tx.query(API_KEYS, &Query::new().eq("id", input["id"].as_str().unwrap_or("")).eq("subject", subject).limit(1))?;

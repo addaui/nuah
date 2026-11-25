@@ -84,7 +84,7 @@ fn a_key_expires_and_then_is_nobody() {
 }
 
 #[test]
-fn a_key_cannot_make_or_revoke_keys() {
+fn a_limited_key_cannot_make_or_revoke_keys_but_an_unlimited_one_acts_as_its_person() {
     let (c, _) = world();
     let me = sara(&c);
     let key = c.call_as(&me, "auth.keys.create", json!({"name": "narrow", "permissions": ["notebook.read"]}), None).unwrap().output["key"].as_str().unwrap().to_string();
@@ -92,6 +92,13 @@ fn a_key_cannot_make_or_revoke_keys() {
         let e = c.call(CallRequest { credential: Some(key.clone()), op: op.into(), input, key: None, contract: None }).unwrap_err();
         assert_eq!(e.reason.as_deref(), Some("auth.key_cannot_mint"), "{op}");
     }
+    // a key that only has an end date is limited too: it could otherwise make a key that never ends
+    let dated = c.call_as(&me, "auth.keys.create", json!({"name": "dated", "expires_in_days": 5}), None).unwrap().output["key"].as_str().unwrap().to_string();
+    let e = c.call(CallRequest { credential: Some(dated), op: "auth.keys.create".into(), input: json!({"name": "forever"}), key: None, contract: None }).unwrap_err();
+    assert_eq!(e.reason.as_deref(), Some("auth.key_cannot_mint"));
+    // a key with no limits is as it was
+    let open = c.call_as(&me, "auth.keys.create", json!({"name": "open"}), None).unwrap().output["key"].as_str().unwrap().to_string();
+    assert!(c.call(CallRequest { credential: Some(open), op: "auth.keys.create".into(), input: json!({"name": "another"}), key: None, contract: None }).is_ok());
 }
 
 #[test]
