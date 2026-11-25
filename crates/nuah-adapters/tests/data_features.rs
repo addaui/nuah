@@ -822,3 +822,18 @@ fn may_see_resolves_an_audience_as_pulse_does() {
     assert_eq!(sees(&a, json!({"type": "subject", "subject": "b"})), json!(false));
     assert_eq!(sees(&a, json!({"type": "scope", "scope": "nobody.declared", "id": "x"})), json!(false), "an unknown Scope sees no one");
 }
+
+#[test]
+fn an_upgrade_of_a_per_subject_collection_is_not_refused_for_the_person_the_core_keeps_in_each_document() {
+    let rig = Rig::new();
+    let mut f = v1();
+    f["collections"]["up.docs"]["per_subject"] = json!(true);
+    seed(&rig.boot(f.clone(), None).unwrap(), 3);
+    assert!(rig.docs("up.docs").iter().all(|d| d.body.get("_subject").is_some()), "the Core stored the person");
+    f["version"] = json!(2);
+    f["collections"]["up.docs"]["properties"]["extra"] = json!({"type": "string"});
+    let core = rig.boot(f, None).unwrap_or_else(|p| panic!("the upgrade was refused: {p:#?}"));
+    assert_eq!(rig.meta("schema:@test/up").unwrap()["version"], 2);
+    assert!(rig.docs("up.docs").iter().all(|d| d.body.get("_subject").is_some()), "the person is still kept");
+    drop(core);
+}

@@ -659,6 +659,7 @@ impl Inner {
             };
             let Some(raw) = new.collections.get(&to) else { continue };
             let schema = strict(raw);
+            let per_subject = crate::upgrade::is_per_subject(raw);
             let uniques: Vec<IndexSpec> = index_specs(&to, raw).into_iter().filter(|s| s.unique).collect();
             let mut seen: Vec<std::collections::BTreeSet<String>> = vec![Default::default(); uniques.len()];
             let (mut misfits, mut example, mut clashes, mut clash_example) = (0u64, None::<(String, String)>, vec![0u64; uniques.len()], vec![None::<String>; uniques.len()]);
@@ -675,6 +676,12 @@ impl Inner {
                 for d in alive {
                     let mut b = d.body;
                     apply(&mut b, &ops);
+                    // the Core keeps the person in the document; the plugin's schema does not know it (ADR 0131)
+                    if per_subject {
+                        if let Some(o) = b.as_object_mut() {
+                            o.remove("_subject");
+                        }
+                    }
                     if let Err(e) = crate::schema::validate(&schema, &b) {
                         misfits += 1;
                         example.get_or_insert((d.id.clone(), e.message.clone()));
