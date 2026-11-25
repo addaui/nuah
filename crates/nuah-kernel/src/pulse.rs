@@ -48,6 +48,9 @@ pub struct PulseEvent {
     pub request: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub correlation: Option<String>,
+    /// The API key the call came in through, when it did (ADR 0132).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -167,7 +170,7 @@ impl Core {
                 let mut mine = vec![];
                 for ev in &rec.events {
                     if inner.visible(r, &ev.audience, &who.subject)? {
-                        mine.push(PulseEvent { cursor: format!("c{}", rec.seq), kind: ev.kind.clone(), data: ev.data.clone(), at: rec.at, actor: rec.actor.clone(), operation: rec.operation.clone(), request: rec.request.clone(), correlation: rec.correlation.clone() });
+                        mine.push(PulseEvent { cursor: format!("c{}", rec.seq), kind: ev.kind.clone(), data: ev.data.clone(), at: rec.at, actor: rec.actor.clone(), operation: rec.operation.clone(), request: rec.request.clone(), correlation: rec.correlation.clone(), via: rec.via.clone() });
                     }
                 }
                 if !events.is_empty() && events.len() + mine.len() > limit {
@@ -248,7 +251,7 @@ impl Inner {
     /// One batch for one Listener. Returns the number of Events delivered (0 when caught up).
     fn run_listener(&self, plugin: &str, id: &str, on: &[String], f: &ListenerFn) -> Result<usize> {
         let cursor_id = format!("{plugin}:{id}");
-        let who = Identity { subject: format!("listener:{cursor_id}"), display: cursor_id.clone(), roles: vec![] };
+        let who = Identity { subject: format!("listener:{cursor_id}"), display: cursor_id.clone(), roles: vec![], via: None, limits: None };
         let mut delivered = 0usize;
         let mut failure: Option<Error> = None;
         let mut committed: Option<u64> = None;
@@ -287,7 +290,7 @@ impl Inner {
             let now = self.clock.now();
             w.put("_cursors", &cursor_id, "kernel", json!({"seq": last}), Expect::Any, now)?;
             if !events.is_empty() || !docs.is_empty() {
-                committed = Some(w.append_change(ChangeRecord { seq: 0, at: now, actor: who.subject.clone(), request, correlation: None, operation: format!("listener:{cursor_id}"), docs, events })?);
+                committed = Some(w.append_change(ChangeRecord { seq: 0, at: now, actor: who.subject.clone(), request, correlation: None, via: None, operation: format!("listener:{cursor_id}"), docs, events })?);
             }
             // Count batches that only skipped events as progress too, so the loop ends.
             if delivered == 0 {

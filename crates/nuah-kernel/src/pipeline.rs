@@ -76,7 +76,18 @@ impl Core {
             }
         }
         let decl = self.inner.op_decl(&req.op).ok_or_else(|| Error::not_found(&format!("operation {}", req.op)))?;
-        let who = if decl.public { Identity { subject: "anonymous".into(), display: "anonymous".into(), roles: vec![] } } else { self.authenticate(req.credential.as_deref())? };
+        let who = if decl.public { Identity { subject: "anonymous".into(), display: "anonymous".into(), roles: vec![], via: None, limits: None } } else { self.authenticate(req.credential.as_deref())? };
+        // A key limited to some permissions may call only Operations that need one of them; the work such an Operation does
+        // inside (its own calls) runs as the person and is not limited again (ADR 0132).
+        if let Some(allowed) = who.limits.as_ref().and_then(|l| l.get("permissions")).and_then(|p| p.as_array()) {
+            if !decl.public {
+                if let Some(perm) = &decl.permission {
+                    if !allowed.iter().any(|p| p.as_str() == Some(perm.as_str())) {
+                        return Err(Error::new(Category::Denied, "auth.key_limited", format!("this API key is not allowed to do {perm}")).with_reason("auth.key_limited"));
+                    }
+                }
+            }
+        }
         self.call_as_with(&who, &req.op, req.input, req.key.as_deref(), correlation)
     }
 
@@ -211,7 +222,7 @@ impl Core {
                         w.put("_idem", id, "kernel", body, Expect::Any, now)?;
                     }
                     if !events.is_empty() || !docs.is_empty() {
-                        let seq = w.append_change(ChangeRecord { seq: 0, at: now, actor: who.subject.clone(), request: request.clone(), correlation: correlation.map(String::from), operation: op.into(), docs: std::mem::take(&mut docs), events: std::mem::take(&mut events) })?;
+                        let seq = w.append_change(ChangeRecord { seq: 0, at: now, actor: who.subject.clone(), request: request.clone(), correlation: correlation.map(String::from), via: who.via.clone(), operation: op.into(), docs: std::mem::take(&mut docs), events: std::mem::take(&mut events) })?;
                         if seq % 100 == 0 {
                             w.prune_changes(CHANGE_RETENTION)?;
                         }

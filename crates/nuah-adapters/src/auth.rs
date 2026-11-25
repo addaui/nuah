@@ -176,6 +176,8 @@ fn identity_of(subject: &str, body: &Value) -> Identity {
         subject: subject.into(),
         display: body["display"].as_str().filter(|d| !d.is_empty()).or_else(|| Some(username_of(body)).filter(|n| !n.is_empty())).unwrap_or(subject).into(),
         roles: body["roles"].as_array().map(|r| r.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default(),
+        via: None,
+        limits: None,
     }
 }
 
@@ -190,7 +192,12 @@ impl Auth for Password {
         if credential.starts_with(API_KEY_PREFIX) {
             let Some(k) = db.get(API_KEYS, &token_hash(credential))?.filter(|d| !d.deleted) else { return Ok(None) };
             let Some(subject) = k.body["subject"].as_str() else { return Ok(None) };
-            return Ok(db.get(ACCOUNTS, subject)?.filter(|a| !a.deleted && a.body["disabled"] != true).map(|a| identity_of(subject, &a.body)));
+            // an expired key is no key (ADR 0132)
+            if k.body["expires_at"].as_i64().is_some_and(|e| e <= now) {
+                return Ok(None);
+            }
+            let (via, limits) = (k.body["id"].as_str().map(String::from), k.body.get("limits").filter(|l| !l.is_null()).cloned());
+            return Ok(db.get(ACCOUNTS, subject)?.filter(|a| !a.deleted && a.body["disabled"] != true).map(|a| Identity { via, limits, ..identity_of(subject, &a.body) }));
         }
         let Some(d) = db.get(SESSIONS, &token_hash(credential))?.filter(|d| !d.deleted) else { return Ok(None) };
         if d.body["expires_at"].as_i64().unwrap_or(0) <= now {
@@ -289,8 +296,9 @@ impl Plugin for AuthPassword {
                     "output":{"type":"object"}},
                 "auth.who": {"kind":"query","description":"Who am I?","output":{"type":"object","required":["subject"]}},
                 "auth.keys.create": {"kind":"command","description":"Make an API key that acts as you (for an agent or a script); the key is shown this once",
-                    "input":{"type":"object","required":["name"],"properties":{"name":{"type":"string","minLength":1,"maxLength":100}},"additionalProperties":false},
-                    "output":{"type":"object","required":["id","key","name","created_at"]}},
+                    "input":{"type":"object","required":["name"],"properties":{"name":{"type":"string","minLength":1,"maxLength":100},"permissions":{"type":"array","maxItems":100,"items":{"type":"string","minLength":1,"maxLength":80},"description":"Limit the key to Operations that need one of these permissions"},"expires_in_days":{"type":"integer","minimum":1,"maximum":3650,"description":"The key stops working after this many days"}},"additionalProperties":false},
+                    "output":{"type":"object","required":["id","key","name","created_at"]},
+                    "reasons":{"auth.key_cannot_mint":"An API key cannot make or revoke API keys"}},
                 "auth.keys.list": {"kind":"query","description":"Your API keys, by name (never the keys themselves)",
                     "output":{"type":"object","required":["keys"],"properties":{"keys":{"type":"array","items":{"type":"object","required":["id","name","created_at"]}}}}},
                 "auth.keys.revoke": {"kind":"command","description":"Revoke one of your API keys; whatever used it is signed out at once",
@@ -380,18 +388,36 @@ impl Plugin for AuthPassword {
                 return Err(Error::new(Category::Unauthenticated, "kernel.unauthenticated", "sign in first"));
             }
             let key = format!("{API_KEY_PREFIX}{}{}", tx.new_id(), tx.new_id());
+            // a key cannot make keys: a limited key would otherwise make itself an unlimited one (ADR 0132)
+            if who.via.is_some() {
+                return Err(Error::new(Category::Denied, "auth.key_cannot_mint", "an API key cannot make API keys; sign in as the person").with_reason("auth.key_cannot_mint"));
+            }
             let (id, name, now) = (tx.new_id(), input["name"].as_str().unwrap_or("").trim().to_string(), tx.now());
-            tx.put(API_KEYS, &token_hash(&key), json!({"id": id, "subject": who.subject, "name": name, "created_at": now}), Expect::Absent)?;
-            Ok(json!({"id": id, "key": key, "name": name, "created_at": now}))
+            let mut doc = json!({"id": id, "subject": who.subject, "name": name, "created_at": now});
+            if let Some(list) = input.get("permissions").and_then(|p| p.as_array()) {
+                let names: Vec<&str> = list.iter().filter_map(|p| p.as_str()).map(str::trim).filter(|p| !p.is_empty() && p.len() <= 80).collect();
+                if names.is_empty() || names.len() != list.len() {
+                    return Err(Error::invalid("permissions", "is a list of permission names, at least one"));
+                }
+                doc["limits"] = json!({"permissions": names});
+            }
+            if let Some(days) = input.get("expires_in_days").and_then(|d| d.as_i64()) {
+                doc["expires_at"] = json!(now + days * 86_400_000);
+            }
+            tx.put(API_KEYS, &token_hash(&key), doc.clone(), Expect::Absent)?;
+            Ok(json!({"id": id, "key": key, "name": name, "created_at": now, "permissions": doc["limits"]["permissions"], "expires_at": doc.get("expires_at")}))
         });
         b.op("auth.keys.list", |tx, _| {
             let subject = tx.who().subject.clone();
             let page = tx.query(API_KEYS, &Query::new().eq("subject", subject).limit(500))?;
-            let mut keys: Vec<Value> = page.items.iter().map(|d| json!({"id": d.body["id"], "name": d.body["name"], "created_at": d.body["created_at"]})).collect();
+            let mut keys: Vec<Value> = page.items.iter().map(|d| json!({"id": d.body["id"], "name": d.body["name"], "created_at": d.body["created_at"], "permissions": d.body["limits"]["permissions"], "expires_at": d.body["expires_at"]})).collect();
             keys.sort_by_key(|k| k["created_at"].as_i64().unwrap_or(0));
             Ok(json!({"keys": keys}))
         });
         b.op("auth.keys.revoke", |tx, input| {
+            if tx.who().via.is_some() {
+                return Err(Error::new(Category::Denied, "auth.key_cannot_mint", "an API key cannot manage API keys; sign in as the person").with_reason("auth.key_cannot_mint"));
+            }
             let subject = tx.who().subject.clone();
             let page = tx.query(API_KEYS, &Query::new().eq("id", input["id"].as_str().unwrap_or("")).eq("subject", subject).limit(1))?;
             let Some(d) = page.items.first() else { return Err(Error::reason(Category::NotFound, "auth.no_key", "You have no API key with that id")) };

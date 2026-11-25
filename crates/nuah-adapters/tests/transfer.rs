@@ -17,7 +17,7 @@ fn fill(db: &dyn Db) {
     .unwrap();
     for i in 0..30 {
         db.write(&mut |w| {
-            w.append_change(ChangeRecord { seq: 0, at: i, actor: "a".into(), request: format!("r{i}"), correlation: None, operation: "op".into(), docs: vec![DocRef { collection: "c".into(), id: "d0006".into(), rev: 2, kind: ChangeKind::Updated }], events: vec![Event { kind: "k".into(), audience: Audience::subject("s"), data: json!({"i": i}) }] })?;
+            w.append_change(ChangeRecord { seq: 0, at: i, actor: "a".into(), request: format!("r{i}"), correlation: None, via: None, operation: "op".into(), docs: vec![DocRef { collection: "c".into(), id: "d0006".into(), rev: 2, kind: ChangeKind::Updated }], events: vec![Event { kind: "k".into(), audience: Audience::subject("s"), data: json!({"i": i}) }] })?;
             Ok(())
         })
         .unwrap();
@@ -78,7 +78,7 @@ fn data_goes_round_between_adapters_unchanged() {
     through(&b, &c);
     assert_eq!(everything(&c), want);
     // numbers go on from where they were
-    b.write(&mut |w| w.append_change(ChangeRecord { seq: 0, at: 0, actor: "a".into(), request: "r".into(), correlation: None, operation: "o".into(), docs: vec![], events: vec![] }).map(|n| assert_eq!(n, 31))).unwrap();
+    b.write(&mut |w| w.append_change(ChangeRecord { seq: 0, at: 0, actor: "a".into(), request: "r".into(), correlation: None, via: None, operation: "o".into(), docs: vec![], events: vec![] }).map(|n| assert_eq!(n, 31))).unwrap();
     std::fs::remove_dir_all(dir).ok();
 }
 

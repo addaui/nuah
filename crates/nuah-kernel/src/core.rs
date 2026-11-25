@@ -903,7 +903,7 @@ impl Inner {
 
     /// Run kernel-internal work as a plugin, in a write transaction, with no Subject.
     pub(crate) fn run_kernel(&self, plugin: &str, f: &mut dyn FnMut(&mut Tx) -> Result<()>) -> Result<()> {
-        let system = Identity { subject: "kernel".into(), display: "kernel".into(), roles: vec![] };
+        let system = Identity { subject: "kernel".into(), display: "kernel".into(), roles: vec![], via: None, limits: None };
         let mut out = Ok(());
         self.db.write(&mut |w| {
             let mut events = vec![];

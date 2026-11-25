@@ -18,16 +18,25 @@ use std::collections::BTreeMap;
 /// identity onto the subject already in use, so what other plugins stored keeps pointing at the same person.
 ///
 /// [ADR 0039]: https://docs.addaui.com/nuah/adr/0039-accounts-belong-to-the-auth-plugin-and-live-in-the-database-faces-setup-and-console-are-plugins/
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Identity {
     pub subject: String,
     pub display: String,
     pub roles: Vec<String>,
+    /// The API key this call came in through, when it did ([ADR 0132]): the audit shows a key acting for a person.
+    ///
+    /// [ADR 0132]: https://madar.addaui.com/#/p/c732d1c1f2a8405da02ddc3cf964557c?tab=knowledge&page=dbc2140764d64b149f93a6011782bd54
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via: Option<String>,
+    /// What the key may do, as the auth Adapter stored it. The Core reads `permissions` (a list of permission names) and
+    /// refuses an Operation outside it; the product may read the rest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limits: Option<serde_json::Value>,
 }
 
 impl Identity {
     pub fn new(subject: &str, display: &str, roles: &[&str]) -> Self {
-        Identity { subject: subject.into(), display: display.into(), roles: roles.iter().map(|r| r.to_string()).collect() }
+        Identity { subject: subject.into(), display: display.into(), roles: roles.iter().map(|r| r.to_string()).collect(), via: None, limits: None }
     }
     pub fn has_role(&self, r: &str) -> bool {
         self.roles.iter().any(|x| x == r)

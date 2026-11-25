@@ -199,6 +199,9 @@ pub struct ChangeRecord {
     /// The caller's own id for the action this call belongs to, kept across outbound calls (ADR 0130). Old records have none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub correlation: Option<String>,
+    /// The API key the call came in through, when it did (ADR 0132). Old records have none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via: Option<String>,
     pub operation: String,
     pub docs: Vec<DocRef>,
     pub events: Vec<Event>,
