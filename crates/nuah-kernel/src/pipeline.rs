@@ -66,6 +66,9 @@ impl Core {
     /// Like `call`, with the caller's own id for the action this call belongs to (ADR 0130). It is kept in the change
     /// record and in the Pulse Events the call made, and handed to the calls an outbound Operation makes.
     pub fn call_with(&self, req: CallRequest, correlation: Option<&str>) -> Result<CallResponse> {
+        if self.inner.draining.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(Error::new(Category::Internal, "kernel.draining", "the service is stopping; try again in a moment").with_reason("kernel.draining"));
+        }
         if let Some(h) = &req.contract {
             if h != self.contract_hash() {
                 return Err(Error::new(Category::Incompatible, "kernel.incompatible", "this Face was built for a different contract; reload it")
@@ -85,6 +88,7 @@ impl Core {
 
     /// `call_as` with a correlation id (ADR 0130).
     pub fn call_as_with(&self, who: &Identity, op: &str, input: Value, key: Option<&str>, correlation: Option<&str>) -> Result<CallResponse> {
+        let _running = InFlight::enter(&self.inner);
         let started = std::time::Instant::now();
         let start_ms = self.inner.clock.now();
         let mut request = String::new();
@@ -413,5 +417,19 @@ impl Inner {
             obj["can"] = json!(cache[&id]);
         }
         Ok(())
+    }
+}
+
+/// Counts a call while it runs, so a stop can wait for it (ADR 0135).
+struct InFlight<'a>(&'a Inner);
+impl<'a> InFlight<'a> {
+    fn enter(inner: &'a Inner) -> Self {
+        inner.inflight.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        InFlight(inner)
+    }
+}
+impl Drop for InFlight<'_> {
+    fn drop(&mut self) {
+        self.0.inflight.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
     }
 }

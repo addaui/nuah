@@ -33,6 +33,11 @@ pub(crate) struct Inner {
     pub(crate) about: std::sync::RwLock<Value>,
     /// The enabled plugins' browser files, by (plugin, path), with the first 12 hex digits of each file's sha-256.
     pub(crate) browser: BTreeMap<(String, String), (&'static [u8], String)>,
+    /// The Core is being stopped: calls from outside are refused, calls already running finish (ADR 0135).
+    pub(crate) draining: std::sync::atomic::AtomicBool,
+    pub(crate) inflight: std::sync::atomic::AtomicUsize,
+    /// What the running services say about their health, by plugin id.
+    pub(crate) probes: std::sync::Mutex<Vec<(String, crate::plugin::HealthProbe)>>,
 }
 
 /// A running Core. Cheap to clone.
@@ -139,7 +144,7 @@ impl Core {
         let settings = plan.settings.clone();
         let features = db.features();
         let browser = browser_files(&plan);
-        let inner = Arc::new(Inner { db, features, auth, policy, clock, ids, net, plan, settings, wake, signals: Default::default(), profile_name: dist.profile.name.clone(), telemetry, shell: std::sync::RwLock::new(None), about: std::sync::RwLock::new(Value::Null), browser });
+        let inner = Arc::new(Inner { db, features, auth, policy, clock, ids, net, plan, settings, wake, signals: Default::default(), profile_name: dist.profile.name.clone(), telemetry, shell: std::sync::RwLock::new(None), about: std::sync::RwLock::new(Value::Null), browser, draining: Default::default(), inflight: Default::default(), probes: Default::default() });
         if inner.plan.ports.contains_key("db") {
             if let Err(e) = inner.prepare_storage(watch) {
                 if e.key == "kernel.upgrade_refused" {
@@ -203,13 +208,20 @@ impl Core {
             db_ok = false;
             detail = e.message;
         }
+        let mut checks = vec![Check { name: "db".into(), ok: db_ok, detail }];
+        let probes: Vec<_> = self.inner.probes.lock().unwrap().clone();
+        for (id, probe) in probes {
+            let (ok, detail) = probe();
+            checks.push(Check { name: id, ok, detail });
+        }
+        let well = checks.iter().all(|c| c.ok);
         Health {
-            status: if db_ok { "ok".into() } else { "degraded".into() },
+            status: if well { "ok".into() } else { "degraded".into() },
             ready: db_ok,
             uptime_secs: self.inner.telemetry.started.elapsed().as_secs(),
             profile: self.profile_name().into(),
             contract: self.contract_hash().into(),
-            checks: vec![Check { name: "db".into(), ok: db_ok, detail }],
+            checks,
         }
     }
     /// How many signals each telemetry Adapter has lost because its queue was full.
@@ -303,9 +315,15 @@ pub struct Services {
     started: Vec<(String, Box<dyn Service>)>,
     stop: Arc<std::sync::atomic::AtomicBool>,
     housekeeping: Option<std::thread::JoinHandle<()>>,
+    drain_limit: std::time::Duration,
 }
 
 impl Services {
+    /// How long a stop waits for calls already running (default 10 seconds).
+    pub fn drain_limit(mut self, limit: std::time::Duration) -> Self {
+        self.drain_limit = limit;
+        self
+    }
     /// Ids of the plugins whose service is running.
     pub fn running(&self) -> Vec<&str> {
         self.started.iter().map(|(id, _)| id.as_str()).collect()
@@ -319,9 +337,15 @@ impl Services {
             return;
         }
         self.done = true;
+        // Calls already running finish first (up to the limit); new ones from outside are refused (ADR 0135).
+        if !self.core.drain(self.drain_limit) {
+            self.core.log(Level::Warn, "nuah.kernel", "core.drain_timeout", json!({"inflight": self.core.inner.inflight.load(std::sync::atomic::Ordering::SeqCst)}));
+        }
         while let Some((_, s)) = self.started.pop() {
             s.stop();
         }
+        self.core.inner.probes.lock().unwrap().clear();
+        self.core.run_disposers();
         self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
         if let Some(h) = self.housekeeping.take() {
             let _ = h.join();
@@ -368,20 +392,56 @@ fn housekeeping(core: Core, stop: Arc<std::sync::atomic::AtomicBool>) {
 }
 
 impl Core {
+    /// Refuse calls from outside from now on and wait until the calls already running are done, or the limit passes.
+    /// True when nothing was left running.
+    pub fn drain(&self, limit: std::time::Duration) -> bool {
+        use std::sync::atomic::Ordering::SeqCst;
+        self.inner.draining.store(true, SeqCst);
+        let started = std::time::Instant::now();
+        while self.inner.inflight.load(SeqCst) > 0 {
+            if started.elapsed() >= limit {
+                return false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        true
+    }
+
+    /// Run what the plugins registered with `on_stop`, last plugin first; one that takes longer than 5 seconds is left behind.
+    fn run_disposers(&self) {
+        for (id, a) in self.inner.plan.active.iter().rev() {
+            for d in &a.bindings.disposers {
+                let (d, (tx, rx)) = (d.clone(), std::sync::mpsc::channel());
+                std::thread::spawn(move || {
+                    d();
+                    let _ = tx.send(());
+                });
+                if rx.recv_timeout(std::time::Duration::from_secs(5)).is_err() {
+                    self.log(Level::Warn, "nuah.kernel", "plugin.dispose_timeout", json!({"plugin": id}));
+                }
+            }
+        }
+    }
+
     /// Start the Core's upkeep and the service of every plugin that asked for `serve`, in plugin id
     /// order. If one cannot start, the ones already running are stopped and the failure is returned.
     pub fn start_services(&self) -> Result<Services> {
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (c, s) = (self.clone(), stop.clone());
         let housekeeping = std::thread::Builder::new().name("nuah-housekeeping".into()).spawn(move || housekeeping(c, s)).map_err(|e| Error::internal(format!("cannot start housekeeping: {e}")))?;
-        let mut services = Services { core: self.clone(), done: false, started: vec![], stop, housekeeping: Some(housekeeping) };
+        let mut services = Services { core: self.clone(), done: false, started: vec![], stop, housekeeping: Some(housekeeping), drain_limit: std::time::Duration::from_secs(10) };
         for (id, a) in &self.inner.plan.active {
             if !a.manifest.requires.capabilities.iter().any(|c| c == "serve") {
                 continue;
             }
             let settings = self.inner.settings.get(id).cloned().unwrap_or(Value::Null);
             match a.plugin.serve(ServiceContext { core: self.clone(), settings }) {
-                Ok(Some(svc)) => services.started.push((id.clone(), svc)),
+                Ok(Some(svc)) => {
+                    if let Some(p) = svc.health_probe() {
+                        self.inner.probes.lock().unwrap().push((id.clone(), p));
+                    }
+                    services.started.push((id.clone(), svc))
+                }
                 Ok(None) => {}
                 Err(e) => return Err(Error::internal(format!("{id} could not start its service: {}", e.message))),
             }

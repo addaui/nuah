@@ -58,9 +58,20 @@ pub struct Bindings {
     pub(crate) scopes: BTreeMap<String, ScopeFn>,
     pub(crate) resources: BTreeMap<String, ResourceFn>,
     pub(crate) provides: BTreeMap<String, OpFn>,
+    pub(crate) disposers: Vec<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl Bindings {
+    /// What this plugin closes when the Core stops (an open file, a connection, a thread it started). Run after the services
+    /// have stopped, in the reverse of the order plugins are started, each with a time limit ([ADR 0135]).
+    ///
+    /// [ADR 0135]: https://madar.addaui.com/#/p/c732d1c1f2a8405da02ddc3cf964557c?tab=knowledge&page=423f1889730140fa86c845229cc0f610
+    pub fn on_stop<F>(&mut self, f: F)
+    where
+        F: Fn() + Send + Sync + 'static,
+    {
+        self.disposers.push(Arc::new(f));
+    }
     pub fn op<F>(&mut self, name: &str, f: F)
     where
         F: Fn(&mut Tx, Value) -> Result<Value> + Send + Sync + 'static,
@@ -149,7 +160,17 @@ pub struct ServiceContext {
 pub trait Service: Send {
     /// Stop and wait until it has. Called once; must not hang.
     fn stop(self: Box<Self>);
+    /// How to ask this service whether it is well, from any thread, while it runs ([ADR 0135]). The Core lists the answer
+    /// among its health checks, under the plugin's id, and reports `degraded` when it says not ok. The default is "no probe".
+    ///
+    /// [ADR 0135]: https://madar.addaui.com/#/p/c732d1c1f2a8405da02ddc3cf964557c?tab=knowledge&page=423f1889730140fa86c845229cc0f610
+    fn health_probe(&self) -> Option<HealthProbe> {
+        None
+    }
 }
+
+/// Answers whether a service is well, with a short detail.
+pub type HealthProbe = Arc<dyn Fn() -> (bool, String) + Send + Sync>;
 
 pub trait Plugin: Send + Sync {
     fn manifest(&self) -> Manifest;
