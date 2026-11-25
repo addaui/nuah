@@ -141,6 +141,27 @@ pub fn search_fields(schema: &Value) -> Vec<String> {
     out
 }
 
+/// Does the Collection schema say `"per_subject": true`: every document belongs to the person who wrote it ([ADR 0131]).
+///
+/// [ADR 0131]: https://madar.addaui.com/#/p/c732d1c1f2a8405da02ddc3cf964557c?tab=knowledge&page=248bd79d455648dd8029bc159ba6b6d6
+pub fn is_per_subject(schema: &Value) -> bool {
+    schema.get("per_subject") == Some(&Value::Bool(true))
+}
+
+/// The top-level fields a Collection schema marks `"x-secret": true`, in name order.
+pub fn secret_fields(schema: &Value) -> Vec<String> {
+    let mut out: Vec<String> = schema
+        .get("properties")
+        .and_then(|p| p.as_object())
+        .into_iter()
+        .flatten()
+        .filter(|(_, p)| !is_removed(p) && p.get("x-secret") == Some(&Value::Bool(true)))
+        .map(|(k, _)| k.clone())
+        .collect();
+    out.sort();
+    out
+}
+
 // ---- the Schema check ----------------------------------------------------------------------------
 
 /// One reason a Schema check refuses. `code` is one of: `field_missing`, `collection_missing`, `type_changed`,

@@ -834,7 +834,7 @@ impl Inner {
         self.db.write(&mut |w| {
             let mut events = vec![];
             let mut docs = vec![];
-            let mut tx = Tx { inner: self, plugin: plugin.into(), who: &system, request: "kernel", h: Handle::W(w), events: &mut events, docs: &mut docs, signals: vec![], depth: 0 };
+            let mut tx = Tx { inner: self, plugin: plugin.into(), who: &system, request: "kernel", h: Handle::W(w), events: &mut events, docs: &mut docs, signals: vec![], depth: 0, secrets: Default::default() };
             out = f(&mut tx);
             if out.is_err() {
                 return Err(Error::internal("rolled back"));

@@ -220,6 +220,13 @@ pub struct DataDecl {
     ///
     /// [ADR 0092]: https://docs.addaui.com/nuah/adr/0092-one-index-of-entities-plugins-announce-them-in-their-events-the-data-port-searches-text-and-permissions-follow-the-events-audience/
     pub searches: BTreeMap<String, Vec<String>>,
+    /// The owned Collections the schema marks `"per_subject": true`: the Core keeps each document with the person who
+    /// wrote it and shows it to no one else ([ADR 0131]).
+    ///
+    /// [ADR 0131]: https://madar.addaui.com/#/p/c732d1c1f2a8405da02ddc3cf964557c?tab=knowledge&page=248bd79d455648dd8029bc159ba6b6d6
+    pub per_subject: std::collections::BTreeSet<String>,
+    /// The fields of each owned Collection the schema marks `"x-secret": true`; their values stay out of events and logs.
+    pub secrets: BTreeMap<String, Vec<String>>,
 }
 
 /// `DataDecl` as written in a Manifest, before the schema file is unpacked.
@@ -241,7 +248,7 @@ struct RawDataDecl {
 impl TryFrom<RawDataDecl> for DataDecl {
     type Error = String;
     fn try_from(r: RawDataDecl) -> Result<DataDecl, String> {
-        let mut d = DataDecl { schema: None, collections: r.collections, reads: r.reads, version: r.version, upgrades_from: r.upgrades_from, steps: r.steps, indexes: r.indexes, requires: r.requires, prefers: r.prefers, schemas: r.schemas, searches: BTreeMap::new() };
+        let mut d = DataDecl { schema: None, collections: r.collections, reads: r.reads, version: r.version, upgrades_from: r.upgrades_from, steps: r.steps, indexes: r.indexes, requires: r.requires, prefers: r.prefers, schemas: r.schemas, searches: BTreeMap::new(), per_subject: Default::default(), secrets: BTreeMap::new() };
         let Some(schema) = r.schema else { return Ok(d) };
         if !d.collections.is_empty() || d.version != 0 || !d.indexes.is_empty() || !d.schemas.is_empty() || d.upgrades_from.is_some() || !d.steps.is_empty() {
             return Err("collections, version, indexes, upgrades_from and steps are written in the schema file only".into());
@@ -260,6 +267,13 @@ impl TryFrom<RawDataDecl> for DataDecl {
             let fields = crate::upgrade::search_fields(s);
             if !fields.is_empty() {
                 d.searches.insert(c.clone(), fields);
+            }
+            if crate::upgrade::is_per_subject(s) {
+                d.per_subject.insert(c.clone());
+            }
+            let secret = crate::upgrade::secret_fields(s);
+            if !secret.is_empty() {
+                d.secrets.insert(c.clone(), secret);
             }
         }
         if !d.searches.is_empty() && !d.requires.iter().any(|f| f == crate::db::feature::TEXT_SEARCH) {

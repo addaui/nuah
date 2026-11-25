@@ -133,7 +133,7 @@ impl Core {
                 let mut out: Option<Value> = None;
                 inner.db.read(&mut |r| {
                     let (mut events, mut docs) = (vec![], vec![]);
-                    let mut tx = Tx { inner, plugin: String::new(), who, request: &request, h: Handle::R(r), events: &mut events, docs: &mut docs, signals: vec![], depth: 0 };
+                    let mut tx = Tx { inner, plugin: String::new(), who, request: &request, h: Handle::R(r), events: &mut events, docs: &mut docs, signals: vec![], depth: 0, secrets: Default::default() };
                     out = Some(guarded(|| inner.execute(&mut tx, op, input.clone()))?);
                     Ok(())
                 })?;
@@ -147,7 +147,7 @@ impl Core {
                 let mut prepared: Option<Value> = None;
                 inner.db.read(&mut |r| {
                     let (mut events, mut docs) = (vec![], vec![]);
-                    let mut tx = Tx { inner, plugin: String::new(), who, request: &request, h: Handle::R(r), events: &mut events, docs: &mut docs, signals: vec![], depth: 0 };
+                    let mut tx = Tx { inner, plugin: String::new(), who, request: &request, h: Handle::R(r), events: &mut events, docs: &mut docs, signals: vec![], depth: 0, secrets: Default::default() };
                     prepared = Some(guarded(|| inner.prepare_outbound(&mut tx, op, input.clone()))?);
                     Ok(())
                 })?;
@@ -181,7 +181,7 @@ impl Core {
                     let now = inner.clock.now();
                     if let Some(id) = &idem_id {
                         // Authorization comes first, so a removed member cannot read an old result by replaying a key.
-                        let probe = Tx { inner, plugin: String::new(), who, request: &request, h: Handle::R(&*w), events: &mut vec![], docs: &mut vec![], signals: vec![], depth: 0 };
+                        let probe = Tx { inner, plugin: String::new(), who, request: &request, h: Handle::R(&*w), events: &mut vec![], docs: &mut vec![], signals: vec![], depth: 0, secrets: Default::default() };
                         schema::validate(&decl.input, &input)?;
                         inner.authorize(&probe, decl, &input)?;
                         drop(probe);
@@ -197,7 +197,7 @@ impl Core {
                     }
                     let (mut events, mut docs) = (vec![], vec![]);
                     let output = {
-                        let mut tx = Tx { inner, plugin: String::new(), who, request: &request, h: Handle::W(&mut *w), events: &mut events, docs: &mut docs, signals: vec![], depth: 0 };
+                        let mut tx = Tx { inner, plugin: String::new(), who, request: &request, h: Handle::W(&mut *w), events: &mut events, docs: &mut docs, signals: vec![], depth: 0, secrets: Default::default() };
                         let out = guarded(|| inner.execute(&mut tx, op, input.clone()))?;
                         signals = std::mem::take(&mut tx.signals);
                         out

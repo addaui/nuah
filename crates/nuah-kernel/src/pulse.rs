@@ -264,7 +264,7 @@ impl Inner {
             let request = self.ids.new_id();
             let (mut events, mut docs) = (vec![], vec![]);
             {
-                let mut tx = Tx { inner: self, plugin: plugin.into(), who: &who, request: &request, h: Handle::W(&mut *w), events: &mut events, docs: &mut docs, signals: vec![], depth: 0 };
+                let mut tx = Tx { inner: self, plugin: plugin.into(), who: &who, request: &request, h: Handle::W(&mut *w), events: &mut events, docs: &mut docs, signals: vec![], depth: 0, secrets: Default::default() };
                 for rec in &records {
                     for ev in rec.events.iter().filter(|e| pattern_matches(on, &e.kind)) {
                         let d = Delivery { seq: rec.seq, at: rec.at, actor: rec.actor.clone(), operation: rec.operation.clone(), event: ev.clone() };

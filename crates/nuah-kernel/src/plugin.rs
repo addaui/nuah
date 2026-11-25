@@ -206,7 +206,12 @@ pub struct Tx<'a> {
     /// Signals sent in this transaction: handed to Pulse after the commit, never stored.
     pub(crate) signals: Vec<Event>,
     pub(crate) depth: u32,
+    /// Values this plugin read or wrote in fields its schema marks `x-secret`: kept out of Events, Signals and logs.
+    pub(crate) secrets: std::sync::Mutex<Vec<String>>,
 }
+
+/// The body field the Core keeps the person in for a `per_subject` Collection. A plugin can neither set nor see it.
+const SUBJECT: &str = "_subject";
 
 impl<'a> Tx<'a> {
     pub fn who(&self) -> &crate::ports::Identity {
@@ -228,6 +233,7 @@ impl<'a> Tx<'a> {
     pub fn log(&self, level: crate::telemetry::Level, key: &str, fields: Value) {
         let t = &self.inner.telemetry;
         if t.enabled(level, &self.plugin) {
+            let fields = self.redacted(fields);
             t.log(crate::telemetry::record(self.inner.clock.now(), level, &self.plugin, key, fields, None, Some(self.request)));
         }
     }
@@ -271,6 +277,77 @@ impl<'a> Tx<'a> {
             Handle::R(_) => Err(Error::internal("a Query may not write")),
             Handle::W(w) => Ok(&mut **w),
         }
+    }
+
+    /// For a `per_subject` Collection, the signed-in person; `None` for any other. A caller with no subject is refused.
+    fn subject_for(&self, collection: &str) -> Result<Option<String>> {
+        if self.plugin.is_empty() || !self.inner.plan.active.values().any(|a| a.manifest.data.per_subject.contains(collection)) {
+            return Ok(None);
+        }
+        let subject = &self.who().subject;
+        if subject.is_empty() {
+            return Err(Error::unauthenticated());
+        }
+        Ok(Some(subject.clone()))
+    }
+    /// Conditions and ordering may not name the reserved field.
+    fn refuse_subject_paths<'p>(&self, mut paths: impl Iterator<Item = &'p str>) -> Result<()> {
+        if paths.any(|f| f.split('.').next() == Some(SUBJECT)) {
+            return Err(Error::internal(format!("{SUBJECT} is kept by the Core; a plugin may not name it")));
+        }
+        Ok(())
+    }
+    /// Take the person out of a document a plugin is about to see; `None` if the document is another person's.
+    fn mine(&self, subject: &Option<String>, mut d: Doc) -> Option<Doc> {
+        let Some(s) = subject else { return Some(d) };
+        let o = d.body.as_object_mut()?;
+        (o.remove(SUBJECT).and_then(|v| v.as_str().map(String::from)).as_deref() == Some(s.as_str())).then_some(d)
+    }
+    fn with_subject(subject: &Option<String>, conds: &[Cond]) -> Vec<Cond> {
+        let mut v = conds.to_vec();
+        if let Some(s) = subject {
+            v.push(Cond { field: SUBJECT.into(), op: Cmp::Eq, value: Value::String(s.clone()) });
+        }
+        v
+    }
+    /// Remember the values of the `x-secret` fields of a document of `collection`.
+    fn note_secrets(&self, collection: &str, body: &Value) {
+        let Some(fields) = self.inner.plan.active.values().find_map(|a| a.manifest.data.secrets.get(collection)) else { return };
+        let mut seen = self.secrets.lock().unwrap_or_else(|e| e.into_inner());
+        for f in fields {
+            if let Some(v) = body.get(f).and_then(|v| v.as_str()).filter(|v| !v.is_empty()) {
+                if !seen.iter().any(|x| x == v) {
+                    seen.push(v.to_string());
+                }
+            }
+        }
+    }
+    /// `data` with every remembered secret replaced, for an Event, a Signal or a log line.
+    fn redacted(&self, data: Value) -> Value {
+        let seen = self.secrets.lock().unwrap_or_else(|e| e.into_inner());
+        if seen.is_empty() {
+            return data;
+        }
+        fn go(v: Value, secrets: &[String]) -> Value {
+            match v {
+                Value::String(mut s) => {
+                    for x in secrets {
+                        if s.contains(x.as_str()) {
+                            s = s.replace(x.as_str(), "[secret]");
+                        }
+                    }
+                    Value::String(s)
+                }
+                Value::Array(a) => Value::Array(a.into_iter().map(|x| go(x, secrets)).collect()),
+                Value::Object(o) => Value::Object(o.into_iter().map(|(k, x)| (k, go(x, secrets))).collect()),
+                other => other,
+            }
+        }
+        go(data, &seen)
+    }
+    fn seen(&self, collection: &str, d: Doc) -> Doc {
+        self.note_secrets(collection, &d.body);
+        d
     }
 
     fn may_read(&self, collection: &str) -> Result<()> {
@@ -318,7 +395,8 @@ impl<'a> Tx<'a> {
     /// A live document, or `None`. From another plugin's Collection, only the declared fields.
     pub fn get(&self, collection: &str, id: &str) -> Result<Option<Doc>> {
         self.may_read(collection)?;
-        Ok(self.rd().get(collection, id)?.filter(|d| !d.deleted).map(|d| self.only_declared(collection, d)))
+        let subject = self.subject_for(collection)?;
+        Ok(self.rd().get(collection, id)?.filter(|d| !d.deleted).and_then(|d| self.mine(&subject, d)).map(|d| self.seen(collection, self.only_declared(collection, d))))
     }
     pub fn query(&self, collection: &str, q: &Query) -> Result<Page> {
         self.may_read(collection)?;
@@ -328,14 +406,24 @@ impl<'a> Tx<'a> {
             }
         }
         self.check_read_paths(collection, q.conds.iter().map(|c| c.field.as_str()).chain(q.order.iter().map(|(f, _)| f.as_str())))?;
-        let mut page = self.rd().query(collection, q)?;
-        page.items = page.items.into_iter().map(|d| self.only_declared(collection, d)).collect();
+        let subject = self.subject_for(collection)?;
+        let mut q = q.clone();
+        if subject.is_some() {
+            self.refuse_subject_paths(q.conds.iter().map(|c| c.field.as_str()).chain(q.order.iter().map(|(f, _)| f.as_str())))?;
+            q.conds = Self::with_subject(&subject, &q.conds);
+        }
+        let mut page = self.rd().query(collection, &q)?;
+        page.items = page.items.into_iter().filter_map(|d| self.mine(&subject, d)).map(|d| self.seen(collection, self.only_declared(collection, d))).collect();
         Ok(page)
     }
     pub fn count(&self, collection: &str, conds: &[Cond]) -> Result<u64> {
         self.may_read(collection)?;
         self.check_read_paths(collection, conds.iter().map(|c| c.field.as_str()))?;
-        self.rd().count(collection, conds)
+        let subject = self.subject_for(collection)?;
+        if subject.is_some() {
+            self.refuse_subject_paths(conds.iter().map(|c| c.field.as_str()))?;
+        }
+        self.rd().count(collection, &Self::with_subject(&subject, conds))
     }
     /// Live documents of a Collection this plugin owns whose search fields (`"search": true` in its schema) hold
     /// every word of `q`, folded as the index folds text, and that meet `conds`; newest first, at most `limit`
@@ -356,7 +444,12 @@ impl<'a> Tx<'a> {
         if words.is_empty() {
             return Ok(vec![]);
         }
-        self.rd().search(collection, &words, conds, limit)
+        let subject = self.subject_for(collection)?;
+        if subject.is_some() {
+            self.refuse_subject_paths(conds.iter().map(|c| c.field.as_str()))?;
+        }
+        let found = self.rd().search(collection, &words, &Self::with_subject(&subject, conds), limit)?;
+        Ok(found.into_iter().filter_map(|d| self.mine(&subject, d)).map(|d| self.seen(collection, d)).collect())
     }
     /// Would the caller receive an Event addressed to `audience`? Resolved now, as Pulse resolves it: a Scope asks the
     /// plugin that declares it; an unknown Scope holds no one.
@@ -374,10 +467,21 @@ impl<'a> Tx<'a> {
         }
         let now = self.now();
         let owner = self.plugin.clone();
+        self.note_secrets(collection, &body);
+        let subject = self.subject_for(collection)?;
+        let mut body = body;
+        if let Some(s) = &subject {
+            if let Some(old) = self.rd().get(collection, id)?.filter(|d| !d.deleted) {
+                if old.body.get(SUBJECT).and_then(|v| v.as_str()) != Some(s.as_str()) {
+                    return Err(Error::denied("this document belongs to another person"));
+                }
+            }
+            body[SUBJECT] = Value::String(s.clone());
+        }
         let doc = self.wr()?.put(collection, id, &owner, body, expect, now)?;
         let kind = if doc.rev == 1 { ChangeKind::Created } else { ChangeKind::Updated };
         self.docs.push(DocRef { collection: collection.into(), id: id.into(), rev: doc.rev, kind });
-        Ok(doc)
+        self.mine(&subject, doc).ok_or_else(|| Error::internal("a stored document lost its person"))
     }
     /// Create with a fresh id; fails if the id exists.
     pub fn create(&mut self, collection: &str, body: Value) -> Result<Doc> {
@@ -387,6 +491,12 @@ impl<'a> Tx<'a> {
     pub fn delete(&mut self, collection: &str, id: &str) -> Result<bool> {
         self.may_write(collection)?;
         let now = self.now();
+        if let Some(s) = self.subject_for(collection)? {
+            let theirs = self.rd().get(collection, id)?.filter(|d| !d.deleted).is_some_and(|d| d.body.get(SUBJECT).and_then(|v| v.as_str()) != Some(s.as_str()));
+            if theirs {
+                return Ok(false);
+            }
+        }
         let tomb = self.wr()?.delete(collection, id, Expect::Any, now)?;
         if let Some(t) = &tomb {
             self.docs.push(DocRef { collection: collection.into(), id: id.into(), rev: t.rev, kind: ChangeKind::Deleted });
@@ -404,6 +514,7 @@ impl<'a> Tx<'a> {
         if !decl.data.is_null() {
             crate::schema::validate(&decl.data, &data).map_err(|e| Error::internal(format!("event {kind}: {}", e.message)))?;
         }
+        let data = self.redacted(data);
         self.events.push(Event { kind: kind.into(), audience, data });
         Ok(())
     }
@@ -423,6 +534,7 @@ impl<'a> Tx<'a> {
         if serde_json::to_vec(&data).map(|b| b.len()).unwrap_or(usize::MAX) > crate::pulse::SIGNAL_MAX {
             return Err(Error::internal(format!("signal {kind} is larger than 16 kB")));
         }
+        let data = self.redacted(data);
         self.signals.push(Event { kind: kind.into(), audience, data });
         Ok(())
     }
