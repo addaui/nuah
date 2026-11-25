@@ -187,7 +187,7 @@ pub struct Plan {
 }
 
 /// `serve`: the plugin runs a long-lived service (a Projection, for one). See ADR 0031. `net`: an outbound Operation may use the `net` Port (ADR 0040).
-const CAPABILITIES: [&str; 5] = ["emit", "call", "serve", "net", "shell"];
+const CAPABILITIES: [&str; 6] = ["emit", "call", "serve", "net", "shell", "secrets"];
 
 /// The hash of the operation and schema set, so a Face can tell it was built for a different Core.
 pub const ENVELOPE_VERSION: u32 = 1;

@@ -332,6 +332,41 @@ impl<'a> Tx<'a> {
         v
     }
     /// Remember the values of the `x-secret` fields of a document of `collection`.
+    /// Where a person's secret of this plugin is kept ([ADR 0138]); needs the capability `secrets`.
+    ///
+    /// [ADR 0138]: https://madar.addaui.com/#/p/c732d1c1f2a8405da02ddc3cf964557c?tab=knowledge&page=12864c0f5dba4225887439c5714e66a0
+    fn secret_id(&self, name: &str) -> Result<String> {
+        self.inner.check_capability(&self.plugin, "secrets")?;
+        let subject = &self.who().subject;
+        if subject.is_empty() || name.is_empty() {
+            return Err(Error::unauthenticated());
+        }
+        Ok(format!("{}\u{1f}{}\u{1f}{}", self.plugin, subject, name))
+    }
+    /// Keep a secret of the signed-in person for this plugin, replacing an earlier one. No Operation can read it back: only
+    /// this plugin's own outbound work can use it ([`Outbound::secret`]). It is hidden from Events and logs from now on.
+    pub fn set_secret(&mut self, name: &str, value: &str) -> Result<()> {
+        let id = self.secret_id(name)?;
+        let (now, plugin, subject) = (self.now(), self.plugin.clone(), self.who().subject.clone());
+        let hint: String = value.chars().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect();
+        self.wr()?.put(SECRETS, &id, &plugin, json!({"plugin": plugin, "subject": subject, "name": name, "value": value, "hint": hint}), Expect::Any, now)?;
+        let mut seen = self.secrets.lock().unwrap_or_else(|e| e.into_inner());
+        if !value.is_empty() && !seen.iter().any(|x| x == value) {
+            seen.push(value.to_string());
+        }
+        Ok(())
+    }
+    /// Remove the person's secret; true when there was one.
+    pub fn delete_secret(&mut self, name: &str) -> Result<bool> {
+        let id = self.secret_id(name)?;
+        let now = self.now();
+        Ok(self.wr()?.delete(SECRETS, &id, Expect::Any, now)?.is_some())
+    }
+    /// Whether the person has this secret, and its last four characters: all a plugin can show of it.
+    pub fn secret_hint(&self, name: &str) -> Result<Option<String>> {
+        let id = self.secret_id(name)?;
+        Ok(self.rd().get(SECRETS, &id)?.filter(|d| !d.deleted).map(|d| d.body["hint"].as_str().unwrap_or("").to_string()))
+    }
     fn note_secrets(&self, collection: &str, body: &Value) {
         let Some(fields) = self.inner.plan.active.values().find_map(|a| a.manifest.data.secrets.get(collection)) else { return };
         let mut seen = self.secrets.lock().unwrap_or_else(|e| e.into_inner());
@@ -660,6 +695,9 @@ impl<'a> Tx<'a> {
 /// writing data is done by calling Operations, each in a transaction of its own.
 ///
 /// [ADR 0040]: https://docs.addaui.com/nuah/adr/0040-outbound-operations-run-outside-the-transaction-and-reach-the-network-through-a-net-port/
+/// The collection of the Core's own where people's secrets are kept (ADR 0138).
+const SECRETS: &str = "_secrets";
+
 pub struct Outbound<'a> {
     pub(crate) core: &'a crate::core::Core,
     pub(crate) plugin: String,
@@ -731,6 +769,22 @@ impl<'a> Outbound<'a> {
     pub fn shell(&self) -> Result<Arc<dyn ShellServices>> {
         self.core.inner.check_capability(&self.plugin, "shell")?;
         self.core.inner.shell.read().unwrap_or_else(|e| e.into_inner()).clone().ok_or_else(|| Error::unsupported("shell", "none"))
+    }
+    /// The secret the person this work is for gave this plugin ([ADR 0138]), or None. Needs the capability `secrets`.
+    ///
+    /// [ADR 0138]: https://madar.addaui.com/#/p/c732d1c1f2a8405da02ddc3cf964557c?tab=knowledge&page=12864c0f5dba4225887439c5714e66a0
+    pub fn secret(&self, name: &str) -> Result<Option<String>> {
+        self.core.inner.check_capability(&self.plugin, "secrets")?;
+        if self.who.subject.is_empty() || name.is_empty() {
+            return Err(Error::unauthenticated());
+        }
+        let id = format!("{}\u{1f}{}\u{1f}{}", self.plugin, self.who.subject, name);
+        let mut found = None;
+        self.core.inner.db.read(&mut |r| {
+            found = r.get(SECRETS, &id)?.filter(|d| !d.deleted).and_then(|d| d.body["value"].as_str().map(String::from));
+            Ok(())
+        })?;
+        Ok(found)
     }
     /// Call an Operation as the same Subject, with the same checks as from outside, in a transaction of its own.
     pub fn call(&self, op: &str, input: Value) -> Result<Value> {
