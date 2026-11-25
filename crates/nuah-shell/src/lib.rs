@@ -34,6 +34,13 @@ pub trait Product {
     fn replaced(&self) -> Vec<(String, String)> {
         vec![]
     }
+    /// What a newer version of this product needs that an older saved Profile does not have: plugins it now requires, grants a
+    /// plugin now asks for. It changes the Profile and says in a line what it did; with nothing to do it returns nothing and the
+    /// file is left alone. Run each time the product starts, before the Profile is resolved; when it changed something the
+    /// file is saved, the earlier one kept next to it as `<file>.before-upgrade`.
+    fn upgrade_profile(&self, _profile: &mut Profile) -> Vec<String> {
+        vec![]
+    }
     /// What this build is made from ([ADR 0100]): `{name, version, commit, components: [{name, version, commit}]}`. A product
     /// records its commit at build time and reads its components from its own `Cargo.lock` ([`components_from_lock`]).
     ///
@@ -436,6 +443,14 @@ fn start_core(product: &impl Product, path: &std::path::Path, f: &ServeFlags, st
             }
         }
         Err(e) => eprintln!("profile: could not move to successors: {e}"),
+    }
+    match edit::upgrade_saved(path, &mut |p| product.upgrade_profile(p)) {
+        Ok(notes) => {
+            for n in notes {
+                eprintln!("profile: {n}");
+            }
+        }
+        Err(e) => eprintln!("profile: could not upgrade the saved profile: {e}"),
     }
     let mut profile = read_profile(path);
     // The lock is checked against the file as it was saved, before this run's command-line changes.

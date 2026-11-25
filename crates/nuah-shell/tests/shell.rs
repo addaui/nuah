@@ -303,3 +303,26 @@ fn what_an_instance_is_built_from_is_shown_to_signed_in_people_only() {
     assert_eq!(c.describe(&who)["about"]["commit"], "abc123");
     assert!(c.describe_public().get("about").is_none(), "a stranger does not learn the exact build");
 }
+
+#[test]
+fn a_saved_profile_is_brought_up_to_what_the_product_needs_and_the_earlier_file_is_kept() {
+    let p = profile(false);
+    let d = dir("upgrade");
+    let path = d.join("nuah.json");
+    write_profile(&path, &p).unwrap();
+    let before = std::fs::read_to_string(&path).unwrap();
+    let notes = nuah_shell::edit::upgrade_saved(&path, &mut |p| {
+        p.enabled.push("@t/needed".into());
+        vec!["@t/needed is now enabled".into()]
+    })
+    .unwrap();
+    assert_eq!(notes, ["@t/needed is now enabled"]);
+    assert!(std::fs::read_to_string(&path).unwrap().contains("@t/needed"));
+    let mut backup = path.as_os_str().to_owned();
+    backup.push(".before-upgrade");
+    assert_eq!(std::fs::read_to_string(std::path::PathBuf::from(backup)).unwrap(), before, "the earlier file is kept as it was");
+    // nothing to do: the file is not touched
+    let now = std::fs::read_to_string(&path).unwrap();
+    assert!(nuah_shell::edit::upgrade_saved(&path, &mut |_| vec![]).unwrap().is_empty());
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), now);
+}

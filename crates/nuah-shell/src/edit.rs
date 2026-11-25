@@ -257,3 +257,20 @@ pub fn move_to_successors(catalog: &Catalog, path: &Path, also: &[(String, Strin
     }
     Ok(moved)
 }
+
+/// Lets the product bring an older saved Profile up to what this version needs ([`crate::Product::upgrade_profile`]). When it
+/// changed something the earlier file is kept as `<file>.before-upgrade` and the new one saved; with nothing to do the file is not
+/// touched. Returns what the product said it did.
+pub fn upgrade_saved(path: &Path, f: &mut dyn FnMut(&mut Profile) -> Vec<String>) -> std::io::Result<Vec<String>> {
+    let text = std::fs::read_to_string(path)?;
+    let v: serde_json::Value = serde_json::from_str(&text).map_err(std::io::Error::other)?;
+    let mut p = nuah_kernel::setup::profile_from_json(&v).map_err(std::io::Error::other)?;
+    let notes = f(&mut p);
+    if !notes.is_empty() {
+        let mut backup = path.as_os_str().to_owned();
+        backup.push(".before-upgrade");
+        std::fs::copy(path, std::path::PathBuf::from(backup))?;
+        write_profile(path, &p)?;
+    }
+    Ok(notes)
+}
